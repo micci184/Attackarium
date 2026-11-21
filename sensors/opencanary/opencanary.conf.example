@@ -34,10 +34,11 @@
       },
       "handlers": {
         "jsonfile": {
-          "class": "logging.handlers.RotatingFileHandler",
+          "class": "logging.handlers.TimedRotatingFileHandler",
           "filename": "/var/log/attackarium/opencanary.jsonl",
-          "maxBytes": 20971520,
-          "backupCount": 3,
+          "when": "H",
+          "interval": 1,
+          "backupCount": 24,
           "formatter": "plain"
         }
       }

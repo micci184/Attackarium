@@ -38,7 +38,6 @@ const ALLOWED_EVENT_KEYS = new Set([
   "http_method",
   "http_path",
   "fingerprint",
-  "raw_object_key",
   "metadata",
 ]);
 
@@ -49,8 +48,6 @@ const HTTP_METHOD_REGEX = /^[A-Z]{2,16}$/;
 const IPV4_REGEX =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const IPV6_HEX_GROUP_REGEX = /^[0-9a-f]{1,4}$/i;
-const RAW_OBJECT_KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9/_.-]{0,511}$/;
-
 export interface NormalizedAttackEvent {
   id: string;
   sensor_id: string;
@@ -58,14 +55,17 @@ export interface NormalizedAttackEvent {
   protocol: AllowedProtocol;
   dst_port: number;
   event_type: string;
-  src_ip: string | null;
+  /**
+   * Present only while the request is being validated. Ingest deletes this
+   * field after deriving src_ip_hash. It is not a stored column.
+   */
+  src_ip?: string;
   src_ip_hash: string | null;
   src_country: string | null;
   src_asn: string | null;
   http_method: string | null;
   http_path_redacted: string | null;
   fingerprint: string | null;
-  raw_object_key: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -266,18 +266,6 @@ export function validateBatchPayload(
       fingerprint = stripControlChars(raw.fingerprint).trim() || null;
     }
 
-    let rawObjectKey: string | null = null;
-    if (raw.raw_object_key !== undefined && raw.raw_object_key !== null) {
-      if (
-        typeof raw.raw_object_key !== "string" ||
-        !RAW_OBJECT_KEY_REGEX.test(raw.raw_object_key) ||
-        raw.raw_object_key.includes("..")
-      ) {
-        return { ok: false, error: `events[${i}].raw_object_key is invalid` };
-      }
-      rawObjectKey = raw.raw_object_key;
-    }
-
     let metadata: Record<string, unknown> = {};
     if (raw.metadata !== undefined && raw.metadata !== null) {
       if (!isPlainObject(raw.metadata)) {
@@ -293,14 +281,13 @@ export function validateBatchPayload(
       protocol: raw.protocol as AllowedProtocol,
       dst_port: raw.dst_port,
       event_type: eventType,
-      src_ip: srcIp,
+      ...(srcIp ? { src_ip: srcIp } : {}),
       src_ip_hash: null,
       src_country: srcCountry,
       src_asn: srcAsn,
       http_method: httpMethod,
       http_path_redacted: httpPathRedacted,
       fingerprint,
-      raw_object_key: rawObjectKey,
       metadata,
     });
   }

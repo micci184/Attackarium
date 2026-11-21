@@ -37,7 +37,6 @@ function loadConfig(): IngestConfig {
   }
 
   const ipHashSalt = (Deno.env.get("IP_HASH_SALT") ?? "").trim();
-  const storeRawIp = Deno.env.get("INGEST_ALLOW_RAW_IP") === "true";
 
   // Fail closed when IP_HASH_SALT is missing or weak so deployments cannot
   // silently fall back to unhashed IP handling.
@@ -52,7 +51,6 @@ function loadConfig(): IngestConfig {
     maxBatchEvents: parsePositiveInt(Deno.env.get("INGEST_MAX_BATCH_EVENTS"), 100),
     rateLimitPerMinute: parsePositiveInt(Deno.env.get("INGEST_RATE_LIMIT_PER_MINUTE"), 60),
     ipHashSalt,
-    storeRawIp,
   };
 }
 

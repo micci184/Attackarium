@@ -18,7 +18,7 @@ export const MOCK_SENSORS: PublicSensor[] = [
     id: "sensor-synthetic-01",
     name: "Synthetic Observatory Node 01",
     type: "combined",
-    region: "ap-northeast-1 (synthetic)",
+    region: "us-east-1 (synthetic)",
     is_active: true,
     last_heartbeat_at: new Date(BASE_MS - 35_000).toISOString(),
     last_event_at: new Date(BASE_MS - 42_000).toISOString(),

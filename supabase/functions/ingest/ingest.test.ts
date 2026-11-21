@@ -119,7 +119,7 @@ async function makeSignedRequest(options: {
 }
 
 describe("ingest Edge Function core security & idempotency", () => {
-  it("accepts a valid signed batch, redacts secrets, hashes src_ip, clears raw src_ip by default, and updates heartbeat", async () => {
+  it("accepts a valid signed batch, redacts secrets, hashes src_ip, and drops the plaintext address", async () => {
     const repo = new InMemoryIngestRepo();
     const events = generateSyntheticBatch(BASE_NOW_MS, 6);
     const req = await makeSignedRequest({
@@ -145,35 +145,15 @@ describe("ingest Edge Function core security & idempotency", () => {
     );
     assert.equal(httpEv.metadata.authorization, "[REDACTED]");
     assert.equal(httpEv.metadata.cookie, "[REDACTED]");
-    assert.equal(httpEv.src_ip, null);
+    assert.equal("src_ip" in httpEv, false);
+    assert.equal("raw_object_key" in httpEv, false);
     assert.ok(httpEv.src_ip_hash && httpEv.src_ip_hash.length === 64);
 
     // Verify SSH password in metadata is redacted
     const sshEv = repo.events.get("00000000-0000-4000-8000-000000000001");
     assert.ok(sshEv);
     assert.equal(sshEv.metadata.password, "[REDACTED]");
-    assert.equal(sshEv.src_ip, null);
-  });
-
-  it("retains raw src_ip only when storeRawIp is explicitly enabled", async () => {
-    const repo = new InMemoryIngestRepo();
-    const events = generateSyntheticBatch(BASE_NOW_MS, 1);
-    const req = await makeSignedRequest({
-      body: JSON.stringify({ events }),
-      requestId: "req-rawip-001",
-    });
-
-    const res = await handleIngestRequest(
-      req,
-      makeConfig({ storeRawIp: true }),
-      repo,
-      BASE_NOW_MS,
-    );
-    assert.equal(res.status, 200);
-    const saved = repo.events.get("00000000-0000-4000-8000-000000000001");
-    assert.ok(saved);
-    assert.equal(saved.src_ip, events[0].src_ip);
-    assert.ok(saved.src_ip_hash && saved.src_ip_hash.length === 64);
+    assert.equal("src_ip" in sshEv, false);
   });
 
   it("deduplicates retried events with a new request_id without creating duplicate rows", async () => {

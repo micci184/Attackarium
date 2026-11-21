@@ -2,88 +2,147 @@
 
 ## 1. Context
 
-This is an experimental, noncommercial **attack-observability** project. The goal is to publish
-well-labeled observations and trends, not to prove that a particular CVE was exploited
-successfully or to provide a globally representative view of attack traffic.
+Attackarium is a noncommercial **threat-observability service** that collects
+real unsolicited probes and attack attempts from operator-managed honeypots,
+retains historical observations over time, and publishes sanitized trends.
 
-Initial deployment: **one isolated AWS EC2 sensor host**, Supabase (PostgreSQL + Auth OAuth 2.1)
-for history and authorization, and Vercel (Next.js + Vercel Functions) for the public dashboard,
-read-only Remote MCP server, and operator-only Admin Console.
-Keep components separable so a second region, IP address, or sensor can be added later.
+**Attackarium is not a vulnerability database.** Original observation telemetry
+is the primary product; CVE, CISA KEV, and FIRST EPSS provide supporting context
+to interpret observed traffic without claiming confirmed exploitation or
+representing global Internet attack volume.
+
+Initial deployment: **one isolated operator-managed AWS EC2 sensor host in
+US East (N. Virginia), `us-east-1`** (ADR-018; Lightsail evaluation is closed;
+sensor application code remains cloud-agnostic),
+Supabase (PostgreSQL + Auth OAuth 2.1) for historical storage and authorization,
+and Vercel (Next.js + Vercel Functions) for the login-free public dashboard,
+read-only Remote MCP server, and operator-only Admin Console. MVP does not use
+AWS S3. Durable observations live in Supabase. The EC2 disk holds only temporary
+logs and the retry spool.
+
+User-contributed sensors (GreyNoise Project Swarm model) and general-purpose
+public REST APIs are explicitly out of scope.
 
 ## 2. Component responsibilities
 
 | Component | Responsibility | Placement |
 | --- | --- | --- |
-| OpenCanary | Low-interaction SSH, Telnet, FTP, MySQL, Redis decoys (final ports/config TBD) | AWS EC2 sensor host |
-| HTTP collector | Record bounded HTTP request metadata and selected sanitized payload samples | Same EC2 host, separate process |
-| Shipper | Read JSONL, normalize, assign stable event IDs, write bounded local durable spool, retry batches with backoff | AWS EC2 sensor host |
-| Ingest | Authenticate per-sensor HMAC; validate size/schema/timestamps; rate-limit and deduplicate; insert private events | Supabase Edge Function |
-| PostgreSQL | Store events, detections, vulnerability enrichments, rollups, reports, minimal MCP entitlements & aggregated usage, audit logs | Supabase |
-| Auth / OAuth 2.1 | Google/GitHub sign-in, OAuth 2.1 Authorization Code + PKCE for Remote MCP, MFA for operator admin | Supabase Auth |
-| Background jobs | Pull external feeds; run deterministic rules; aggregate; request AI summary; create review draft | Scheduled server-side jobs |
-| Public dashboard | Show safe rollups and curated redacted observations, never raw untrusted payloads; user MCP connection guide/consent | Vercel / Next.js |
-| Remote MCP Server | Read-only Streamable HTTP MCP tools via Vercel `mcp-handler` reusing shared read-only data layer; never Cloudflare Workers | Vercel Functions |
+| OpenCanary | Low-interaction SSH, Telnet, FTP, MySQL, Redis decoys | AWS EC2 sensor host |
+| HTTP collector | Record bounded HTTP/HTTPS request metadata and sanitized payload samples (non-executing, concurrency-capped) | Same EC2 host, separate process |
+| Shipper | Read JSONL, normalize, assign stable event IDs, write bounded SQLite spool, retry HTTPS batches with backoff | AWS EC2 sensor host |
+| Ingest | Authenticate per-sensor HMAC; stream-bound body; validate schema/timestamps; atomic rate-limit/replay/upsert RPC | Supabase Edge Function |
+| PostgreSQL | Store events, hourly/daily aggregates, patterns, sensor health/gaps, detections, CVE context, MCP entitlements/usage, audit logs | Supabase |
+| Auth / OAuth 2.1 | Google/GitHub sign-in, OAuth 2.1 Authorization Code + PKCE for Remote MCP, mandatory MFA (`aal2`) for operator admin | Supabase Auth |
+| Background jobs | Hourly/daily rollups, configurable retention cleanup, KEV/EPSS/NVD enrichment, deterministic rules, AI draft reports | Scheduled server-side jobs |
+| Public dashboard | Login-free sanitized dashboard (24h/30d trends, protocol & pattern breakdowns, representative HTTP paths, sensor health & coverage gaps) | Vercel / Next.js |
+| Remote MCP Server | Read-only Streamable HTTP MCP via Vercel `mcp-handler` (3 initial tools, no Cloudflare Workers, no general public REST API) | Vercel Functions |
 | Admin Console | Operator-only MCP Usage analytics, entitlement management, report review, audit trail (default-deny, server allowlist, MFA) | Vercel / Next.js |
 
 ## 3. Protocol and port assignment
 
-- OpenCanary: candidate decoys **22/SSH, 23/Telnet, 21/FTP, 3306/MySQL, 6379/Redis**.
+- OpenCanary: **22/SSH, 23/Telnet, 21/FTP, 3306/MySQL, 6379/Redis**.
 - HTTP collector: **80/HTTP, 443/HTTPS** after TLS/DNS is configured.
 - **Disable OpenCanary's HTTP and HTTPS decoys** when the dedicated collector owns 80/443.
-- Actual administrator SSH: different non-decoy port, key-only, allowlisted and preferably through a private management path.
-- Extra protocols (SNMP, MSSQL, VNC, etc.) are optional; enable only if supported, useful, and operationally safe.
+- Actual administrator SSH: separate non-decoy port, key-only, source-IP allowlisted, and isolated from decoy ports.
+- Keep sensor application code (`sensors/http-collector`, `sensors/shipper`, `sensors/opencanary`) free of AWS-specific SDK lock-in so it remains portable.
 
-OpenCanary's built-in HTTP/HTTPS mainly emulates login pages; it is **not** a general Web exploit
-sensor. The HTTP collector must never execute captured requests, fetch attacker-supplied URLs,
-follow redirects, or pass payloads to a shell.
+The HTTP collector must never execute captured requests, fetch attacker-supplied
+URLs, follow redirects, or pass payloads to a shell.
 
 ## 4. Data path
 
-1. Sensor receives unsolicited inbound traffic and emits a structured local record.
-2. Shipper normalizes the record, removes/isolates secrets, attaches sensor ID and source fingerprint,
-   then puts it in a disk-capped spool before HTTP transmission.
-3. Sender batches events over HTTPS, signing body + timestamp + sensor ID with a sensor-specific key.
-4. Ingest rejects invalid signatures, old timestamps, oversize bodies, unexpected fields and excess requests;
-   upserts events by a stable unique ID. Replay protection must also persist seen event IDs.
-5. Background jobs enrich events with pattern matches, KEV membership, EPSS and CVE metadata.
-6. The public Next.js site reads only RLS-protected aggregate views or a read-only projection.
-7. AI receives only redacted, aggregated evidence and writes a draft report, not a final assertion.
+1. Sensor receives unsolicited inbound traffic and emits a structured local JSONL record.
+2. Shipper normalizes the record, strips credentials, assigns a stable event UUID,
+   and persists it to a disk-capped SQLite WAL spool before transmission.
+3. Shipper sends signed HTTPS batches (`sensor_id`, `timestamp`, `request_id`, `raw_body`)
+   with exponential backoff and poison-pill isolation on permanent 400 errors.
+4. Ingest streams the body within strict byte limits, verifies HMAC with uniform
+   anti-enumeration errors, replaces `src_ip` with a keyed HMAC and discards the address, and
+   commits rate-limit check + anti-replay receipt + idempotent upsert + sensor
+   heartbeat inside a single atomic PostgreSQL transaction (`commit_ingest_batch`).
+5. Background jobs roll up hourly/daily aggregates, record observed patterns and
+   sensor coverage gaps, enforce configurable retention on detailed records, and
+   (Phase 2) enrich events with deterministic rules and CVE/KEV/EPSS context.
+6. The public Next.js site reads only `security_barrier` sanitized views/aggregates.
+7. AI receives only sanitized, aggregated evidence and generates a draft report
+   for mandatory human review before any X publication.
 
-## 5. External intelligence
+## 5. Attack data taxonomy and external intelligence
+
+Attack observations are classified along **two orthogonal axes** so raw attempts
+are never confused with confirmed exploitation:
+
+1. **Observation category (`attack_category`):**
+   - `port_scan` — port scanning and service discovery
+   - `auth_attempt` — SSH / Telnet / FTP / DB login attempts
+   - `http_path_probe` — HTTP path/file/CMS discovery
+   - `web_attack_attempt` — web application attack payloads/probes
+   - `suspected_cve_probe` — requests resembling patterns linked to a known CVE
+2. **Evidence / confidence level (`classification`):**
+   - `observed`: literal protocol/action/request metadata directly captured.
+   - `indicator_match`: explicit versioned signature matched with recorded evidence.
+   - `candidate_cve`: documented hypothesis with rule ID/version, evidence, confidence, and source metadata — **never proof of exploitation**.
 
 | Feed | Usage | Update cadence |
 | --- | --- | --- |
 | CISA KEV | Whether a CVE is catalogued as known exploited in the wild | Daily |
-| FIRST EPSS | Daily estimate that a published CVE will be exploited in the next 30 days | Daily |
-| NVD / CVE source | Description, affected products and references for *candidate* CVEs | As needed; cached |
-| Optional MITRE ATT&CK | Contextual technique classification, not a vulnerability ID | Later |
+| FIRST EPSS | Daily 30-day exploitation probability forecast for a published CVE | Daily |
+| NVD / CVE source | Description, affected products, and references for *candidate* CVEs only | On demand; cached |
 
-Rule match levels:
+EPSS is a vulnerability-level forecast, not the probability that a specific
+observed request succeeded.
 
-- `observed`: literal protocol/action/request metadata directly captured.
-- `indicator_match`: an explicit signature matched, with versioned rule and evidence.
-- `candidate_cve`: a *hypothesis*, not proof of exploitation.
+## 6. Public web dashboard (no login required)
 
-**Never** label a mere URL scan, banner probe or login attempt as confirmed CVE exploitation.
-EPSS is a vulnerability-level forecast, not the likelihood that this particular request succeeded.
+General users can inspect sanitized observations without logging in:
 
-## 6. Public-facing product
+- **Overview & 30-Day Trends:** Last 24h event count, day-over-day / recent change,
+  30-day time-series volume, protocol breakdown, observed attack patterns,
+  representative HTTP paths/request tendencies, observation window, and last
+  updated timestamp.
+- **Sensor Health & Coverage Gaps:** Active/healthy sensor count, heartbeat
+  freshness, observation scope, and explicit visual distinction between
+  **zero observed events** and **collection outage / missing data**.
+- **Event Explorer (MVP minimal filter):** Protocol/basic filtering over sanitized
+  records and redacted detail view (no raw IPs, credentials, or raw payloads).
+- **Methodology & Limitations:** Prominent disclosure that a small number of
+  sensors represent a biased sample, not global Internet attack volume.
 
-- Overview: today / last 24 hours event volume, monitored protocols, latest sample events, sensor health.
-- Live stream: sanitized recent events, polled/aggregated every 15-60 seconds initially; no per-event paid realtime dependency.
-- Trends: hour/day, protocol, target port, broad geo/ASN categories, signature categories.
-- Event details: sanitized request fields + match evidence and confidence, with raw payload private.
-- Vulnerabilities: only candidate CVEs actually linked by supported evidence; show KEV status and EPSS date.
-- Daily report: changed patterns, caveats, citation sources, human-reviewed share text.
+## 7. Remote MCP architecture (Phase 2 — Vercel Functions + Supabase Auth OAuth 2.1)
 
-## 7. Scalability boundaries
+Remote MCP runs on **Vercel Functions** via official `mcp-handler` (Streamable
+HTTP) and reuses the shared read-only query layer (`apps/web/src/lib/`). No
+general-purpose public REST API is exposed; HTTP endpoints are restricted to
+MCP, authentication, and sensor ingestion.
 
-MVP uses **PostgreSQL**, not TimescaleDB/Kafka/Elasticsearch. Apply indexes and daily aggregates.
-If event write volume grows, partition by time, move cold events to private compressed object storage,
-or later upgrade database compute. Avoid shipping all raw records to the public UI.
+- **Discovery:** Publish RFC 9728 OAuth Protected Resource Metadata
+  (`/.well-known/oauth-protected-resource`) pointing MCP clients to the Supabase
+  Auth OAuth 2.1 Issuer and supported read-only scopes (e.g., `mcp:read`).
+  Unauthenticated requests to `/api/mcp` return `401` with `WWW-Authenticate`.
+- **OAuth 2.1 Flow:** Authorization Code + PKCE (`S256`) via Supabase Auth
+  (Google or GitHub login) plus Terms acceptance and OAuth client consent.
+- **Per-Request Verification & Immediate Revocation:** Every MCP request
+  verifies JWT signature (JWKS), `iss`, `aud`, `exp`, and `scope`, then performs
+  a live server-side DB check of `user_mcp_entitlements` to enforce all 5 gates:
+  (1) Google/GitHub login, (2) current Terms accepted, (3) `is_suspended = false`,
+  (4) `mcp_enabled = true`, (5) OAuth consent/scope. Account suspension or
+  entitlement revocation takes effect immediately on the next call even if a
+  short-lived JWT has not yet expired.
+- **Initial Read-Only Tool Catalog (strictly 3 tools):**
+  - `get_attack_trends` — time-series volume and protocol/category shifts (with period/protocol filters)
+  - `get_attack_patterns` — observed attack patterns and representative sanitized HTTP paths (with period/protocol filters)
+  - `get_observation_summary` — 24h/window KPIs, recent changes, sensor health, and coverage caveats (with period/protocol filters)
+- **Strict Boundaries:** Read-only only; no raw logs, no secrets, no DB writes,
+  no admin tools; per-user rate limits; zero prompt/token logging; MCP Usage is
+  exclusively visible in the operator-only Admin Console.
 
-## 8. Source references (official)
+## 8. Scalability boundaries
+
+MVP uses **PostgreSQL** with hourly/daily aggregate tables and indexes rather
+than TimescaleDB, Kafka, Elasticsearch, or SIEM stacks. Detailed events use
+configurable retention while long-term aggregates remain compact.
+
+## 9. Source references (official)
 
 - [OpenCanary service configuration](https://opencanary.readthedocs.io/en/latest/starting/configuration.html)
 - [OpenCanary Linux Web Server](https://opencanary.readthedocs.io/en/latest/services/webserver.html)

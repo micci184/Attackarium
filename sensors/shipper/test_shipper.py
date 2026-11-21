@@ -2,10 +2,13 @@ import http.server
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from shipper import (
+    SPOOL_MAX_AGE_SECONDS,
+    BoundedSqliteSpool,
     EventShipper,
     ShipperConfig,
     build_signature_payload,
@@ -280,6 +283,28 @@ class ShipperIntegrationTests(unittest.TestCase):
             self.assertNotIn(bad_id, self.state.received_event_ids)
         finally:
             shipper.close()
+
+
+    def test_purges_spool_rows_older_than_24h(self) -> None:
+        spool = BoundedSqliteSpool(Path(self.tmpdir.name) / "age.sqlite3", 64 * 1024)
+        try:
+            self.assertTrue(
+                spool.enqueue(
+                    {
+                        "id": "00000000-0000-4000-8000-000000000099",
+                        "src_ip": "198.51.100.20",
+                    }
+                )
+            )
+            spool.conn.execute(
+                "UPDATE spool_events SET created_at = ?",
+                (time.time() - SPOOL_MAX_AGE_SECONDS - 10,),
+            )
+            spool.conn.commit()
+            self.assertEqual(spool.purge_expired(), 1)
+            self.assertEqual(spool.count(), 0)
+        finally:
+            spool.close()
 
 
 if __name__ == "__main__":

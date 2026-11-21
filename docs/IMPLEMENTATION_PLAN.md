@@ -1,130 +1,129 @@
 # Implementation plan (MVP)
 
-Last reviewed: 2026-11-21 (JST). Status: **planned, not deployed**.
+Last reviewed: 2026-11-21 (JST). Status: **Phase 1 foundation is on `main` (PR #31). No cloud resources or public honeypot are deployed yet. Initial AWS region is `us-east-1` (N. Virginia).**
 
-## 1. Product requirements
+## 1. Product definition and primary goal
 
-**Target:** A small, noncommercial public site showing what the project's own Internet-facing
-honeypot sensors observed over time and what that may imply about broader threat trends.
+**Attackarium** is a noncommercial threat-observability service that collects real
+unsolicited Internet probes and attack attempts on **operator-managed honeypots**,
+stores historical observations over time, and publishes sanitized trends via a
+login-free public web dashboard and an authenticated, read-only Remote MCP server.
 
-Must-have:
+**Attackarium is not a vulnerability database.** Original observation telemetry is
+the primary dataset; CVE, CISA KEV, and FIRST EPSS provide supporting context to
+interpret observed patterns without claiming confirmed exploitation.
 
-1. OpenCanary observations for SSH/Telnet/FTP/DB services.
-2. Lightweight HTTP/HTTPS request telemetry to supplement OpenCanary.
-3. Authenticated event ingestion, retry, de-duplication, timestamped historical storage.
-4. Public dashboard with live-ish refresh, protocol trends, historical comparisons.
-5. Evidence-based signature rules and **candidate** CVE matching; KEV/EPSS enrichment.
-6. Daily AI summary with source evidence and human review before an X post.
-7. Sensible operational/abuse handling and a documented cost ceiling.
-
-Not in MVP:
-
-- T-Pot, Kibana, Elastic Stack, Kafka, SIEM-grade correlation.
-- Full interaction SSH shell emulation (Cowrie can be added later).
-- An exploit framework, malware sandbox/execution or active attacker callbacks.
-- A full CVE database mirror or automatic claims that a CVE exploit succeeded.
-- Multi-region rollout, automatic X publication without human review, commercial billing.
+**Primary MVP goal:** Reliably collect, store, and explain original attack
+observations for **at least 30 consecutive days** on an isolated **AWS EC2** sensor
+host (`OpenCanary` + minimal HTTP/HTTPS collector + Supabase + Vercel + Remote MCP).
 
 ## 2. Implementation phases
 
-### Phase 0 — Policy and operational gate
+### Phase 0 — Policy and pre-deployment gate
 
-- [ ] Pick AWS account, EC2 region/instance sizing, DNS/domain strategy, and monthly spend cap.
-- [ ] Confirm AWS acceptable-use / policy alignment for the planned *public, responding low-interaction honeypot* on **EC2**.
-- [ ] Confirm incident/abuse report contact, credentials rotation, teardown procedure, and log retention.
-- [ ] Decide whether IP addresses will be retained privately (and for how long) and document publication policy.
+Required operational decisions before provisioning AWS resources or exposing a live
+sensor (these do not block local development, documentation, or Issue organization;
+**IP/payload retention policy must be finalized before production DB persistence**):
 
-**Done when:** no unresolved platform-policy question remains for public deployment.
+- [x] Confirm AWS region: **US East (N. Virginia), `us-east-1`** (ADR-018). AWS EC2 is formally selected; Lightsail evaluation is closed. Use the existing AWS account.
+- [x] Confirm host shape in `us-east-1`: `t3a.small` (2 vCPU / 2 GiB), **standard** CPU credits, Ubuntu Server LTS, encrypted gp3 **20 GiB**, one public IPv4, one sensor (ADR-019).
+- [x] Confirm monthly budget target **40 USD**, one AWS Budget with email at 50/80/100%, and shared cost-allocation tags (ADR-020). Budgets do not stop spend.
+- [x] Confirm abuse handling uses the existing AWS account contact, and emergency response is the manual runbook in `docs/RUNBOOK.md` (ADR-021).
+- [x] Finalize retention: no raw IP or raw payload in Supabase; EC2 raw logs within 24 hours; sanitized events at least 30 days; daily aggregates at least 1 year (ADR-022, ADR-023).
+- [x] Select MIT for Attackarium source code only (ADR-024).
+- [ ] Owner explicitly approves AWS provisioning and public sensor exposure.
 
-### Phase 1 — Data foundation and UI with test traffic
+**Done when:** the policy items above are documented and the owner explicitly
+approves AWS provisioning and public sensor exposure. Policy documentation alone
+does not authorize resource creation.
 
-- [ ] Create Next.js TypeScript app at `apps/web` and deploy preview to Vercel.
-- [ ] Set up Supabase project and migration scripts (see `DATA_MODEL.md`).
-- [ ] Implement `supabase/functions/ingest` with strict HMAC verification, JSON schema bounds,
-      per-sensor quotas, timestamps, replay detection, dedupe, private inserts.
-- [ ] Add deterministic synthetic fixture generator/tests including malformed and duplicate batches.
-- [ ] Build public Overview, Trends and sanitized Event List; implement server-side pagination.
-- [ ] Protect all tables with RLS; public role can select only sanitized views/aggregates.
-- [ ] Add a migration check, TypeScript lint/typecheck and API tests to CI.
+### Phase 1 — Observation Platform MVP (Top Priority: 30-Day Stable Collection)
 
-**Done when:** sample events from a simulated client are stored and safely visible on the dashboard;
-bad, replayed, or oversized requests are rejected.
+Implementation scope:
 
-### Phase 2 — Isolated honeypot sensors
+1. OpenCanary multi-protocol decoys (`22/SSH`, `23/Telnet`, `21/FTP`, `3306/MySQL`, `6379/Redis`; HTTP/HTTPS decoys disabled).
+2. Minimal, non-executing HTTP/HTTPS collector (`80`/`443` exclusive ownership, strict header/path/body/concurrency/timeout caps).
+3. Authenticated (HMAC), streaming-bounded, replay-resistant, rate-limited, idempotent event ingestion (`supabase/functions/ingest` + atomic `commit_ingest_batch` RPC).
+4. Bounded local SQLite spool + shipper with retry/backoff, poison-pill isolation, and cloud-agnostic application code.
+5. Isolated AWS EC2 sensor provisioning via IaC with layered egress allowlisting (EC2 Security Group + host OS `nftables`/`iptables`).
+6. Supabase PostgreSQL historical storage with default-deny RLS, `security_barrier` public views, hourly/daily rollups, observed patterns, sensor outage tracking, and configurable detailed-event retention.
+7. Login-free public Next.js dashboard showing:
+   - Last 24h event count, recent/day-over-day changes, and 30-day time-series trends
+   - Protocol breakdown, observed attack patterns, and representative sanitized HTTP paths
+   - Observation window, last updated timestamp, sensor health/freshness, observation caveats, and **explicit distinction between zero observed events and collection outages**
+   - Minimal event explorer filtering (advanced search deferred to Post-MVP) and core accessibility/responsive/loading/error/empty states.
 
-- [ ] Provision a minimal Linux host through IaC, with cost alerts and maintenance SSH access.
-- [ ] Configure OpenCanary services, immutable identifiers and JSON/file logging.
-- [ ] Implement minimal HTTP/HTTPS collector: method, bounded path, selected header metadata,
-      limited body sampling; reject oversize requests without executing them.
-- [ ] Ensure port ownership is exclusive (HTTP collector owns 80/443, OpenCanary's HTTP decoys disabled).
-- [ ] Implement shipper with SQLite/bounded disk spool, at-least-once delivery, exponential backoff,
-      stable event IDs and retry/queue metrics.
-- [ ] Restrict **outbound** communications at the host OS layer; test inability to contact arbitrary IPs.
-- [ ] Run controlled localhost/safe approved test traffic before opening to the Internet.
+**Done when:**
+- External events arriving at the sensor are durably stored in Supabase.
+- Under normal operation, new observations appear on the public dashboard within ~60 seconds.
+- Re-sending the same event never creates duplicate DB rows or inflated counts.
+- During temporary ingest outages, no events are silently lost within the configured local spool cap.
+- Unauthorized users (`anon` / `authenticated`) cannot read private tables or execute privileged RPCs.
+- 30 days of historical telemetry are inspectable as time-series trends.
+- Zero-observation periods are clearly distinguishable from sensor outage / collection gaps.
 
-**Done when:** protocol test events appear once in Supabase after retries; loss and queue limits are known.
+### Phase 2 — Public Service MVP
 
-### Phase 3 — Vulnerability context
+Implementation scope:
 
-- [ ] Import current CISA KEV dataset once daily; record source version/retrieval date.
-- [ ] Import EPSS scores daily, using API for matched CVEs or daily CSV for bulk needs.
-- [ ] Add curated, versioned signatures; store pattern ID, match confidence and evidence field.
-- [ ] Fetch NVD/CVE metadata **only** for candidates, respect provider rate limits and cache results.
-- [ ] Show "suspected related CVE" prominently distinct from confirmed exploit execution.
-- [ ] Add tests for false positives and unknown patterns.
+1. **Basic CVE / CISA KEV / FIRST EPSS context:** Daily KEV and EPSS feeds, versioned deterministic detection rules with recorded evidence/confidence/source metadata, on-demand cached NVD lookup for candidate CVEs only, and clear UI disclaimers avoiding confirmed-exploit claims.
+2. **Authenticated Read-Only Remote MCP (Vercel Functions + `mcp-handler`, Streamable HTTP):**
+   - Supabase Auth OAuth 2.1 Authorization Code + PKCE (Google/GitHub login) + RFC 9728 discovery metadata.
+   - Server-side enforcement of all 5 gates on every request (login, current Terms acceptance, active account, explicit MCP entitlement, OAuth consent/scope) with immediate revocation and per-user rate limits.
+   - Strictly limited to **3 read-only tools** (with period/protocol filters):
+     - `get_attack_trends`
+     - `get_attack_patterns`
+     - `get_observation_summary`
+   - No raw logs, no secrets, no DB writes, no admin actions, and no general-purpose public REST API.
+   - General-user `/mcp` page for connection guide, tool catalog, and Terms/consent management (no usage count dashboard).
+3. **Operator-Only Admin Console & MCP Usage:**
+   - Default-deny, server-side `ADMIN_ALLOWED_USER_IDS` allowlist (never frontend-only hiding or DB `is_admin` alone), mandatory MFA (`aal2`), server-side API authorization, and append-only `admin_audit_logs`.
+   - Admin-only `mcp_usage_buckets` analytics separating `initialize` vs `tool_call` with zero prompt or token logging.
+4. **AI Daily Analysis & X Post Drafts:**
+   - Generate draft daily summaries strictly from sanitized aggregates and redacted evidence with explicit observability caveats.
+   - Mandatory human review (`draft` → `reviewed`/`rejected` → `published`) and exportable X draft text; never auto-post.
 
-**Done when:** one known synthetic signature generates a documented candidate match,
-and a benign/probing sample does not generate a false confirmed-exploit label.
+**Done when:**
+- Observations can be explained with explicit evidence and scope caveats.
+- Every CVE association displays confidence, matched rule, and source metadata without claiming confirmed exploitation.
+- Entitled MCP users can query aggregated data via the 3 read-only tools; unentitled, unaccepted, suspended, or revoked users are immediately denied.
+- General users cannot access or view any admin function or MCP Usage analytics.
+- AI drafts stay grounded in observed facts and X posts require explicit human approval.
 
-### Phase 4 — Reporting, review, production readiness
+### Evaluation — 30-Day Value Validation
 
-- [ ] Add periodic rollups and anomaly comparisons: 24-hour baseline, prior day/week.
-- [ ] Generate a daily AI summary from **redacted aggregates and matched evidence**, with
-      explicit observability limitations; save prompt/model/version for reproducibility.
-- [ ] Add a draft/review state and exportable X text; **no automated posting** until reviewed.
-- [ ] Add backup/export job, retention policy, disk/DB usage alerts and runbook.
-- [ ] Perform auth/RLS tests, secret scanning, log redaction tests and failure recovery drill.
-- [ ] Publish the dashboard with explanatory methodology and privacy notices.
+After 30 days of continuous Phase 1 collection (and Phase 2 completion), evaluate honestly:
 
-**Done when:** dashboard shows real observations and historical trends,
-the daily report can be reviewed and exported, and sensor/DB failure modes have been tested.
+1. What probe and attack attempts were actually observed?
+2. Were there meaningful day-over-day or week-over-week shifts?
+3. Did specific attack patterns rise or decline?
+4. Could observed events be credibly explained alongside external CVE/KEV/EPSS context?
+5. Did the public web dashboard surface useful findings?
+6. Did Remote MCP improve the analytical workflow?
 
-### Phase 5 — Remote MCP, OAuth 2.1 & Operator Admin Console
+If few notable attacks were observed, report that accurately. Do **not** set
+arbitrary event-count or finding-count success targets.
 
-- [ ] Add minimal DB tables/RLS for MCP entitlements (`user_mcp_entitlements`), aggregated MCP Usage (`mcp_usage_buckets`, separating initialize vs tool calls), and append-only `admin_audit_logs`.
-- [ ] Enable Supabase Auth (Google/GitHub) as OAuth 2.1 Authorization Code + PKCE server and publish required OAuth metadata.
-- [ ] Build general-user MCP page: connection instructions, available read-only tool catalog, Terms acceptance, and OAuth consent/revocation (**no usage count dashboard for general users**).
-- [ ] Implement read-only Remote MCP server on **Vercel Functions** via official `mcp-handler` (Streamable HTTP, no Cloudflare Workers), reusing shared read-only query helpers, enforcing all 5 server-side authz gates + per-user rate limits, and logging zero prompts/tokens.
-- [ ] Build operator-only Admin Console & protected admin APIs (default-deny, server-side admin ID allowlist, mandatory MFA, audit logs) including admin-only MCP Usage analytics.
+## 3. Explicit non-goals (out of MVP scope)
 
-**Done when:** Cursor/MCP clients connect via OAuth 2.1 PKCE, unauthenticated/unentitled/unaccepted/suspended users are blocked, MCP cannot write or administer DB, and MCP Usage + admin APIs are accessible exclusively to the MFA-verified operator.
-
-## 3. Minimal release acceptance checklist
-
-- Live event visible on dashboard within an agreed refresh window (initial goal: 60 seconds).
-- Sensor offline/Edge unavailable -> spool retry; **no silent log loss** within defined spool capacity.
-- Duplicate or replayed event -> no duplicate DB row.
-- Public anonymous user cannot read raw IPs, credentials, payloads, or ingest credentials.
-- All CVE associations disclose confidence, matched rule, and source metadata.
-- API cost/volume limits and retention are tested with malformed/high-rate input.
-- A human can approve or reject an AI-generated daily summary before any X publication.
-- Documentation states that one IP/region is a **biased sample**, not a global Internet attack census.
+- User-contributed sensors (GreyNoise Project Swarm model)
+- General-purpose public REST APIs (only MCP, auth, and sensor ingest endpoints are permitted)
+- T-Pot, Elasticsearch, Kibana, Kafka, or full SIEM platforms
+- Multi-region sensor rollout
+- Executing attacker code or running malware sandboxes
+- Mirroring the full CVE database
+- Fully automated X posting without human approval
+- Commercialization or billing features
+- Post-MVP enhancements tracked separately: advanced explorer search, dark mode toggle, statistical anomaly detection, advanced Threat Intelligence comparisons, multi-sensor campaign analysis, additional MCP tools, and authenticated non-public CSV export.
 
 ## 4. Initial cost plan
 
-- AWS EC2 sensor: minimal isolated EC2 instance + public IPv4 + EBS (exact instance size & region confirmed in Phase 0 with explicit monthly spend cap and billing alerts).
-- Vercel Hobby: free only for eligible personal/noncommercial usage and within limits (hosts Next.js dashboard, Admin Console, and Vercel Functions Remote MCP).
-- Supabase Free: 500 MB database, 1 GB Storage, Supabase Auth (at the referenced date); limits require monitoring.
-- LLM token usage, domain, backups/archival, traffic overages: **variable, not included**.
-- Do not buy paid infrastructure or deploy a public honeypot until the owner approves the concrete plan.
+- **AWS EC2 sensor (`us-east-1` list prices, 730 hours, excluding tax and data transfer):** `t3a.small` Linux on-demand about **$0.0188/hour ($13.72)**, encrypted gp3 20 GiB at **$0.08/GB-month ($1.60)** with included 3,000 IOPS and 125 MB/s, one in-use public IPv4 at **$0.005/hour ($3.65)**. Fixed list-price subtotal is about **$19** before egress. Standard CPU credits throttle at a 20% baseline (24 credits/hour) and do not add surplus-credit charges. Recheck the AWS price list before provisioning. The **40 USD** budget leaves room for egress and tax. AWS Budgets emails at 50/80/100% and does not stop the instance.
+- **Vercel Hobby:** Free only for eligible personal/noncommercial usage within platform limits (hosts Next.js public dashboard, Admin Console, and Vercel Functions Remote MCP).
+- **Supabase Free:** 500 MB database, 1 GB storage, Supabase Auth (monitor quotas and tune configurable retention).
+- **Variable / excluded:** LLM API tokens, custom domain, independent offsite backup storage, traffic overages.
+- Do not purchase paid infrastructure or deploy a public honeypot until Phase 0 is complete and explicitly approved by the owner.
 
 References: [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/),
 [Vercel Hobby](https://vercel.com/docs/plans/hobby),
 [Supabase quotas](https://supabase.com/docs/guides/platform/billing-on-supabase).
-
-## 5. Delivery boundaries
-
-This repository currently contains **documentation and placeholders only**.
-Deployment needs an AWS account/region, service credentials, domain/DNS if TLS on 443 is desired,
-the user's final policy confirmation, and a GitHub remote/visibility decision.
-Nothing in this repository requires real credentials for local review.

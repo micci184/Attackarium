@@ -10,8 +10,8 @@ export function MethodologyBanner({ sourceMode }: MethodologyBannerProps) {
     >
       <p className="min-w-0 flex-1 leading-relaxed">
         <span className="font-semibold text-gray-900">Observation Scope:</span>{" "}
-        Metrics reflect unsolicited traffic observed on a small number of low-interaction
-        honeypots, not global Internet attack volume. Candidate CVE links are{" "}
+        Metrics reflect unsolicited traffic observed on one low-interaction honeypot
+        in US East (N. Virginia), not global Internet attack volume. Candidate CVE links are{" "}
         <span className="font-medium text-gray-900">not proof of successful exploitation</span>.
       </p>
       <span
