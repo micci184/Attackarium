@@ -19,14 +19,12 @@ insert into public.attack_events (
   protocol,
   dst_port,
   event_type,
-  src_ip,
   src_ip_hash,
   src_country,
   src_asn,
   http_method,
   http_path_redacted,
   fingerprint,
-  raw_object_key,
   metadata
 )
 values (
@@ -36,15 +34,13 @@ values (
   'http',
   80,
   'http_probe',
-  '198.51.100.42'::inet,
   'salted-hash-example',
   'JP',
   'AS64512',
   'GET',
   '/wp-login.php?user=[REDACTED]',
   'fp-http-001',
-  'raw_http_samples/2026-11-21/11111111.bin',
-  '{"secret_header":"DO_NOT_EXPOSE","authorization":"Bearer synthetic"}'::jsonb
+  '{"private_note":"DO_NOT_EXPOSE"}'::jsonb
 );
 
 -- Verify idempotent upsert on duplicate event_id
@@ -185,11 +181,29 @@ begin
   end if;
 end $$;
 
+-- 2a. Raw source IP and raw payload pointers are not columns
+do $$
+declare
+  v_raw_cols text[];
+begin
+  select array_agg(column_name)
+  into v_raw_cols
+  from information_schema.columns
+  where table_schema = 'public'
+    and table_name = 'attack_events'
+    and column_name in ('src_ip', 'raw_object_key');
+
+  if v_raw_cols is not null then
+    raise exception 'Raw IP or payload columns still exist on attack_events: %', v_raw_cols;
+  end if;
+end $$;
+
 -- 2b. Verify atomic commit_ingest_batch RPC (idempotency, replay, rate limit, unknown sensor)
 do $$
 declare
   v_status text;
   v_inserted integer;
+  v_hash text;
   v_now timestamptz := now();
   v_batch jsonb := jsonb_build_array(
     jsonb_build_object(
@@ -198,7 +212,8 @@ declare
       'protocol', 'ssh',
       'dst_port', 22,
       'event_type', 'ssh_login_attempt',
-      'src_ip', null,
+      'src_ip', '198.51.100.42',
+      'raw_object_key', 'raw_http_samples/ignored.bin',
       'src_ip_hash', 'deadbeef',
       'src_country', 'JP',
       'src_asn', 'AS64512',
@@ -218,6 +233,13 @@ begin
   );
   if v_status <> 'ok' or v_inserted <> 1 then
     raise exception 'Expected ok/1 from commit_ingest_batch, got %/%', v_status, v_inserted;
+  end if;
+
+  select src_ip_hash into v_hash
+  from public.attack_events
+  where id = '33333333-3333-4333-8333-333333333333';
+  if v_hash <> 'deadbeef' then
+    raise exception 'Expected keyed hash to be stored and raw IP discarded, got %', v_hash;
   end if;
 
   -- Replay of same request_id is rejected

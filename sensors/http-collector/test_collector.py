@@ -1,3 +1,4 @@
+import datetime as dt
 import http.client
 import json
 import tempfile
@@ -5,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from collector import CollectorConfig, create_server
+from collector import CollectorConfig, create_server, prune_temp_jsonl
 
 
 class HttpCollectorSecurityTests(unittest.TestCase):
@@ -117,6 +118,22 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             records[0]["metadata"]["headers"].get("referer"),
             "https://example.invalid/auth?session=[REDACTED]&next=/home",
         )
+
+    def test_prunes_jsonl_records_older_than_24h(self) -> None:
+        now = dt.datetime(2026, 11, 21, tzinfo=dt.timezone.utc)
+        old = (now - dt.timedelta(hours=25)).isoformat().replace("+00:00", "Z")
+        fresh = now.isoformat().replace("+00:00", "Z")
+        self.output_path.write_text(
+            json.dumps({"observed_at": old, "src_ip": "192.0.2.1"})
+            + "\n"
+            + json.dumps({"observed_at": fresh, "src_ip": "192.0.2.2"})
+            + "\n",
+            encoding="utf-8",
+        )
+        prune_temp_jsonl(self.output_path, now=now)
+        records = self._read_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["src_ip"], "192.0.2.2")
 
     def test_rejects_requests_when_concurrency_cap_is_exhausted(self) -> None:
         # Exhaust all permits in the server semaphore to deterministically test 503 shedding

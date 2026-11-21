@@ -16,7 +16,9 @@ US East (N. Virginia), `us-east-1`** (ADR-018; Lightsail evaluation is closed;
 sensor application code remains cloud-agnostic),
 Supabase (PostgreSQL + Auth OAuth 2.1) for historical storage and authorization,
 and Vercel (Next.js + Vercel Functions) for the login-free public dashboard,
-read-only Remote MCP server, and operator-only Admin Console.
+read-only Remote MCP server, and operator-only Admin Console. MVP does not use
+AWS S3. Durable observations live in Supabase. The EC2 disk holds only temporary
+logs and the retry spool.
 
 User-contributed sensors (GreyNoise Project Swarm model) and general-purpose
 public REST APIs are explicitly out of scope.
@@ -55,7 +57,7 @@ URLs, follow redirects, or pass payloads to a shell.
 3. Shipper sends signed HTTPS batches (`sensor_id`, `timestamp`, `request_id`, `raw_body`)
    with exponential backoff and poison-pill isolation on permanent 400 errors.
 4. Ingest streams the body within strict byte limits, verifies HMAC with uniform
-   anti-enumeration errors, hashes `src_ip` and clears plaintext by default, and
+   anti-enumeration errors, replaces `src_ip` with a keyed HMAC and discards the address, and
    commits rate-limit check + anti-replay receipt + idempotent upsert + sensor
    heartbeat inside a single atomic PostgreSQL transaction (`commit_ingest_batch`).
 5. Background jobs roll up hourly/daily aggregates, record observed patterns and

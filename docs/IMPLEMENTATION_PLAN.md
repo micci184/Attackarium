@@ -25,15 +25,17 @@ Required operational decisions before provisioning AWS resources or exposing a l
 sensor (these do not block local development, documentation, or Issue organization;
 **IP/payload retention policy must be finalized before production DB persistence**):
 
-- [x] Confirm AWS region: **US East (N. Virginia), `us-east-1`** (ADR-018). AWS EC2 is formally selected; Lightsail evaluation is closed. This does not authorize provisioning.
-- [ ] Confirm EC2 instance type and EBS volume capacity in `us-east-1`.
-- [ ] Confirm monthly cost ceiling and AWS Budgets / billing alerts.
-- [ ] Confirm Abuse-response contact, emergency shutdown/teardown runbook, and credential rotation procedure.
-- [ ] Finalize source IP address and raw payload retention policy (plaintext `src_ip` is cleared after keyed hashing by default).
-- [ ] Select repository and published-data license.
+- [x] Confirm AWS region: **US East (N. Virginia), `us-east-1`** (ADR-018). AWS EC2 is formally selected; Lightsail evaluation is closed. Use the existing AWS account.
+- [x] Confirm host shape in `us-east-1`: `t3a.small` (2 vCPU / 2 GiB), **standard** CPU credits, Ubuntu Server LTS, encrypted gp3 **20 GiB**, one public IPv4, one sensor (ADR-019).
+- [x] Confirm monthly budget target **40 USD**, one AWS Budget with email at 50/80/100%, and shared cost-allocation tags (ADR-020). Budgets do not stop spend.
+- [x] Confirm abuse handling uses the existing AWS account contact, and emergency response is the manual runbook in `docs/RUNBOOK.md` (ADR-021).
+- [x] Finalize retention: no raw IP or raw payload in Supabase; EC2 raw logs within 24 hours; sanitized events at least 30 days; daily aggregates at least 1 year (ADR-022, ADR-023).
+- [x] Select MIT for Attackarium source code only (ADR-024).
+- [ ] Owner explicitly approves AWS provisioning and public sensor exposure.
 
-**Done when:** all Phase 0 operational/policy items are documented and the owner
-explicitly approves AWS provisioning and public sensor exposure.
+**Done when:** the policy items above are documented and the owner explicitly
+approves AWS provisioning and public sensor exposure. Policy documentation alone
+does not authorize resource creation.
 
 ### Phase 1 — Observation Platform MVP (Top Priority: 30-Day Stable Collection)
 
@@ -116,7 +118,7 @@ arbitrary event-count or finding-count success targets.
 
 ## 4. Initial cost plan
 
-- **AWS EC2 sensor:** Single minimal isolated EC2 instance in **`us-east-1` (N. Virginia)** + public IPv4 + EBS volume (instance type, EBS size, monthly cap, and AWS Budgets still confirmed in Phase 0).
+- **AWS EC2 sensor (`us-east-1` list prices, 730 hours, excluding tax and data transfer):** `t3a.small` Linux on-demand about **$0.0188/hour ($13.72)**, encrypted gp3 20 GiB at **$0.08/GB-month ($1.60)** with included 3,000 IOPS and 125 MB/s, one in-use public IPv4 at **$0.005/hour ($3.65)**. Fixed list-price subtotal is about **$19** before egress. Standard CPU credits throttle at a 20% baseline (24 credits/hour) and do not add surplus-credit charges. Recheck the AWS price list before provisioning. The **40 USD** budget leaves room for egress and tax. AWS Budgets emails at 50/80/100% and does not stop the instance.
 - **Vercel Hobby:** Free only for eligible personal/noncommercial usage within platform limits (hosts Next.js public dashboard, Admin Console, and Vercel Functions Remote MCP).
 - **Supabase Free:** 500 MB database, 1 GB storage, Supabase Auth (monitor quotas and tune configurable retention).
 - **Variable / excluded:** LLM API tokens, custom domain, independent offsite backup storage, traffic overages.

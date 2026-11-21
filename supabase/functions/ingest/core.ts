@@ -21,11 +21,6 @@ export interface IngestConfig {
   maxBatchEvents: number;
   rateLimitPerMinute: number;
   ipHashSalt?: string;
-  /**
-   * When false (default), plaintext src_ip is cleared after optional salted
-   * hashing so raw IPs are not persisted in attack_events.
-   */
-  storeRawIp?: boolean;
 }
 
 export type CommitBatchResult =
@@ -250,18 +245,15 @@ export async function handleIngestRequest(
     return jsonResponse(400, { error: validation.error });
   }
 
-  // Data minimization: derive salted keyed IP hash when configured, and drop
-  // plaintext src_ip by default unless explicitly opted in.
+  // Data minimization: derive a keyed HMAC, then drop the plaintext address.
+  // There is no option to persist src_ip. raw_object_key is not an accepted field.
   const events = validation.value;
   for (const ev of events) {
-    if (ev.src_ip) {
-      if (config.ipHashSalt) {
-        ev.src_ip_hash = await hashIpWithSalt(ev.src_ip, config.ipHashSalt);
-      }
-      if (!config.storeRawIp) {
-        ev.src_ip = null;
-      }
+    const rawIp = ev.src_ip;
+    if (rawIp && config.ipHashSalt) {
+      ev.src_ip_hash = await hashIpWithSalt(rawIp, config.ipHashSalt);
     }
+    delete ev.src_ip;
   }
 
   const receivedAtIso = new Date(nowMs).toISOString();

@@ -32,7 +32,7 @@ and publishes sanitized observations and trends over time:
 3. `docs/IMPLEMENTATION_PLAN.md` — Phase 0 gate, Phase 1 / Phase 2 MVP scope, 30-day evaluation, and non-goals.
 4. `docs/SECURITY.md` — deployment gates and hostile-input threat model.
 5. `docs/DATA_MODEL.md` — tables, private data, RLS, retention, and indexes.
-6. `docs/DECISIONS.md` — architecture decision log (`ADR-001`–`ADR-018`) and Phase 0 open items.
+6. `docs/DECISIONS.md` — architecture decision log (`ADR-001`–`ADR-024`). Provisioning still needs explicit approval.
 
 **Repository status:** Phase 1 MVP foundation (PostgreSQL migrations/RLS, ingest
 Edge Function, synthetic dashboard, sensor prototypes, CI) is on `main`.
@@ -102,7 +102,7 @@ been provisioned or deployed yet.**
   Never expose MCP usage count dashboards to general users.
 - Apply strict data minimization and anti-tampering: do not collect app-side
   profile PII (name/address/phone), do not duplicate Supabase Auth user records
-  into custom tables, clear plaintext `src_ip` after keyed hashing by default,
+  into custom tables, never store plaintext `src_ip` or raw payloads in Supabase,
   and **never log MCP user prompts/questions or auth tokens**.
 - CVE links require a versioned detection rule and recorded evidence, confidence,
   and source metadata. KEV and EPSS provide context, not proof of exploitation.

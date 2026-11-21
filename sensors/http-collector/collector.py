@@ -5,6 +5,8 @@ Security invariants:
 - Strictly bounded headers, path, body sample, and socket timeouts.
 - Never executes attacker input, never fetches attacker URLs, never follows redirects.
 - Drops Authorization / Cookie / credential headers by default.
+- Hashes a bounded body sample and discards the bytes. The JSONL does not contain the payload.
+- Prunes the local JSONL so records older than 24 hours are deleted.
 - Emits structured JSONL records for the local shipper.
 """
 
@@ -18,10 +20,46 @@ import os
 import re
 import socketserver
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+TEMP_LOG_MAX_AGE = dt.timedelta(hours=24)
+
+
+def prune_temp_jsonl(
+    path: Path,
+    now: dt.datetime | None = None,
+    max_age: dt.timedelta = TEMP_LOG_MAX_AGE,
+) -> None:
+    """Keep only JSONL records whose observed_at is inside max_age."""
+    if not path.exists():
+        return
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    cutoff = current - max_age
+    raw = path.read_text(encoding="utf-8")
+    kept: list[str] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+            observed_raw = str(record.get("observed_at", ""))
+            observed = dt.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=dt.timezone.utc)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if observed >= cutoff:
+            kept.append(line)
+    text = ("\n".join(kept) + "\n") if kept else ""
+    if text != raw:
+        path.write_text(text, encoding="utf-8")
+
 
 SAFE_HEADER_ALLOWLIST = frozenset(
     {
@@ -120,6 +158,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
     ) -> None:
         self.config = config
         self.write_lock = threading.Lock()
+        self._last_prune = 0.0
         self.connection_semaphore = threading.BoundedSemaphore(
             max(1, config.max_concurrent_connections)
         )
@@ -151,6 +190,10 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
     def write_record(self, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
         with self.write_lock:
+            now_mono = time.monotonic()
+            if now_mono - self._last_prune >= 60:
+                prune_temp_jsonl(self.config.output_jsonl)
+                self._last_prune = now_mono
             with self.config.output_jsonl.open("a", encoding="utf-8") as fp:
                 fp.write(line)
 

@@ -13,7 +13,7 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | Table | Core fields | Constraints / notes |
 | --- | --- | --- |
 | `sensors` | `id`, `name`, `type`, `region`, `is_active`, `last_heartbeat_at`, `created_at` (Phase 1 ext: `monitored_services`, `last_error_at`, `last_error_summary`) | No API secret stored in any public column |
-| `attack_events` | `id`, `sensor_id`, `observed_at`, `received_at`, `protocol`, `dst_port`, `event_type`, `attack_category` (Phase 1 ext), `src_ip`, `src_ip_hash`, `src_country`, `src_asn`, `http_method`, `http_path_redacted`, `fingerprint`, `raw_object_key`, `metadata` | `id` stable UUID for idempotent upsert; `sensor_id` FK; sensitive fields PRIVATE |
+| `attack_events` | `id`, `sensor_id`, `observed_at`, `received_at`, `protocol`, `dst_port`, `event_type`, `attack_category` (Phase 1 ext), `src_ip_hash`, `src_country`, `src_asn`, `http_method`, `http_path_redacted`, `fingerprint`, `metadata` | `id` stable UUID for idempotent upsert; `sensor_id` FK. No `src_ip` column and no `raw_object_key`. `src_ip_hash` and `metadata` are PRIVATE |
 | `daily_stats` | `date_utc`, `sensor_id`, `protocol`, `event_type`, `event_count`, `unique_source_count`, `updated_at` | Composite primary key; long-term aggregates only |
 | `event_aggregates` (Phase 1 ext) | `bucket_start`, `granularity` (`hour` / `day`), `sensor_id`, `protocol`, `attack_category`, `event_count`, `unique_source_count` | Supports 24h/7d/30d trends and day-over-day comparison without scanning raw events |
 | `observed_patterns` (Phase 1 ext) | `pattern_type` (`http_path` / `signature` / `attack_category`), `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `total_count` | Tracks representative HTTP paths and attack patterns |
@@ -44,10 +44,26 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
   `security_barrier = true` on all public views, atomic `SECURITY INVOKER` ingest RPCs,
   least-privilege server credentials, strict write paths, and append-only audit logs.
 
-`src_ip` is optional/private raw data; the ingest function derives a keyed HMAC hash (`src_ip_hash`)
-using `IP_HASH_SALT` and clears plaintext `src_ip` by default (`INGEST_ALLOW_RAW_IP=false`).
-**Final source IP and raw payload retention rules must be confirmed in Phase 0 before
-production database persistence.** Raw `src_ip` is never exposed in anonymous views.
+Supabase does not store raw source IPs, raw HTTP bodies, passwords, or
+`Authorization` / `Cookie` values (ADR-022).
+
+`src_ip_hash` is a keyed HMAC-SHA256 of the source address, using server-side
+`IP_HASH_SALT` (at least 16 characters). It exists so unique-source counts and
+repeat-source comparisons work after the address is discarded. It is not on any
+public view. The salt stays in the ingest secret store, not on the sensor. A
+hash without the salt does not reveal the address. A hash **with** the salt can
+be checked against a guessed address, so the salt is a secret and the hash is
+retained only as long as the sanitized event (at least 30 days). Daily aggregates
+store counts, not hashes.
+
+`src_country` and `src_asn` are optional derived labels. MVP does not add a GeoIP
+database. When a later approved step derives them, it must discard the address
+after derivation.
+
+The sensor spool may still contain `src_ip` until ingest acknowledges the batch
+or 24 hours pass, because hashing happens where the salt lives. Credentials and
+raw bodies are removed before that spool write. There is no `INGEST_ALLOW_RAW_IP`
+switch.
 
 ## Indexes
 
@@ -65,17 +81,15 @@ production database persistence.** Raw `src_ip` is never exposed in anonymous vi
 - Background jobs: server-side only, no public write access.
 - Anonymous & general authenticated readers: **only** approved `security_barrier` public views/aggregates.
 - Default-deny RLS (`ENABLE` + `FORCE` + `REVOKE ALL`) on all base tables, tested for both `anon` and `authenticated` roles.
-- Store optional raw HTTP payload samples in a **private** bucket with strict size limits and short configurable retention.
+- Do not create an AWS S3 bucket or a Supabase Storage bucket for raw payloads.
 
 ## Retention and backups (configurable by cost and volume)
 
-1. **Long-term aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `sensor_status_events`):**
-   Retained long-term independent of detailed-event pruning so 30-day+ and multi-month trends remain intact.
-2. **Detailed structured events (`attack_events`):**
-   Configurable retention window tuned to DB quota and cost (proposed starting default: **90 days**, adjustable via job configuration).
-3. **Raw payload samples & anti-replay nonces:**
-   Short configurable retention (proposed: **7 days** for raw samples; periodic expiry cleanup for `ingest_receipts`).
-4. **Independent backups:**
-   Export daily historical aggregates/records and configuration to a separate private backup location and test restore periodically.
-5. **Quota monitoring:**
-   Alert before free/planned DB or storage quotas impact ingestion or archive jobs.
+1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `sensor_status_events`):**
+   Keep for **at least 1 year**. Prefer these over raw detail when the database nears its quota.
+2. **Sanitized events (`attack_events`, including `src_ip_hash`):**
+   Keep for **at least 30 days**. Shorten this window first if storage fills, and do not go below 30 days without a new decision.
+3. **EC2 raw logs:** OpenCanary JSONL and the collector JSONL are deleted within **24 hours**. The SQLite spool keeps undelivered sanitized-plus-transient-IP events only until delivery, the byte cap, or 24 hours.
+4. **Anti-replay nonces (`ingest_receipts`):** expire on the existing receipt TTL. They are not an archive.
+5. **Backups:** MVP does not add S3, a second database, or an archive pipeline. Postgres is the durable store.
+6. **Quota monitoring:** Alert before the database quota blocks ingest. There is no separate billing product beyond the single AWS Budget.

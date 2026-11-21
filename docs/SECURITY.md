@@ -11,11 +11,13 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 
 1. **Provider policy & AWS EC2 host (formally selected):** Sensor hosting uses **AWS EC2**
    (Lightsail evaluation is closed) running OpenCanary + dedicated HTTP/HTTPS collector on one
-   isolated VM in **US East (N. Virginia), `us-east-1`** (ADR-018). Finalize the remaining
-   Phase 0 items (EC2 instance type, EBS capacity, monthly spend cap, AWS Budgets monitoring,
-   Abuse contact, emergency shutdown, IP/payload retention, and license) and obtain explicit
-   owner approval before provisioning or exposing resources. Region selection alone does not
-   authorize resource creation.
+   isolated VM in **US East (N. Virginia), `us-east-1`** (ADR-018, ADR-019): `t3a.small`,
+   standard CPU credits, Ubuntu Server LTS, encrypted gp3 20 GiB, one public IPv4, on the
+   existing AWS account. Tag resources so Attackarium spend can be separated. One AWS Budget
+   emails at 50/80/100% of the **40 USD** monthly target. **AWS Budgets does not stop the
+   instance or enforce the cap.** Abuse mail goes to the existing AWS account contact.
+   Emergency action is the manual procedure in `docs/RUNBOOK.md` (stop, do not terminate).
+   Obtain explicit owner approval before provisioning or exposing resources.
 2. **Layered Egress Isolation:** Enforce strict outbound (egress) allowlisting at **both**
    AWS EC2 Security Group / NACL and host OS firewall (`nftables`/`iptables`) layers; verify
    egress blocking with automated tests before public exposure.
@@ -32,8 +34,8 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
    anti-replay, atomic per-sensor rate limits, uniform anti-enumeration auth errors, strict schema
    validation, and maximum batch size. Rotate each sensor key independently.
 8. **Public data & honest coverage:** database default-deny RLS (`anon` and `authenticated` denied
-   on all base tables); only `security_barrier = true` sanitized projections are exposed. Clear
-   plaintext `src_ip` after keyed hashing by default, redact credentials/Authorization/Cookie/Referer
+   on all base tables); only `security_barrier = true` sanitized projections are exposed. Never
+   persist plaintext `src_ip` or raw HTTP bodies, redact credentials/Authorization/Cookie/Referer
    query secrets, and distinguish **zero observed events** from **collection outages**.
 9. **LLM safety:** summaries only from sanitized aggregates and redacted evidence; attack payloads
    are prompt-injection vectors, not authoritative instructions. Never permit LLM-driven commands,
@@ -61,7 +63,10 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
     - Optional additional edge protection (e.g., Cloudflare Access) may be layered in front of admin routes.
 13. **Data minimization & anti-tampering:**
     - Do not collect custom profile PII (name/address/phone) or copy Supabase Auth user tables.
-    - Finalize IP/payload retention rules in Phase 0 before production DB persistence.
+    - Do not store raw source IPs, raw HTTP payloads, passwords, or `Authorization`/`Cookie`
+      values in Supabase. Keep `src_ip_hash` as a non-public keyed HMAC (ADR-022).
+    - Delete EC2 raw logs within 24 hours. Keep sanitized events at least 30 days and
+      daily aggregates at least 1 year (ADR-023).
     - Combine leak prevention (RLS, `security_barrier` views, redaction, minimal storage) with
       anti-tampering (atomic write paths, HMAC/OAuth verification, append-only audit logs).
 

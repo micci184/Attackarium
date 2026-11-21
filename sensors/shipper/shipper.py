@@ -5,7 +5,8 @@ Responsibilities:
 - Read structured JSONL from OpenCanary and HTTP collector.
 - Normalize into the strict schema expected by supabase/functions/ingest.
 - Assign deterministic/stable UUID event IDs for idempotent upsert.
-- Persist events in a bounded local SQLite spool to survive ingest outages.
+- Persist sanitized events in a bounded local SQLite spool to survive ingest outages.
+- Keep source IPs only until delivery or 24 hours, whichever comes first.
 - Ship signed HTTPS batches with exponential backoff and retry metrics.
 """
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 EVENT_NAMESPACE_UUID = uuid.UUID("7f3d56f8-3d1d-4d0e-942c-0df9b7489f41")
+SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
 HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
 LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -252,7 +254,18 @@ class BoundedSqliteSpool:
         row = self.conn.execute("SELECT COUNT(*) FROM spool_events").fetchone()
         return int(row[0]) if row else 0
 
+    def purge_expired(self, now: float | None = None, max_age_seconds: float = SPOOL_MAX_AGE_SECONDS) -> int:
+        """Drop undelivered rows, including any transient source IPs, after max_age_seconds."""
+        cutoff = (time.time() if now is None else now) - max_age_seconds
+        cursor = self.conn.execute(
+            "DELETE FROM spool_events WHERE created_at < ?",
+            (cutoff,),
+        )
+        self.conn.commit()
+        return int(cursor.rowcount)
+
     def enqueue(self, event: dict[str, Any]) -> bool:
+        self.purge_expired()
         payload_json = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
         byte_size = len(payload_json.encode("utf-8"))
 
@@ -394,6 +407,7 @@ class EventShipper:
 
     def flush_once(self, now_sec: int | None = None) -> bool:
         """Attempt to send one signed batch. Returns True if delivered or empty."""
+        self.spool.purge_expired()
         batch = self.spool.peek_batch(
             self.config.max_batch_events, self.config.max_batch_bytes
         )
