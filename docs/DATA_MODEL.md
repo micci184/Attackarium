@@ -88,8 +88,8 @@ switch.
 1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `sensor_status_events`):**
    Keep for **at least 1 year**. Prefer these over raw detail when the database nears its quota.
 2. **Sanitized events (`attack_events`, including `src_ip_hash`):**
-   Keep for **at least 30 days**. Shorten this window first if storage fills, and do not go below 30 days without a new decision.
+   Keep for **at least 30 days**. Shorten this window first if storage fills, and do not go below 30 days without a new decision. `prune_observation_retention` rejects a shorter window and deletes only whole UTC days older than the cutoff.
 3. **EC2 raw logs:** OpenCanary JSONL and the collector JSONL are deleted within **24 hours**. The SQLite spool keeps undelivered sanitized-plus-transient-IP events only until delivery, the byte cap, or 24 hours.
-4. **Anti-replay nonces (`ingest_receipts`):** expire on the existing receipt TTL. They are not an archive.
+4. **Anti-replay nonces (`ingest_receipts`):** expire on the existing receipt TTL. The same job deletes receipts whose `expires_at` has passed. They are not an archive. `run_observation_maintenance` recomputes live buckets from the events still stored, then prunes. A second run replaces those counts. Buckets and pattern totals for deleted events stay in place. There is no raw-payload sample store to clean up.
 5. **Backups:** MVP does not add S3, a second database, or an archive pipeline. Postgres is the durable store.
 6. **Quota monitoring:** Alert before the database quota blocks ingest. There is no separate billing product beyond the single AWS Budget.
