@@ -14,6 +14,7 @@ from shipper import (
     build_signature_payload,
     compute_hmac_sha256_hex,
     normalize_record,
+    read_new_jsonl,
 )
 
 TEST_SECRET = "test-shipper-hmac-secret-at-least-32-chars"
@@ -305,6 +306,145 @@ class ShipperIntegrationTests(unittest.TestCase):
             self.assertEqual(spool.count(), 0)
         finally:
             spool.close()
+
+    def test_normalizes_each_decoy_protocol_without_keeping_credentials(self) -> None:
+        samples = [
+            (2000, 21, "ftp", "ftp_login_attempt"),
+            (6001, 23, "telnet", "telnet_login_attempt"),
+            (8001, 3306, "mysql", "mysql_login_attempt"),
+            (11001, 6379, "redis", "redis_command_probe"),
+        ]
+        for logtype, port, protocol, event_type in samples:
+            normalized = normalize_record(
+                {
+                    "dst_port": port,
+                    "src_host": "198.51.100.30",
+                    "src_port": 41000,
+                    "logtype": logtype,
+                    "utc_time": "2026-11-21 11:00:00.000000",
+                    "logdata": {"USERNAME": "root", "PASSWORD": "secret", "CMD": "PING"},
+                },
+                "sensor-dev-01",
+            )
+            self.assertIsNotNone(normalized)
+            self.assertEqual(normalized["protocol"], protocol)
+            self.assertEqual(normalized["event_type"], event_type)
+            self.assertNotIn("password", normalized["metadata"])
+            self.assertNotIn("username", normalized["metadata"])
+
+    def test_counts_invalid_lines_and_writes_metrics_after_delivery(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "metrics.sqlite3"
+        cfg = ShipperConfig(
+            sensor_id="sensor-dev-01",
+            hmac_secret=TEST_SECRET,
+            ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+            spool_path=spool_path,
+        )
+        shipper = EventShipper(cfg)
+        try:
+            added = shipper.ingest_jsonl_lines(
+                [
+                    "not-json",
+                    json.dumps({"logtype": 4002, "dst_port": 0}),
+                    json.dumps(
+                        {
+                            "source": "http_collector",
+                            "id": "44444444-4444-4444-8444-000000000001",
+                            "observed_at": "2026-11-21T12:00:00Z",
+                            "protocol": "http",
+                            "dst_port": 80,
+                            "event_type": "http_probe",
+                        }
+                    ),
+                ]
+            )
+            self.assertEqual(added, 1)
+            self.assertEqual(shipper.metrics.dropped_invalid, 2)
+            self.assertTrue(shipper.flush_once())
+            snapshot = shipper.metrics_snapshot()
+            self.assertEqual(snapshot["queue_depth"], 0)
+            self.assertEqual(snapshot["events_delivered"], 1)
+            self.assertEqual(snapshot["dropped_invalid"], 2)
+            self.assertIsNotNone(snapshot["last_delivery_at"])
+            metrics_path = Path(self.tmpdir.name) / "metrics.json"
+            shipper.write_metrics(metrics_path)
+            written = json.loads(metrics_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["events_delivered"], 1)
+        finally:
+            shipper.close()
+
+    def test_reads_only_complete_new_jsonl_lines(self) -> None:
+        path = Path(self.tmpdir.name) / "collector.jsonl"
+        path.write_bytes(b'{"id":1}\n{"id":2}\n{"id":')
+        lines, inode, offset, skipped = read_new_jsonl(path, 0)
+        self.assertEqual(lines, ['{"id":1}', '{"id":2}'])
+        self.assertEqual(skipped, 0)
+        path.write_bytes(b'{"id":1}\n{"id":2}\n{"id":3}\n')
+        lines, inode, offset, skipped = read_new_jsonl(path, offset, inode=inode)
+        self.assertEqual(lines, ['{"id":3}'])
+        self.assertEqual(offset, path.stat().st_size)
+        self.assertEqual(skipped, 0)
+
+    def test_handles_rotation_truncation_restart_and_oversize_corrupt_line(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "cursor.sqlite3"
+        log_path = Path(self.tmpdir.name) / "http-collector.jsonl"
+        cfg = ShipperConfig(
+            sensor_id="sensor-dev-01",
+            hmac_secret=TEST_SECRET,
+            ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+            spool_path=spool_path,
+        )
+
+        def make_line(suffix: str) -> str:
+            return json.dumps(
+                {
+                    "source": "http_collector",
+                    "id": f"55555555-5555-4555-8555-00000000000{suffix}",
+                    "observed_at": "2026-11-21T12:00:00Z",
+                    "protocol": "http",
+                    "dst_port": 80,
+                    "event_type": "http_probe",
+                }
+            )
+
+        # 1. Initial read & cursor persisted across Shipper restart
+        log_path.write_text(make_line("1") + "\n" + make_line("2") + "\n", encoding="utf-8")
+        shipper = EventShipper(cfg)
+        try:
+            self.assertEqual(shipper.ingest_jsonl_file(log_path), 2)
+        finally:
+            shipper.close()
+
+        shipper = EventShipper(cfg)
+        try:
+            # No duplicate enqueue after restart
+            self.assertEqual(shipper.ingest_jsonl_file(log_path), 0)
+
+            # 2. Truncation (e.g. 24h prune makes file smaller than saved offset)
+            log_path.write_text(make_line("3") + "\n", encoding="utf-8")
+            self.assertEqual(shipper.ingest_jsonl_file(log_path), 1)
+
+            # 3. Log rotation (unlink + recreate changes inode even if new file is larger)
+            rotated_path = Path(self.tmpdir.name) / "http-collector.jsonl.1"
+            log_path.rename(rotated_path)
+            log_path.write_text(
+                make_line("4") + "\n" + make_line("5") + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(shipper.ingest_jsonl_file(log_path), 2)
+
+            # 4. Oversized line without newline is skipped instead of stalling forever
+            with log_path.open("a", encoding="utf-8") as fp:
+                fp.write("X" * 100 + "\n" + make_line("6") + "\n")
+            # max_bytes=64 forces the 100-byte line to be skipped in chunk 1, then line 6 read
+            self.assertEqual(shipper.ingest_jsonl_file(log_path, max_bytes=64), 0)
+            self.assertGreaterEqual(shipper.metrics.dropped_invalid, 1)
+            # Drain remaining fragment of X...\n and then read line 6
+            shipper.ingest_jsonl_file(log_path, max_bytes=1024)
+            self.assertTrue(shipper.flush_once())
+            self.assertIn("55555555-5555-4555-8555-000000000006", self.state.received_event_ids)
+        finally:
+            shipper.close()
 
 
 if __name__ == "__main__":

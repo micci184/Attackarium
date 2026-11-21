@@ -1,0 +1,28 @@
+[Unit]
+Description=Attackarium observation shipper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=attackarium
+Group=attackarium
+# SENSOR_ID, INGEST_HMAC_SECRET, and INGEST_URL live in this root-only file.
+EnvironmentFile=/etc/attackarium/shipper.env
+ExecStart=/opt/attackarium/venv/bin/python /opt/attackarium/shipper/shipper.py
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/attackarium
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

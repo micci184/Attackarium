@@ -63,6 +63,8 @@ jobs:
         run: python3 -m unittest discover -s sensors/http-collector -p 'test_*.py' -v
       - name: Run Shipper spool, HMAC & retry tests
         run: python3 -m unittest discover -s sensors/shipper -p 'test_*.py' -v
+      - name: Run OpenCanary config tests
+        run: python3 -m unittest discover -s sensors/opencanary -p 'test_*.py' -v
 
   web:
     name: Web App Lint, Typecheck, Tests & Build

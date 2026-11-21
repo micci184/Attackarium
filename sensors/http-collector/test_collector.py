@@ -1,8 +1,11 @@
+import dataclasses
 import datetime as dt
 import http.client
 import json
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -151,6 +154,51 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         finally:
             for _ in range(permits):
                 self.server.connection_semaphore.release()
+
+    def test_slow_headers_time_out_without_blocking_the_next_request(self) -> None:
+        self.server.config = dataclasses.replace(
+            self.server.config, socket_timeout_seconds=0.4
+        )
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        sock.sendall(b"GET /slow HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+        time.sleep(0.8)
+        sock.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request("GET", "/still-up")
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+        paths = [rec["http_path"] for rec in self._read_records()]
+        self.assertIn("/still-up", paths)
+
+    def test_drops_oversized_headers_without_storing_them(self) -> None:
+        self.server.config = dataclasses.replace(self.server.config, max_header_bytes=128)
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        sock.sendall(b"GET / HTTP/1.1\r\nUser-Agent: " + (b"A" * 4000) + b"\r\n\r\n")
+        sock.settimeout(2)
+        raw_response = b""
+        try:
+            raw_response = sock.recv(256)
+        except OSError:
+            pass
+        sock.close()
+
+        self.assertIn(b"431", raw_response)
+        stored = self.output_path.read_text(encoding="utf-8")
+        self.assertNotIn("A" * 64, stored)
+        records = self._read_records()
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["metadata"].get("header_rejected"))
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request("GET", "/after-header-limit")
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+        self.assertEqual(len(self._read_records()), 2)
 
 
 if __name__ == "__main__":

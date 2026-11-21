@@ -91,6 +91,7 @@ class CollectorConfig:
     max_path_length: int = 512
     max_body_bytes: int = 4096
     max_header_value_length: int = 256
+    max_header_bytes: int = 8192
     socket_timeout_seconds: float = 5.0
     max_concurrent_connections: int = 32
 
@@ -198,18 +199,85 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 fp.write(line)
 
 
+class _BoundedHeaderReader:
+    """Stop reading once the header block exceeds the configured byte cap."""
+
+    def __init__(self, raw: Any, limit: int, on_overflow: Any) -> None:
+        self._raw = raw
+        self._limit = limit
+        self._used = 0
+        self._headers_done = False
+        self._on_overflow = on_overflow
+
+    def readline(self, limit: int = -1) -> bytes:
+        if self._headers_done:
+            return self._raw.readline(limit)
+        # Never ask the socket for more than the remaining header budget.
+        budget = self._limit - self._used + 1
+        line = self._raw.readline(budget if limit < 0 else min(limit, budget))
+        self._used += len(line)
+        if self._used > self._limit:
+            self._headers_done = True
+            self._on_overflow()
+            return b""
+        if line in (b"\r\n", b"\n", b""):
+            self._headers_done = True
+        return line
+
+    def read(self, size: int = -1) -> bytes:
+        return self._raw.read(size)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._raw, name)
+
+
 class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
     server: BoundedThreadingHTTPServer
 
     def setup(self) -> None:
         super().setup()
         self.request.settimeout(self.server.config.socket_timeout_seconds)
+        self._header_rejected = False
+        self.rfile = _BoundedHeaderReader(
+            self.rfile,
+            self.server.config.max_header_bytes,
+            self._reject_headers,
+        )
+
+    def _reject_headers(self) -> None:
+        if self._header_rejected:
+            return
+        self._header_rejected = True
+        self.server.write_record(
+            {
+                "source": "http_collector",
+                "id": str(uuid.uuid4()),
+                "observed_at": dt.datetime.now(dt.timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "protocol": self.server.config.protocol_label,
+                "dst_port": self.server.config.reported_dst_port,
+                "event_type": "http_probe",
+                "src_ip": self.client_address[0] if self.client_address else None,
+                "http_method": "GET",
+                "http_path": "/",
+                "metadata": {"header_rejected": True},
+            }
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress default stderr logging to avoid leaking untrusted input.
         return
 
     def _handle_any(self) -> None:
+        if self._header_rejected:
+            self.send_response(431)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return
+
         cfg = self.server.config
         method = strip_control(self.command or "GET").upper()[:16]
         redacted_path = redact_path(self.path or "/", cfg.max_path_length)
