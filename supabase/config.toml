@@ -1,0 +1,34 @@
+# Supabase local development configuration
+# Reference: https://supabase.com/docs/guides/local-development/cli/config
+
+project_id = "attackarium"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+file_size_limit = "256KiB"
+
+[storage.buckets.raw_http_samples]
+public = false
+file_size_limit = "64KiB"
+allowed_mime_types = ["application/octet-stream", "text/plain", "application/json"]
+
+# Ingest Edge Function authenticates sensors via per-sensor HMAC + timestamp + nonce
+# rather than Supabase Auth JWTs. Keep verify_jwt = false and enforce HMAC strictly in code.
+[functions.ingest]
+verify_jwt = false
