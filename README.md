@@ -1,70 +1,95 @@
 # Attackarium — Honeypot Observatory
 
-A noncommercial attack observatory that captures, stores, and analyzes unsolicited
-Internet traffic using OpenCanary and a minimal HTTP/HTTPS collector, enriches
-evidence-backed detections with CVE / CISA KEV / FIRST EPSS context, and exposes
-sanitized trends via a public Next.js dashboard and a read-only Remote MCP server.
+A noncommercial threat-observability service that captures unsolicited Internet
+probes and attack attempts on operator-managed honeypots, stores historical
+observations over time, and publishes sanitized trends via a public Next.js
+dashboard and an authenticated, read-only Remote MCP server.
 
-> **Status:** Early implementation / MVP in progress. **No public honeypot is deployed.**
-> Local migrations, ingest tests, synthetic dashboard views, and sensor prototypes are under development.
+**Attackarium is not a vulnerability database.** Original honeypot observations
+are the primary dataset; CVE, CISA KEV, and FIRST EPSS provide supporting context
+to help interpret observed patterns without claiming confirmed exploitation.
 
-## Goals
+> **Status:** Phase 1 MVP foundation is on `main`. Initial AWS region is
+> **US East (N. Virginia), `us-east-1`**.
+> **No AWS resources, hosted database, or public honeypot are deployed yet.**
+> Deployment awaits the remaining Phase 0 items and explicit owner approval.
 
-- Capture SSH / Telnet / FTP / MySQL / Redis probes using OpenCanary on an isolated AWS EC2 sensor host.
-- Capture bounded HTTP / HTTPS scans and requests using a dedicated, non-executing web collector.
-- Store historical telemetry and daily rollups in Supabase PostgreSQL with default-deny RLS.
-- Enrich deterministic rule detections with NVD (CVE), CISA KEV, and FIRST EPSS context without claiming confirmed exploitation.
-- Expose sanitized observations via a public Next.js dashboard and an OAuth 2.1 authenticated, read-only Remote MCP server on Vercel Functions (`mcp-handler`).
-- Generate draft daily AI summaries from anonymized aggregates for human review before any X publication.
+## Product principles
+
+- **Operator-managed sensors only:** Sensors are deployed and managed exclusively
+  by Attackarium operators on **AWS EC2 in `us-east-1` (N. Virginia)** (user-contributed sensors such as the
+  GreyNoise Project Swarm model are out of scope).
+- **Public dashboard without login:** General viewers can inspect sanitized
+  observations, 30-day trends, protocol/pattern breakdowns, and sensor health
+  without creating an account.
+- **Read-only Remote MCP on Vercel Functions:** Authenticated and explicitly
+  entitled users (Google/GitHub via Supabase Auth OAuth 2.1 + PKCE) can query
+  aggregated observations through 3 read-only tools (`get_attack_trends`,
+  `get_attack_patterns`, `get_observation_summary`). No general-purpose public
+  REST API is provided.
+- **Operator-only Admin Console & MCP Usage:** Protected by server-side admin ID
+  allowlist, mandatory MFA (`aal2`), and append-only audit logging.
+- **Data minimization & honest interpretation:** Default-deny RLS, sanitized
+  `security_barrier` views, hashed source IPs (plaintext cleared by default),
+  explicit separation of zero-observation periods vs. sensor outage gaps, and
+  mandatory human review for AI-drafted daily analysis and X posts.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  subgraph sensor["AWS EC2: isolated sensor host"]
-    oc["OpenCanary: SSH / Telnet / FTP / DB"] --> ship["Local durable spool + shipper"]
-    http["HTTP / HTTPS collector"] --> ship
+  subgraph sensor["AWS EC2: isolated operator-managed sensor host"]
+    oc["OpenCanary: SSH / Telnet / FTP / MySQL / Redis"] --> ship["Local durable SQLite spool + shipper"]
+    http["Minimal HTTP / HTTPS collector"] --> ship
   end
-  ship -->|"Authenticated batched HTTPS"| ingest["Supabase Edge Function: ingest"]
-  ingest --> pg[("Supabase PostgreSQL")]
-  auth["Supabase Auth (OAuth 2.1 / PKCE)"] --> mcp["Remote MCP (Vercel Functions / mcp-handler)"]
-  auth --> admin["Admin Console (Next.js / Vercel, MFA + Allowlist)"]
-  pg --> web["Public Dashboard (Next.js / Vercel)"]
+  ship -->|"Authenticated batched HTTPS (HMAC)"| ingest["Supabase Edge Function: ingest"]
+  ingest --> pg[("Supabase PostgreSQL (default-deny RLS)")]
+  auth["Supabase Auth (OAuth 2.1 / PKCE)"] --> mcp["Remote MCP (Vercel Functions / mcp-handler, 3 read-only tools)"]
+  auth --> admin["Operator Admin Console (Next.js / Vercel, MFA + Allowlist)"]
+  pg --> web["Public Dashboard (Next.js / Vercel, no login)"]
   pg --> mcp
   pg --> admin
-  feeds["CVE / CISA KEV / FIRST EPSS"] --> jobs["Enrichment + rules + daily AI summary"]
+  feeds["CVE / CISA KEV / FIRST EPSS"] --> jobs["Enrichment + rules + rollups + AI draft"]
   pg --> jobs
   jobs --> pg
-  jobs --> report["Review / X publication"]
+  jobs --> report["Human Review -> X Post Draft"]
 ```
+
+## MVP roadmap
+
+- **Phase 0 — Policy & Pre-Deployment Gate:** AWS region is **`us-east-1`
+  (N. Virginia)**. Still confirm EC2 instance type, EBS capacity, monthly
+  budget/AWS Budgets alerts, Abuse contact, emergency teardown, IP/payload
+  retention policy, and license.
+- **Phase 1 — Observation Platform MVP (Top Priority):** Reliably collect,
+  ingest, aggregate, and display original observations for **at least 30 days**
+  with clear distinction between zero-traffic windows and sensor collection gaps.
+- **Phase 2 — Public Service MVP:** Add evidence-backed CVE/KEV/EPSS context,
+  OAuth 2.1 Remote MCP (3 read-only tools), operator-only Admin Console & MCP
+  Usage, and human-reviewed AI daily analysis + X post drafts.
+- **Evaluation — 30-Day Value Validation:** Assess real findings, temporal shifts,
+  and dashboard/MCP usefulness honestly without arbitrary event-count targets.
 
 ## Repository layout
 
 ```text
-apps/web/                    Next.js dashboard (to implement)
+apps/web/                    Next.js 16 public dashboard MVP (local mock + Supabase public views)
 AGENTS.md                    Cursor/AI agent repository-wide guardrails
-sensors/opencanary/          OpenCanary config and deployment (to implement)
-sensors/http-collector/      Minimal HTTP/HTTPS capture sensor (to implement)
-sensors/shipper/             Bounded spool and authenticated log shipping (to implement)
-supabase/functions/ingest/   Validated ingestion API (to implement)
-supabase/migrations/         PostgreSQL schema / RLS / indexes (to implement)
-jobs/                        Enrichment, aggregation, reporting (to implement)
-infra/                       Infrastructure as code and operations (to implement)
-docs/ARCHITECTURE.md         Components, data flow, deployments
-docs/IMPLEMENTATION_PLAN.md  MVP scope, milestones, acceptance criteria
+sensors/opencanary/          OpenCanary decoy config template & hardened systemd unit
+sensors/http-collector/      Bounded, non-executing HTTP/HTTPS capture sensor + tests
+sensors/shipper/             Bounded SQLite WAL spool & HMAC batch shipper + tests
+supabase/functions/ingest/   HMAC-authenticated, streaming-bounded ingest Edge Function + tests
+supabase/migrations/         PostgreSQL schema, default-deny RLS, security_barrier views & atomic RPC
+supabase/tests/              PostgreSQL RLS & RPC security boundary test suite
+jobs/                        Scheduled rollups, enrichment, retention & AI draft jobs (planned)
+infra/                       AWS EC2 IaC, Security Group & host egress rules (planned after Phase 0)
+docs/ARCHITECTURE.md         Components, data flow, attack taxonomy & MCP OAuth design
+docs/IMPLEMENTATION_PLAN.md  Phase 0 / Phase 1 / Phase 2 MVP plan, 30-day evaluation & non-goals
 docs/CURSOR_SETUP.md         Official Vercel/Supabase Skills for Cursor
-docs/DATA_MODEL.md           Tables and data lifecycle
-docs/SECURITY.md             Threat model and operational safeguards
-docs/DECISIONS.md            Architecture decision log
+docs/DATA_MODEL.md           Tables, retention separation & data minimization
+docs/SECURITY.md             Threat model, deployment gates & operational monitoring
+docs/DECISIONS.md            Architecture decision log (ADR-001 through ADR-017)
 ```
-
-## Next steps
-
-1. Confirm AWS EC2 account/region, instance sizing, spend cap, and abuse-response policy.
-2. Complete Phase 1–2 local verification (PostgreSQL/RLS, ingest API, public dashboard, sensors).
-3. Implement read-only Remote MCP (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1) and operator-only Admin Console (MFA + allowlist + MCP Usage).
-4. Deploy the isolated EC2 sensor only after all security and abuse-response checks pass.
-5. Add correlation (CVE/KEV/EPSS), daily reporting, and manually reviewed X publication.
 
 ## Documents
 
@@ -77,4 +102,5 @@ docs/DECISIONS.md            Architecture decision log
 
 ## License
 
-Undecided. Do not assume this repository or its data is licensed for third-party reuse until a license is selected.
+Undecided (tracked in Phase 0). Do not assume this repository or its data is
+licensed for third-party reuse until a license is selected.
