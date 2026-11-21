@@ -78,6 +78,14 @@ export default async function OverviewPage() {
             {formatCount(data.totalEvents24h)}
           </p>
           <p className="mt-1 text-[11px] text-gray-500">{formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}</p>
+          {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
+            <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+              <span aria-hidden="true" className="font-mono font-bold">
+                [GAP]
+              </span>
+              Collection gap in window — comparison may undercount
+            </p>
+          ) : null}
         </div>
 
         <div className="p-4">
@@ -204,7 +212,12 @@ export default async function OverviewPage() {
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
               Sensor Health
             </h2>
-            <span className="text-[11px] text-gray-400">Heartbeat &amp; Last Seen</span>
+            <Link
+              href="/sensors"
+              className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+            >
+              Open Sensors →
+            </Link>
           </div>
           <div className="divide-y divide-gray-100 p-4">
             {data.sensors.length === 0 ? (

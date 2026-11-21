@@ -7,8 +7,10 @@ import {
   MOCK_EVENTS,
   MOCK_REFERENCE_NOW_MS,
   MOCK_SENSORS,
+  MOCK_SENSOR_STATUS_EVENTS,
 } from "./mock-data.ts";
 import {
+  annotateSeriesCoverage,
   buildDailySeries,
   buildHourlySeries,
   countEventsInWindow,
@@ -16,6 +18,8 @@ import {
   earliestTimestamp,
   eventMatchesExplorerFilters,
   eventsToDailyRows,
+  filterCoverageGapsInWindow,
+  isCoverageGapStatus,
   latestTimestamp,
   parseEventCategory,
   parseEventPeriod,
@@ -38,7 +42,10 @@ import {
   PublicEventSchema,
   type PublicSensor,
   PublicSensorSchema,
+  type PublicSensorStatusEvent,
+  PublicSensorStatusEventSchema,
   type SensorHealthStatus,
+  type SensorsPageData,
   type TrendPeriod,
   type TrendsData,
 } from "./types.ts";
@@ -129,14 +136,35 @@ export async function getOverviewData(): Promise<OverviewData> {
       healthStatus: evaluateSensorHealth(sensor, MOCK_REFERENCE_NOW_MS),
     }));
     const windowStart = MOCK_REFERENCE_NOW_MS - 24 * 60 * 60 * 1000;
+    const priorStart = windowStart - 24 * 60 * 60 * 1000;
+    const coverageGapIn24h =
+      filterCoverageGapsInWindow(
+        MOCK_SENSOR_STATUS_EVENTS,
+        windowStart,
+        MOCK_REFERENCE_NOW_MS,
+        MOCK_REFERENCE_NOW_MS,
+      ).length > 0;
+    const coverageGapInPrior24h =
+      filterCoverageGapsInWindow(
+        MOCK_SENSOR_STATUS_EVENTS,
+        priorStart,
+        windowStart,
+        MOCK_REFERENCE_NOW_MS,
+      ).length > 0;
+    const activeOutages = MOCK_SENSOR_STATUS_EVENTS.filter(
+      (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
+    );
     return {
       sourceMode: "mock",
       totalEvents24h: MOCK_EVENTS.length,
       priorEvents24h: countEventsInWindow(
         MOCK_EVENTS.map((event) => event.observed_at),
-        windowStart - 24 * 60 * 60 * 1000,
+        priorStart,
         windowStart,
       ),
+      coverageGapIn24h,
+      coverageGapInPrior24h,
+      activeOutages,
       sampled24hCount: MOCK_EVENTS.length,
       is24hBreakdownSampled: false,
       uniqueCountries24h: summary.uniqueCountries,
@@ -153,10 +181,11 @@ export async function getOverviewData(): Promise<OverviewData> {
   }
 
   const nowMs = Date.now();
-  const since24h = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
-
-  const since48h = new Date(nowMs - 48 * 60 * 60 * 1000).toISOString();
-  const [sensorsRes, events24hRes, priorRes, recentRes] = await Promise.all([
+  const window24hStartMs = nowMs - 24 * 60 * 60 * 1000;
+  const window48hStartMs = nowMs - 48 * 60 * 60 * 1000;
+  const since24h = new Date(window24hStartMs).toISOString();
+  const since48h = new Date(window48hStartMs).toISOString();
+  const [sensorsRes, events24hRes, priorRes, recentRes, statusRes] = await Promise.all([
     client.from("public_sensors").select("*").order("created_at", { ascending: true }),
     client
       .from("public_events")
@@ -177,14 +206,22 @@ export async function getOverviewData(): Promise<OverviewData> {
       .select("*")
       .order("observed_at", { ascending: false })
       .limit(12),
+    client
+      .from("public_sensor_status_events")
+      .select("id, sensor_id, status, started_at, ended_at")
+      .or(`ended_at.is.null,ended_at.gte.${since48h}`)
+      .order("started_at", { ascending: false })
+      .limit(100),
   ]);
 
   if (sensorsRes.error) throw new Error(`public_sensors query failed: ${sensorsRes.error.message}`);
   if (events24hRes.error) throw new Error(`public_events 24h query failed: ${events24hRes.error.message}`);
   if (priorRes.error) throw new Error(`public_events prior 24h query failed: ${priorRes.error.message}`);
   if (recentRes.error) throw new Error(`public_events recent query failed: ${recentRes.error.message}`);
+  if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
 
   const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
+  const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
   const sensors: OverviewSensor[] = parsedSensors.map((sensor) => ({
     ...sensor,
     healthStatus: evaluateSensorHealth(sensor, nowMs),
@@ -207,10 +244,21 @@ export async function getOverviewData(): Promise<OverviewData> {
   const summary = summarize24hRows(rows24h);
   const totalEvents24h = events24hRes.count ?? rows24h.length;
 
+  const coverageGapIn24h =
+    filterCoverageGapsInWindow(statusEvents, window24hStartMs, nowMs, nowMs).length > 0;
+  const coverageGapInPrior24h =
+    filterCoverageGapsInWindow(statusEvents, window48hStartMs, window24hStartMs, nowMs).length > 0;
+  const activeOutages = statusEvents.filter(
+    (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
+  );
+
   return {
     sourceMode: "supabase",
     totalEvents24h,
     priorEvents24h: priorRes.count ?? 0,
+    coverageGapIn24h,
+    coverageGapInPrior24h,
+    activeOutages,
     sampled24hCount: rows24h.length,
     is24hBreakdownSampled: totalEvents24h > rows24h.length,
     uniqueCountries24h: summary.uniqueCountries,
@@ -233,9 +281,12 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
 
   const days = periodDayCount(period);
   const sinceDate = dailyWindowStartDate(nowMs, days);
+  const seriesStartMs =
+    period === "24h" ? windowStartMs : Date.parse(`${sinceDate}T00:00:00.000Z`);
 
   let dailyStats = MOCK_DAILY_STATS;
   let recentEvents = MOCK_EVENTS;
+  let statusEvents: PublicSensorStatusEvent[] = MOCK_SENSOR_STATUS_EVENTS;
   let registeredSensorCount = MOCK_SENSORS.length;
   let historyStartedAt = earliestTimestamp([
     ...MOCK_EVENTS.map((event) => event.observed_at),
@@ -247,7 +298,8 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   if (client) {
     sourceMode = "supabase";
     const sinceIso = new Date(windowStartMs).toISOString();
-    const [statsRes, eventsRes, sensorsRes, oldestRes] = await Promise.all([
+    const statusSinceIso = new Date(seriesStartMs).toISOString();
+    const [statsRes, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
       client
         .from("public_daily_stats")
         .select("date_utc, sensor_id, protocol, event_type, event_count, unique_source_count")
@@ -266,15 +318,23 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
         .select("observed_at")
         .order("observed_at", { ascending: true })
         .limit(1),
+      client
+        .from("public_sensor_status_events")
+        .select("id, sensor_id, status, started_at, ended_at")
+        .or(`ended_at.is.null,ended_at.gte.${statusSinceIso}`)
+        .order("started_at", { ascending: false })
+        .limit(200),
     ]);
 
     if (statsRes.error) throw new Error(`public_daily_stats query failed: ${statsRes.error.message}`);
     if (eventsRes.error) throw new Error(`public_events trends query failed: ${eventsRes.error.message}`);
     if (sensorsRes.error) throw new Error(`public_sensors count failed: ${sensorsRes.error.message}`);
     if (oldestRes.error) throw new Error(`public_events history query failed: ${oldestRes.error.message}`);
+    if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
 
     dailyStats = z.array(PublicDailyStatSchema).parse(statsRes.data ?? []);
     recentEvents = z.array(PublicEventSchema).parse(eventsRes.data ?? []);
+    statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
     registeredSensorCount = sensorsRes.count ?? 0;
     eventMatchCount = eventsRes.count ?? recentEvents.length;
     const oldest = z
@@ -350,15 +410,19 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
     asnMap.set(asn, (asnMap.get(asn) ?? 0) + 1);
   }
 
+  const coverageGaps = filterCoverageGapsInWindow(statusEvents, seriesStartMs, nowMs, nowMs);
+  const annotatedSeries = annotateSeriesCoverage(series, coverageGaps, nowMs);
+
   return {
     sourceMode,
     period,
-    series,
+    series: annotatedSeries,
     seriesSource: useDailyStats ? "daily_stats" : "events",
     historyStartedAt,
     dataUpdatedAt: latestTimestamp(windowEvents.map((event) => event.received_at)),
     registeredSensorCount,
     isEventSampled: eventMatchCount > windowEvents.length,
+    coverageGaps,
     protocolTotals: Array.from(protocolMap.entries())
       .map(([protocol, count]) => ({ protocol, count }))
       .toSorted((a, b) => b.count - a.count),
@@ -500,5 +564,63 @@ export async function getEventDetail(id: string): Promise<EventDetailData> {
     event: PublicEventSchema.parse(eventRes.data),
     detections: z.array(PublicDetectionSchema).parse(detectionsRes.data ?? []),
     cveMatches: z.array(PublicEventCveMatchSchema).parse(matchesRes.data ?? []),
+  };
+}
+
+export async function getSensorsData(): Promise<SensorsPageData> {
+  const client = getPublicSupabaseClient();
+  const nowMs = client ? Date.now() : MOCK_REFERENCE_NOW_MS;
+
+  if (!client) {
+    const sensors: OverviewSensor[] = MOCK_SENSORS.map((sensor) => ({
+      ...sensor,
+      healthStatus: evaluateSensorHealth(sensor, nowMs),
+    }));
+    const activeOutages = MOCK_SENSOR_STATUS_EVENTS.filter(
+      (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
+    );
+    const hasAnyGap = MOCK_SENSOR_STATUS_EVENTS.some((event) => isCoverageGapStatus(event.status));
+    return {
+      sourceMode: "mock",
+      evaluatedAt: new Date(nowMs).toISOString(),
+      sensors,
+      statusEvents: MOCK_SENSOR_STATUS_EVENTS,
+      activeOutages,
+      hasAnyGap,
+    };
+  }
+
+  const since30d = new Date(nowMs - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const [sensorsRes, statusRes] = await Promise.all([
+    client.from("public_sensors").select("*").order("created_at", { ascending: true }),
+    client
+      .from("public_sensor_status_events")
+      .select("id, sensor_id, status, started_at, ended_at")
+      .or(`ended_at.is.null,ended_at.gte.${since30d}`)
+      .order("started_at", { ascending: false })
+      .limit(100),
+  ]);
+
+  if (sensorsRes.error) throw new Error(`public_sensors query failed: ${sensorsRes.error.message}`);
+  if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
+
+  const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
+  const sensors: OverviewSensor[] = parsedSensors.map((sensor) => ({
+    ...sensor,
+    healthStatus: evaluateSensorHealth(sensor, nowMs),
+  }));
+  const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
+  const activeOutages = statusEvents.filter(
+    (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
+  );
+  const hasAnyGap = statusEvents.some((event) => isCoverageGapStatus(event.status));
+
+  return {
+    sourceMode: "supabase",
+    evaluatedAt: new Date(nowMs).toISOString(),
+    sensors,
+    statusEvents,
+    activeOutages,
+    hasAnyGap,
   };
 }

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatJstDateTime, safeDisplayText } from "./format.ts";
 import {
+  annotateSeriesCoverage,
   buildDailySeries,
   buildHourlySeries,
   dailyWindowStartDate,
+  filterCoverageGapsInWindow,
+  formatOutageDuration,
   parseTrendPeriod,
   seriesHasLeadingGap,
   topHttpPaths,
@@ -15,6 +18,7 @@ import {
   getEventDetail,
   getOverviewData,
   getPaginatedEvents,
+  getSensorsData,
   getTrendsData,
 } from "./observatory.ts";
 import { buildWorldMapData } from "./world-map.ts";
@@ -204,5 +208,83 @@ describe("observatory data layer (mock mode)", () => {
       { protocol: "https", http_method: "POST", http_path_redacted: null },
     ]);
     assert.deepEqual(paths, [{ method: "GET", path: "/.env", count: 2 }]);
+  });
+
+  it("distinguishes zero-event buckets from sensor outage coverage gaps", async () => {
+    process.env.USE_MOCK = "true";
+    const nowMs = Date.parse("2026-11-22T12:00:00.000Z");
+    const emptyWeek = buildDailySeries([], nowMs, 7);
+    const statusEvents = [
+      {
+        id: "40000000-0000-4000-8000-000000000010",
+        sensor_id: "sensor-synthetic-01",
+        status: "offline" as const,
+        started_at: "2026-11-20T01:00:00.000Z",
+        ended_at: "2026-11-20T04:00:00.000Z",
+      },
+      {
+        id: "40000000-0000-4000-8000-000000000011",
+        sensor_id: "sensor-synthetic-01",
+        status: "healthy" as const,
+        started_at: "2026-11-21T00:00:00.000Z",
+        ended_at: "2026-11-21T12:00:00.000Z",
+      },
+      {
+        id: "40000000-0000-4000-8000-000000000012",
+        sensor_id: "sensor-synthetic-01",
+        status: "error" as const,
+        started_at: "2026-11-22T10:00:00.000Z",
+        ended_at: null,
+      },
+    ];
+
+    const annotated = annotateSeriesCoverage(emptyWeek, statusEvents, nowMs);
+    const day19 = annotated.find((b) => b.bucketStart === "2026-11-19");
+    const day20 = annotated.find((b) => b.bucketStart === "2026-11-20");
+    const day21 = annotated.find((b) => b.bucketStart === "2026-11-21");
+    const day22 = annotated.find((b) => b.bucketStart === "2026-11-22");
+    assert.equal(day19?.hasCoverageGap, undefined);
+    assert.equal(day20?.hasCoverageGap, true);
+    assert.deepEqual(day20?.gapStatuses, ["offline"]);
+    assert.equal(day21?.hasCoverageGap, undefined); // healthy transition is not a gap
+    assert.equal(day22?.hasCoverageGap, true); // ongoing outage (ended_at: null)
+    assert.deepEqual(day22?.gapStatuses, ["error"]);
+
+    const gaps = filterCoverageGapsInWindow(
+      statusEvents,
+      Date.parse("2026-11-20T00:00:00.000Z"),
+      nowMs,
+      nowMs,
+    );
+    assert.equal(gaps.length, 2);
+    assert.equal(formatOutageDuration("2026-11-20T01:00:00.000Z", "2026-11-20T03:30:00.000Z", nowMs), "2h 30m");
+
+    const pointEvent = [
+      {
+        id: "40000000-0000-4000-8000-000000000013",
+        sensor_id: "sensor-synthetic-01",
+        status: "error" as const,
+        started_at: "2026-11-22T12:00:00.000Z",
+        ended_at: null,
+      },
+    ];
+    assert.equal(
+      filterCoverageGapsInWindow(pointEvent, Date.parse("2026-11-22T00:00:00.000Z"), nowMs, nowMs).length,
+      1,
+    );
+
+    const sensorsData = await getSensorsData();
+    assert.equal(sensorsData.sourceMode, "mock");
+    assert.equal(sensorsData.sensors.length, 1);
+    assert.ok(sensorsData.sensors[0].monitored_services.includes("ssh"));
+    assert.equal(sensorsData.hasAnyGap, true);
+    for (const ev of sensorsData.statusEvents) {
+      assert.equal("summary" in ev, false);
+    }
+
+    const weekTrends = await getTrendsData("7d");
+    assert.equal(weekTrends.coverageGaps.length, 1);
+    const nov19 = weekTrends.series.find((b) => b.bucketStart === "2026-11-19");
+    assert.equal(nov19?.hasCoverageGap, true);
   });
 });

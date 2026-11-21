@@ -6,6 +6,7 @@ import type {
   PublicEvent,
   PublicEventCveMatch,
   PublicSensor,
+  PublicSensorStatusEvent,
 } from "./types.ts";
 
 // Deterministic synthetic fixtures for local/preview UI verification.
@@ -24,6 +25,18 @@ export const MOCK_SENSORS: PublicSensor[] = [
     last_heartbeat_at: new Date(BASE_MS - 35_000).toISOString(),
     last_event_at: new Date(BASE_MS - 42_000).toISOString(),
     created_at: "2026-11-01T00:00:00.000Z",
+    monitored_services: ["ssh", "telnet", "ftp", "mysql", "redis", "http", "https"],
+    last_error_at: null,
+  },
+];
+
+export const MOCK_SENSOR_STATUS_EVENTS: PublicSensorStatusEvent[] = [
+  {
+    id: "40000000-0000-4000-8000-000000000001",
+    sensor_id: "sensor-synthetic-01",
+    status: "offline",
+    started_at: "2026-11-19T03:00:00.000Z",
+    ended_at: "2026-11-19T05:30:00.000Z",
   },
 ];
 

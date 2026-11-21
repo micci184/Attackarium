@@ -27,6 +27,15 @@ export const TREND_PERIODS = ["24h", "7d", "30d"] as const;
 
 export type TrendPeriod = (typeof TREND_PERIODS)[number];
 
+export const SensorStatusEventTypeSchema = z.enum([
+  "healthy",
+  "degraded",
+  "offline",
+  "error",
+]);
+
+export type SensorStatusEventType = z.infer<typeof SensorStatusEventTypeSchema>;
+
 export const PublicSensorSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -36,9 +45,21 @@ export const PublicSensorSchema = z.object({
   last_heartbeat_at: z.string().nullable(),
   last_event_at: z.string().nullable(),
   created_at: z.string(),
+  monitored_services: z.array(ProtocolSchema).optional().default([]),
+  last_error_at: z.string().nullable().optional().default(null),
 });
 
 export type PublicSensor = z.infer<typeof PublicSensorSchema>;
+
+export const PublicSensorStatusEventSchema = z.object({
+  id: z.uuid(),
+  sensor_id: z.string(),
+  status: SensorStatusEventTypeSchema,
+  started_at: z.string(),
+  ended_at: z.string().nullable(),
+});
+
+export type PublicSensorStatusEvent = z.infer<typeof PublicSensorStatusEventSchema>;
 
 /**
  * Strictly sanitized public projection of an observed event.
@@ -128,12 +149,17 @@ export interface TrendBucket {
   bucketStart: string;
   label: string;
   totalEvents: number;
+  hasCoverageGap?: boolean;
+  gapStatuses?: SensorStatusEventType[];
 }
 
 export interface OverviewData {
   sourceMode: "mock" | "supabase";
   totalEvents24h: number;
   priorEvents24h: number;
+  coverageGapIn24h: boolean;
+  coverageGapInPrior24h: boolean;
+  activeOutages: PublicSensorStatusEvent[];
   sampled24hCount: number;
   is24hBreakdownSampled: boolean;
   uniqueCountries24h: number;
@@ -157,12 +183,22 @@ export interface TrendsData {
   dataUpdatedAt: string | null;
   registeredSensorCount: number;
   isEventSampled: boolean;
+  coverageGaps: PublicSensorStatusEvent[];
   protocolTotals: Array<{ protocol: Protocol; count: number }>;
   portTotals: Array<{ dstPort: number; protocol: Protocol; count: number }>;
   regionTotals: Array<{ country: string; count: number }>;
   asnTotals: Array<{ asn: string; count: number }>;
   patterns: PatternTotal[];
   httpPaths: HttpPathTotal[];
+}
+
+export interface SensorsPageData {
+  sourceMode: "mock" | "supabase";
+  evaluatedAt: string;
+  sensors: OverviewSensor[];
+  statusEvents: PublicSensorStatusEvent[];
+  activeOutages: PublicSensorStatusEvent[];
+  hasAnyGap: boolean;
 }
 
 export type EventPeriodFilter = TrendPeriod | "all";

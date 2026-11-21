@@ -5,6 +5,8 @@ import type {
   HttpPathTotal,
   PatternTotal,
   Protocol,
+  PublicSensorStatusEvent,
+  SensorStatusEventType,
   TrendBucket,
   TrendPeriod,
 } from "./types.ts";
@@ -253,6 +255,81 @@ export function eventMatchesExplorerFilters(
   if (category === "unclassified") return event.attack_category == null;
   if (category !== "all") return event.attack_category === category;
   return true;
+}
+
+export function isCoverageGapStatus(status: SensorStatusEventType): boolean {
+  return status !== "healthy";
+}
+
+export function intervalOverlapsWindow(
+  event: Pick<PublicSensorStatusEvent, "started_at" | "ended_at">,
+  windowStartMs: number,
+  windowEndMs: number,
+  nowMs: number,
+): boolean {
+  const startMs = Date.parse(event.started_at);
+  if (Number.isNaN(startMs)) return false;
+  const endMs = event.ended_at ? Date.parse(event.ended_at) : nowMs;
+  if (Number.isNaN(endMs) || endMs < startMs) return false;
+  if (endMs === startMs) {
+    return startMs >= windowStartMs && startMs <= windowEndMs;
+  }
+  return startMs < windowEndMs && endMs > windowStartMs;
+}
+
+export function filterCoverageGapsInWindow(
+  events: PublicSensorStatusEvent[],
+  windowStartMs: number,
+  windowEndMs: number,
+  nowMs: number,
+): PublicSensorStatusEvent[] {
+  return events.filter(
+    (event) =>
+      isCoverageGapStatus(event.status) &&
+      intervalOverlapsWindow(event, windowStartMs, windowEndMs, nowMs),
+  );
+}
+
+export function annotateSeriesCoverage(
+  series: TrendBucket[],
+  statusEvents: PublicSensorStatusEvent[],
+  nowMs: number,
+): TrendBucket[] {
+  const gapEvents = statusEvents.filter((event) => isCoverageGapStatus(event.status));
+  if (gapEvents.length === 0) return series;
+
+  return series.map((bucket) => {
+    const isHourly = bucket.bucketStart.includes("T");
+    const bucketStartMs = isHourly
+      ? Date.parse(bucket.bucketStart)
+      : Date.parse(`${bucket.bucketStart}T00:00:00.000Z`);
+    if (Number.isNaN(bucketStartMs)) return bucket;
+    const bucketEndMs = bucketStartMs + (isHourly ? HOUR_MS : DAY_MS);
+
+    const matchedStatuses = new Set<SensorStatusEventType>();
+    for (const ev of gapEvents) {
+      if (intervalOverlapsWindow(ev, bucketStartMs, bucketEndMs, nowMs)) {
+        matchedStatuses.add(ev.status);
+      }
+    }
+    if (matchedStatuses.size === 0) return bucket;
+    return {
+      ...bucket,
+      hasCoverageGap: true,
+      gapStatuses: Array.from(matchedStatuses),
+    };
+  });
+}
+
+export function formatOutageDuration(startedAt: string, endedAt: string | null, nowMs: number): string {
+  const startMs = Date.parse(startedAt);
+  const endMs = endedAt ? Date.parse(endedAt) : nowMs;
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) return "—";
+  const totalMinutes = Math.max(1, Math.round((endMs - startMs) / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
 export function trendPeriodLabel(period: TrendPeriod): string {

@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: "/", label: "Overview", desc: "24h summary & sensors" },
   { href: "/trends", label: "Trends", desc: "Daily rollups & top lists" },
   { href: "/events", label: "Events", desc: "Sanitized log explorer" },
+  { href: "/sensors", label: "Sensors", desc: "Health & coverage gaps" },
 ] as const;
 
 export function NavHeader() {
