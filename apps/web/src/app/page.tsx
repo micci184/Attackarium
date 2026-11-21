@@ -1,11 +1,23 @@
 import Link from "next/link";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { MethodologyBanner } from "@/components/methodology-banner";
+import { ObservationMeta } from "@/components/observation-meta";
+import { PatternLists } from "@/components/pattern-lists";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
 import { WorldGeoMap } from "@/components/world-geo-map";
 import { formatCount, formatJstShort, safeDisplayText } from "@/lib/format";
 import { getOverviewData } from "@/lib/observatory";
 import { buildWorldMapData } from "@/lib/world-map";
+
+function formatPriorWindow(current: number, prior: number): string {
+  const delta = current - prior;
+  const signed = `${delta > 0 ? "+" : ""}${formatCount(delta)}`;
+  if (prior <= 0) {
+    return `${formatCount(current)} latest · ${formatCount(prior)} in the previous 24h`;
+  }
+  const pct = Math.round((delta / prior) * 1000) / 10;
+  return `${signed} (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%) vs the previous 24h`;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +44,13 @@ export default async function OverviewPage() {
           <p className="mt-0.5 text-xs text-gray-500">
             24-hour observation summary, sensor health, and recent sanitized events
           </p>
+          <div className="mt-2">
+            <ObservationMeta
+              windowLabel="Past 24 hours"
+              updatedAt={data.dataUpdatedAt}
+              sensorCount={data.sensors.length}
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <span
@@ -58,7 +77,7 @@ export default async function OverviewPage() {
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-gray-900">
             {formatCount(data.totalEvents24h)}
           </p>
-          <p className="mt-1 text-[11px] text-gray-400">Sanitized public records</p>
+          <p className="mt-1 text-[11px] text-gray-500">{formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}</p>
         </div>
 
         <div className="p-4">
@@ -256,6 +275,16 @@ export default async function OverviewPage() {
           </div>
         </section>
       </div>
+
+      <PatternLists
+        patterns={data.patterns24h}
+        httpPaths={data.httpPaths24h}
+        sampledNote={
+          data.is24hBreakdownSampled
+            ? `Pattern and path counts use the latest ${formatCount(data.sampled24hCount)} of ${formatCount(data.totalEvents24h)} events.`
+            : null
+        }
+      />
 
       {/* Recent Sanitized Events */}
       <section className="rounded border border-gray-200 bg-white">
