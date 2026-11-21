@@ -14,8 +14,11 @@ import {
   countEventsInWindow,
   dailyWindowStartDate,
   earliestTimestamp,
+  eventMatchesExplorerFilters,
   eventsToDailyRows,
   latestTimestamp,
+  parseEventCategory,
+  parseEventPeriod,
   periodDayCount,
   periodLengthMs,
   topHttpPaths,
@@ -379,19 +382,25 @@ export async function getPaginatedEvents(options: {
   page?: number;
   pageSize?: number;
   protocol?: string;
+  period?: string;
+  category?: string;
 }): Promise<PaginatedEventsResult> {
   const pageSize = Math.min(Math.max(options.pageSize ?? 12, 1), 50);
   const requestedPage = Math.max(options.page ?? 1, 1);
   const parsedProtocol = ProtocolSchema.safeParse(options.protocol);
   const protocolFilter: Protocol | "all" = parsedProtocol.success ? parsedProtocol.data : "all";
+  const periodFilter = parseEventPeriod(options.period);
+  const categoryFilter = parseEventCategory(options.category);
 
   const client = getPublicSupabaseClient();
+  const nowMs = client ? Date.now() : MOCK_REFERENCE_NOW_MS;
 
   if (!client) {
-    const filtered =
-      protocolFilter === "all"
-        ? MOCK_EVENTS
-        : MOCK_EVENTS.filter((ev) => ev.protocol === protocolFilter);
+    const filtered = MOCK_EVENTS.filter(
+      (event) =>
+        (protocolFilter === "all" || event.protocol === protocolFilter) &&
+        eventMatchesExplorerFilters(event, periodFilter, categoryFilter, nowMs),
+    );
     const totalCount = filtered.length;
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const page = Math.min(requestedPage, totalPages);
@@ -405,6 +414,8 @@ export async function getPaginatedEvents(options: {
       totalCount,
       totalPages,
       protocolFilter,
+      periodFilter,
+      categoryFilter,
     };
   }
 
@@ -417,6 +428,16 @@ export async function getPaginatedEvents(options: {
 
   if (protocolFilter !== "all") {
     query = query.eq("protocol", protocolFilter);
+  }
+  if (periodFilter !== "all") {
+    query = query
+      .gte("observed_at", new Date(nowMs - periodLengthMs(periodFilter)).toISOString())
+      .lte("observed_at", new Date(nowMs).toISOString());
+  }
+  if (categoryFilter === "unclassified") {
+    query = query.is("attack_category", null);
+  } else if (categoryFilter !== "all") {
+    query = query.eq("attack_category", categoryFilter);
   }
 
   const { data, count, error } = await query;
@@ -433,6 +454,8 @@ export async function getPaginatedEvents(options: {
     totalCount,
     totalPages,
     protocolFilter,
+    periodFilter,
+    categoryFilter,
   };
 }
 

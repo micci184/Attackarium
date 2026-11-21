@@ -51,7 +51,38 @@ describe("observatory data layer (mock mode)", () => {
     assert.ok(httpOnly.items.length > 0);
     for (const item of httpOnly.items) {
       assert.equal(item.protocol, "http");
+      assert.equal(item.attack_category, "http_path_probe");
+      assert.equal("src_ip" in item, false);
+      assert.equal("metadata" in item, false);
     }
+
+    const authOnly = await getPaginatedEvents({ page: 1, pageSize: 50, category: "auth_attempt" });
+    assert.equal(authOnly.categoryFilter, "auth_attempt");
+    assert.ok(authOnly.totalCount > 0);
+    for (const item of authOnly.items) {
+      assert.equal(item.attack_category, "auth_attempt");
+    }
+
+    const unclassified = await getPaginatedEvents({ page: 1, pageSize: 20, category: "unclassified" });
+    assert.equal(unclassified.totalCount, 4);
+    for (const item of unclassified.items) {
+      assert.equal(item.attack_category ?? null, null);
+    }
+
+    const recent = await getPaginatedEvents({ page: 1, pageSize: 50, period: "24h" });
+    assert.equal(recent.periodFilter, "24h");
+    assert.equal(recent.totalCount, 36);
+
+    const ignored = await getPaginatedEvents({
+      page: 1,
+      protocol: "not-a-protocol",
+      period: "1y",
+      category: "exploit",
+    });
+    assert.equal(ignored.protocolFilter, "all");
+    assert.equal(ignored.periodFilter, "all");
+    assert.equal(ignored.categoryFilter, "all");
+    assert.equal(ignored.totalCount, 36);
   });
 
   it("loads candidate CVE match detail with rule metadata and handles invalid IDs safely", async () => {

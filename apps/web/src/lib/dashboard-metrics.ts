@@ -1,5 +1,7 @@
 import type {
   AttackCategory,
+  EventCategoryFilter,
+  EventPeriodFilter,
   HttpPathTotal,
   PatternTotal,
   Protocol,
@@ -210,6 +212,47 @@ export function seriesHasLeadingGap(
     : Date.parse(`${firstBucket.bucketStart}T00:00:00.000Z`);
   if (Number.isNaN(firstBucketMs)) return false;
   return historyMs > firstBucketMs;
+}
+
+export function attackCategoryLabel(category: AttackCategory | null | undefined): string {
+  if (!category) return "Unclassified";
+  return CATEGORY_LABELS[category];
+}
+
+export function parseEventPeriod(value: string | undefined): EventPeriodFilter {
+  if (value === "24h" || value === "7d" || value === "30d") return value;
+  return "all";
+}
+
+export function parseEventCategory(value: string | undefined): EventCategoryFilter {
+  if (value === "unclassified") return "unclassified";
+  if (
+    value === "port_scan" ||
+    value === "auth_attempt" ||
+    value === "http_path_probe" ||
+    value === "web_attack_attempt" ||
+    value === "suspected_cve_probe"
+  ) {
+    return value;
+  }
+  return "all";
+}
+
+export function eventMatchesExplorerFilters(
+  event: { observed_at: string; attack_category?: AttackCategory | null },
+  period: EventPeriodFilter,
+  category: EventCategoryFilter,
+  nowMs: number,
+): boolean {
+  if (period !== "all") {
+    const observedMs = Date.parse(event.observed_at);
+    if (Number.isNaN(observedMs) || observedMs < nowMs - periodLengthMs(period) || observedMs > nowMs) {
+      return false;
+    }
+  }
+  if (category === "unclassified") return event.attack_category == null;
+  if (category !== "all") return event.attack_category === category;
+  return true;
 }
 
 export function trendPeriodLabel(period: TrendPeriod): string {
