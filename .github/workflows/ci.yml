@@ -38,6 +38,7 @@ jobs:
             psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f "$f"
           done
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/rls_test.sql
+          psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/rollup_test.sql
 
   ingest-tests:
     name: Ingest Edge Function Security & Idempotency Tests
