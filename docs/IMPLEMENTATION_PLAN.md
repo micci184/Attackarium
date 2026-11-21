@@ -31,7 +31,7 @@ sensor (these do not block local development, documentation, or Issue organizati
 - [x] Confirm abuse handling uses the existing AWS account contact, and emergency response is the manual runbook in `docs/RUNBOOK.md` (ADR-021).
 - [x] Finalize retention: no raw IP or raw payload in Supabase; EC2 raw logs within 24 hours; sanitized events at least 30 days; daily aggregates at least 1 year (ADR-022, ADR-023).
 - [x] Select MIT for Attackarium source code only (ADR-024).
-- [ ] Owner explicitly approves AWS provisioning and public sensor exposure.
+- [x] Owner explicitly approves AWS provisioning and public sensor exposure.
 
 **Done when:** the policy items above are documented and the owner explicitly
 approves AWS provisioning and public sensor exposure. Policy documentation alone

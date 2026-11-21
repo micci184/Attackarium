@@ -98,3 +98,23 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  infra-validate:
+    name: Terraform Format & Validate (No Apply)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/aws-sensor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+      - name: Initialize without backend and validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Syntax-check egress verification script
+        run: bash -n scripts/verify_egress.sh
