@@ -19,6 +19,8 @@ TEST_SECRET = "test-shipper-hmac-secret-at-least-32-chars"
 class MockIngestState:
     def __init__(self) -> None:
         self.fail_next = 0
+        self.rate_limit_next = 0
+        self.reject_event_ids: set[str] = set()
         self.received_event_ids: set[str] = set()
         self.received_request_ids: set[str] = set()
         self.signature_failures = 0
@@ -55,13 +57,25 @@ class MockIngestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if self.state.rate_limit_next > 0:
+            self.state.rate_limit_next -= 1
+            self.send_response(429)
+            self.send_header("Retry-After", "25")
+            self.end_headers()
+            return
+
         if request_id in self.state.received_request_ids:
             self.send_response(409)
             self.end_headers()
             return
 
-        self.state.received_request_ids.add(request_id)
         payload = json.loads(raw_body)
+        if any(ev["id"] in self.state.reject_event_ids for ev in payload.get("events", [])):
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        self.state.received_request_ids.add(request_id)
         for ev in payload.get("events", []):
             self.state.received_event_ids.add(ev["id"])
 
@@ -199,6 +213,71 @@ class ShipperIntegrationTests(unittest.TestCase):
             self.assertLess(added, 5)
             self.assertEqual(shipper.metrics.dropped_spool_full, 5 - added)
             self.assertLessEqual(shipper.spool.total_bytes(), 400)
+        finally:
+            shipper.close()
+
+    def test_rejects_non_https_remote_ingest_url(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "badurl.sqlite3"
+        for bad_url in ("http://example.com/ingest", "file:///etc/passwd"):
+            cfg = ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=bad_url,
+                spool_path=spool_path,
+            )
+            with self.assertRaises(ValueError):
+                EventShipper(cfg)
+
+    def test_isolates_http_400_poison_pill_and_honors_429_retry_after(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "poison.sqlite3"
+        cfg = ShipperConfig(
+            sensor_id="sensor-dev-01",
+            hmac_secret=TEST_SECRET,
+            ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+            spool_path=spool_path,
+        )
+        shipper = EventShipper(cfg)
+        try:
+            bad_id = "33333333-3333-4333-8333-000000000001"
+            good_id = "33333333-3333-4333-8333-000000000002"
+            self.state.reject_event_ids.add(bad_id)
+            lines = [
+                json.dumps(
+                    {
+                        "source": "http_collector",
+                        "id": bad_id,
+                        "observed_at": "2026-11-21T10:00:00Z",
+                        "protocol": "http",
+                        "dst_port": 80,
+                        "event_type": "http_probe",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "source": "http_collector",
+                        "id": good_id,
+                        "observed_at": "2026-11-21T10:00:01Z",
+                        "protocol": "http",
+                        "dst_port": 80,
+                        "event_type": "http_probe",
+                    }
+                ),
+            ]
+            self.assertEqual(shipper.ingest_jsonl_lines(lines), 2)
+
+            # First hit 429 and confirm Retry-After drives backoff
+            self.state.rate_limit_next = 1
+            self.assertFalse(shipper.flush_once())
+            self.assertEqual(shipper.metrics.last_error, "http_429")
+            self.assertGreaterEqual(shipper.next_backoff_seconds(), 25.0)
+
+            # Next flush encounters 400 on combined batch, isolates poison pill, delivers good event
+            self.assertTrue(shipper.flush_once())
+            self.assertEqual(shipper.spool.count(), 0)
+            self.assertEqual(shipper.metrics.dropped_invalid, 1)
+            self.assertEqual(shipper.metrics.events_delivered, 1)
+            self.assertIn(good_id, self.state.received_event_ids)
+            self.assertNotIn(bad_id, self.state.received_event_ids)
         finally:
             shipper.close()
 

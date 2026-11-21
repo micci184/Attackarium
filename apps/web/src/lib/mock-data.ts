@@ -10,7 +10,8 @@ import type {
 // Deterministic synthetic fixtures for local/preview UI verification.
 // Never contains real attacker IPs, real credentials, or raw payloads.
 
-const BASE_MS = Date.parse("2026-11-21T09:50:00.000Z");
+export const MOCK_REFERENCE_NOW_MS = Date.parse("2026-11-21T09:50:00.000Z");
+const BASE_MS = MOCK_REFERENCE_NOW_MS;
 
 export const MOCK_SENSORS: PublicSensor[] = [
   {

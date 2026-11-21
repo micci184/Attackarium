@@ -10,6 +10,9 @@ import {
 const SENSOR_ID_REGEX = /^[a-z0-9][a-z0-9_-]{1,63}$/;
 const REQUEST_ID_REGEX = /^[A-Za-z0-9._-]{8,128}$/;
 const SIGNATURE_PREFIX = "sha256=";
+// Non-secret placeholder used to execute the same HMAC computation path for
+// unknown sensor IDs, reducing timing and error-message enumeration signals.
+const UNKNOWN_SENSOR_FALLBACK_KEY = "invalid-sensor-placeholder-hmac-key-do-not-use";
 
 export interface IngestConfig {
   sensorSecrets: Record<string, string>;
@@ -18,18 +21,28 @@ export interface IngestConfig {
   maxBatchEvents: number;
   rateLimitPerMinute: number;
   ipHashSalt?: string;
+  /**
+   * When false (default), plaintext src_ip is cleared after optional salted
+   * hashing so raw IPs are not persisted in attack_events.
+   */
+  storeRawIp?: boolean;
 }
 
+export type CommitBatchResult =
+  | { status: "ok"; inserted: number }
+  | { status: "replayed" }
+  | { status: "rate_limited" }
+  | { status: "unknown_sensor" };
+
 export interface IngestRepository {
-  countRecentReceipts(sensorId: string, sinceIso: string): Promise<number>;
-  recordReceipt(
-    sensorId: string,
-    requestId: string,
-    receivedAtIso: string,
-    expiresAtIso: string,
-  ): Promise<{ inserted: boolean }>;
-  upsertEvents(events: NormalizedAttackEvent[]): Promise<{ inserted: number }>;
-  touchSensorHeartbeat(sensorId: string, timestampIso: string): Promise<void>;
+  commitBatch(params: {
+    sensorId: string;
+    requestId: string;
+    receivedAtIso: string;
+    expiresAtIso: string;
+    rateLimitPerMinute: number;
+    events: NormalizedAttackEvent[];
+  }): Promise<CommitBatchResult>;
 }
 
 const encoder = new TextEncoder();
@@ -95,6 +108,10 @@ function jsonResponse(
   });
 }
 
+/**
+ * Streams the request body up to maxBytes and cancels immediately on overflow,
+ * preventing memory exhaustion from chunked or spoofed-Content-Length payloads.
+ */
 async function readBoundedBody(
   request: Request,
   maxBytes: number,
@@ -107,15 +124,43 @@ async function readBoundedBody(
     }
   }
 
-  const buffer = await request.arrayBuffer();
-  if (buffer.byteLength === 0) {
+  if (!request.body) {
     return { ok: false, status: 400, error: "Request body is empty" };
   }
-  if (buffer.byteLength > maxBytes) {
-    return { ok: false, status: 413, error: "Payload exceeds maximum allowed size" };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel("Payload exceeds maximum allowed size").catch(() => undefined);
+        return { ok: false, status: 413, error: "Payload exceeds maximum allowed size" };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
   }
 
-  return { ok: true, text: new TextDecoder("utf-8", { fatal: false }).decode(buffer) };
+  if (totalBytes === 0) {
+    return { ok: false, status: 400, error: "Request body is empty" };
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return { ok: true, text: new TextDecoder("utf-8", { fatal: false }).decode(merged) };
 }
 
 export async function handleIngestRequest(
@@ -139,38 +184,41 @@ export async function handleIngestRequest(
   const signatureHeader = (request.headers.get("x-signature") ?? "").trim();
 
   if (!SENSOR_ID_REGEX.test(sensorId)) {
-    return jsonResponse(401, { error: "Invalid or missing X-Sensor-Id" });
+    return jsonResponse(401, { error: "Authentication failed" });
   }
   if (!REQUEST_ID_REGEX.test(requestId)) {
     return jsonResponse(400, { error: "Invalid or missing X-Request-Id" });
   }
   if (!/^\d{9,12}$/.test(timestampHeader)) {
-    return jsonResponse(401, { error: "Invalid or missing X-Timestamp" });
+    return jsonResponse(401, { error: "Authentication failed" });
   }
 
   const timestampSec = Number(timestampHeader);
   const nowSec = Math.floor(nowMs / 1000);
   if (Math.abs(nowSec - timestampSec) > config.maxSkewSeconds) {
-    return jsonResponse(401, { error: "Request timestamp outside allowed window" });
-  }
-
-  const sensorSecret = config.sensorSecrets[sensorId];
-  if (!sensorSecret) {
-    return jsonResponse(401, { error: "Unknown sensor credentials" });
+    return jsonResponse(401, { error: "Authentication failed" });
   }
 
   if (!signatureHeader.startsWith(SIGNATURE_PREFIX)) {
-    return jsonResponse(401, { error: "Invalid X-Signature format" });
+    return jsonResponse(401, { error: "Authentication failed" });
   }
   const providedHex = signatureHeader.slice(SIGNATURE_PREFIX.length).toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(providedHex)) {
-    return jsonResponse(401, { error: "Invalid X-Signature digest" });
+    return jsonResponse(401, { error: "Authentication failed" });
   }
 
   const bodyResult = await readBoundedBody(request, config.maxBodyBytes);
   if (!bodyResult.ok) {
     return jsonResponse(bodyResult.status, { error: bodyResult.error });
   }
+
+  const hasSensorSecret = Object.prototype.hasOwnProperty.call(
+    config.sensorSecrets,
+    sensorId,
+  );
+  const sensorSecret = hasSensorSecret
+    ? config.sensorSecrets[sensorId]
+    : UNKNOWN_SENSOR_FALLBACK_KEY;
 
   const signingPayload = buildSignaturePayload(
     sensorId,
@@ -179,8 +227,12 @@ export async function handleIngestRequest(
     bodyResult.text,
   );
   const expectedHex = await computeHmacSha256Hex(sensorSecret, signingPayload);
-  if (!constantTimeEqual(providedHex, expectedHex)) {
-    return jsonResponse(401, { error: "Signature verification failed" });
+  const signatureValid = constantTimeEqual(providedHex, expectedHex);
+
+  // Use one uniform error response for unknown sensor IDs and invalid signatures
+  // to prevent sensor ID enumeration.
+  if (!hasSensorSecret || !signatureValid) {
+    return jsonResponse(401, { error: "Authentication failed" });
   }
 
   let parsedJson: unknown;
@@ -198,10 +250,41 @@ export async function handleIngestRequest(
     return jsonResponse(400, { error: validation.error });
   }
 
-  // Per-sensor sliding-window rate limit
-  const windowStartIso = new Date(nowMs - 60_000).toISOString();
-  const recentCount = await repo.countRecentReceipts(sensorId, windowStartIso);
-  if (recentCount >= config.rateLimitPerMinute) {
+  // Data minimization: derive salted keyed IP hash when configured, and drop
+  // plaintext src_ip by default unless explicitly opted in.
+  const events = validation.value;
+  for (const ev of events) {
+    if (ev.src_ip) {
+      if (config.ipHashSalt) {
+        ev.src_ip_hash = await hashIpWithSalt(ev.src_ip, config.ipHashSalt);
+      }
+      if (!config.storeRawIp) {
+        ev.src_ip = null;
+      }
+    }
+  }
+
+  const receivedAtIso = new Date(nowMs).toISOString();
+  const expiresAtIso = new Date(
+    nowMs + Math.max(config.maxSkewSeconds * 2, 600) * 1000,
+  ).toISOString();
+
+  const commitResult = await repo.commitBatch({
+    sensorId,
+    requestId,
+    receivedAtIso,
+    expiresAtIso,
+    rateLimitPerMinute: config.rateLimitPerMinute,
+    events,
+  });
+
+  if (commitResult.status === "unknown_sensor") {
+    return jsonResponse(401, { error: "Authentication failed" });
+  }
+  if (commitResult.status === "replayed") {
+    return jsonResponse(409, { error: "Replayed request detected" });
+  }
+  if (commitResult.status === "rate_limited") {
     return jsonResponse(
       429,
       { error: "Per-sensor ingest rate limit exceeded" },
@@ -209,38 +292,10 @@ export async function handleIngestRequest(
     );
   }
 
-  // Anti-replay receipt check (persisted nonce)
-  const receivedAtIso = new Date(nowMs).toISOString();
-  const expiresAtIso = new Date(
-    nowMs + Math.max(config.maxSkewSeconds * 2, 600) * 1000,
-  ).toISOString();
-  const receipt = await repo.recordReceipt(
-    sensorId,
-    requestId,
-    receivedAtIso,
-    expiresAtIso,
-  );
-  if (!receipt.inserted) {
-    return jsonResponse(409, { error: "Replayed request detected" });
-  }
-
-  // Optionally derive salted keyed IP hashes for privacy-preserving dedupe/counting
-  const events = validation.value;
-  if (config.ipHashSalt) {
-    for (const ev of events) {
-      if (ev.src_ip) {
-        ev.src_ip_hash = await hashIpWithSalt(ev.src_ip, config.ipHashSalt);
-      }
-    }
-  }
-
-  const { inserted } = await repo.upsertEvents(events);
-  await repo.touchSensorHeartbeat(sensorId, receivedAtIso);
-
   return jsonResponse(200, {
     request_id: requestId,
     accepted: events.length,
-    inserted,
-    duplicates: events.length - inserted,
+    inserted: commitResult.inserted,
+    duplicates: events.length - commitResult.inserted,
   });
 }

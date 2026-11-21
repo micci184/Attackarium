@@ -31,7 +31,7 @@ export type PublicSensor = z.infer<typeof PublicSensorSchema>;
  * Never includes src_ip, src_ip_hash, credentials, raw_object_key, or raw metadata.
  */
 export const PublicEventSchema = z.object({
-  id: z.string().uuid(),
+  id: z.uuid(),
   sensor_id: z.string(),
   observed_at: z.string(),
   received_at: z.string(),
@@ -48,23 +48,23 @@ export const PublicEventSchema = z.object({
 export type PublicEvent = z.infer<typeof PublicEventSchema>;
 
 export const PublicDetectionSchema = z.object({
-  id: z.string().uuid(),
-  event_id: z.string().uuid(),
+  id: z.uuid(),
+  event_id: z.uuid(),
   rule_id: z.string(),
   rule_version: z.string(),
   classification: z.enum(["observed", "indicator_match", "candidate_cve"]),
   confidence: z.coerce.number().min(0).max(1),
-  evidence_redacted: z.record(z.unknown()),
+  evidence_redacted: z.record(z.string(), z.unknown()),
   created_at: z.string(),
 });
 
 export type PublicDetection = z.infer<typeof PublicDetectionSchema>;
 
 export const PublicEventCveMatchSchema = z.object({
-  id: z.string().uuid(),
-  event_id: z.string().uuid(),
+  id: z.uuid(),
+  event_id: z.uuid(),
   cve_id: z.string(),
-  detection_id: z.string().uuid(),
+  detection_id: z.uuid(),
   match_type: z.enum(["candidate_cve", "indicator_match"]),
   confidence: z.coerce.number().min(0).max(1),
   reason: z.string(),
@@ -90,12 +90,21 @@ export const PublicDailyStatSchema = z.object({
 
 export type PublicDailyStat = z.infer<typeof PublicDailyStatSchema>;
 
+export type SensorHealthStatus = "healthy" | "stale" | "inactive";
+
+export interface OverviewSensor extends PublicSensor {
+  healthStatus: SensorHealthStatus;
+}
+
 export interface OverviewData {
   sourceMode: "mock" | "supabase";
   totalEvents24h: number;
+  sampled24hCount: number;
+  is24hBreakdownSampled: boolean;
   uniqueCountries24h: number;
   activeSensorCount: number;
-  sensors: PublicSensor[];
+  healthySensorCount: number;
+  sensors: OverviewSensor[];
   protocolBreakdown: Array<{ protocol: Protocol; count: number; sharePct: number }>;
   regionTotals24h: Array<{ country: string; count: number }>;
   recentEvents: PublicEvent[];
@@ -103,7 +112,7 @@ export interface OverviewData {
 
 export interface TrendsData {
   sourceMode: "mock" | "supabase";
-  dailySeries: Array<{ dateUtc: string; totalEvents: number; uniqueSources: number }>;
+  dailySeries: Array<{ dateUtc: string; totalEvents: number }>;
   protocolTotals: Array<{ protocol: Protocol; count: number }>;
   portTotals: Array<{ dstPort: number; protocol: Protocol; count: number }>;
   regionTotals: Array<{ country: string; count: number }>;

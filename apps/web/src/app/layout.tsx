@@ -22,7 +22,7 @@ export default function RootLayout({
       <body className="min-h-screen overflow-x-hidden bg-[#f7f8fa] text-gray-900 antialiased">
         <a
           href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-[#632ca6] focus:px-3 py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-[#632ca6] focus:ring-offset-2"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-[#632ca6] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-[#632ca6] focus:ring-offset-2"
         >
           Skip to main content
         </a>

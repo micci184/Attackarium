@@ -162,7 +162,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                     translate="no"
                     className="mt-2.5 overflow-x-auto rounded border border-gray-200 bg-white p-3 font-mono text-[11px] text-gray-700"
                   >
-                    {JSON.stringify(d.evidence_redacted, null, 2)}
+                    {safeDisplayText(JSON.stringify(d.evidence_redacted, null, 2))}
                   </pre>
                 </div>
               ))}

@@ -112,30 +112,34 @@ export default async function TrendsPage() {
             </h2>
           </div>
           <div className="space-y-1.5 p-4">
-            {data.protocolTotals.map((item) => {
-              const widthPct = Math.max(Math.round((item.count / maxProto) * 100), 3);
-              return (
-                <div
-                  key={item.protocol}
-                  className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
-                >
+            {data.protocolTotals.length === 0 ? (
+              <p className="text-xs text-gray-500">No protocol statistics recorded yet.</p>
+            ) : (
+              data.protocolTotals.map((item) => {
+                const widthPct = Math.max(Math.round((item.count / maxProto) * 100), 3);
+                return (
                   <div
-                    aria-hidden="true"
-                    className="absolute inset-y-0 left-0 opacity-15"
-                    style={{
-                      width: `${widthPct}%`,
-                      backgroundColor: PROTOCOL_COLORS[item.protocol],
-                    }}
-                  />
-                  <div className="relative flex items-center justify-between text-xs">
-                    <ProtocolBadge protocol={item.protocol} />
-                    <span className="font-mono font-medium tabular-nums text-gray-900">
-                      {formatCount(item.count)}
-                    </span>
+                    key={item.protocol}
+                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 left-0 opacity-15"
+                      style={{
+                        width: `${widthPct}%`,
+                        backgroundColor: PROTOCOL_COLORS[item.protocol],
+                      }}
+                    />
+                    <div className="relative flex items-center justify-between text-xs">
+                      <ProtocolBadge protocol={item.protocol} />
+                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                        {formatCount(item.count)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </section>
 
@@ -146,35 +150,39 @@ export default async function TrendsPage() {
             </h2>
           </div>
           <div className="space-y-1.5 p-4">
-            {data.portTotals.map((item) => {
-              const widthPct = Math.max(Math.round((item.count / maxPort) * 100), 3);
-              return (
-                <div
-                  key={`${item.protocol}:${item.dstPort}`}
-                  className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
-                >
+            {data.portTotals.length === 0 ? (
+              <p className="text-xs text-gray-500">No destination port data available yet.</p>
+            ) : (
+              data.portTotals.map((item) => {
+                const widthPct = Math.max(Math.round((item.count / maxPort) * 100), 3);
+                return (
                   <div
-                    aria-hidden="true"
-                    className="absolute inset-y-0 left-0 bg-[#632ca6]/10"
-                    style={{ width: `${widthPct}%` }}
-                  />
-                  <div className="relative flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <ProtocolBadge protocol={item.protocol} />
-                      <span
-                        translate="no"
-                        className="font-mono tabular-nums text-gray-700"
-                      >
-                        :{item.dstPort}
+                    key={`${item.protocol}:${item.dstPort}`}
+                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 left-0 bg-[#632ca6]/10"
+                      style={{ width: `${widthPct}%` }}
+                    />
+                    <div className="relative flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2">
+                        <ProtocolBadge protocol={item.protocol} />
+                        <span
+                          translate="no"
+                          className="font-mono tabular-nums text-gray-700"
+                        >
+                          :{item.dstPort}
+                        </span>
+                      </div>
+                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                        {formatCount(item.count)}
                       </span>
                     </div>
-                    <span className="font-mono font-medium tabular-nums text-gray-900">
-                      {formatCount(item.count)}
-                    </span>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </section>
 
@@ -188,29 +196,33 @@ export default async function TrendsPage() {
             <p className="pb-1 text-[11px] text-gray-500">
               IP-based geolocation may be inaccurate due to proxies, VPNs, or cloud VPS hosts.
             </p>
-            {data.regionTotals.map((item) => {
-              const widthPct = Math.max(Math.round((item.count / maxRegion) * 100), 3);
-              return (
-                <div
-                  key={item.country}
-                  className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
-                >
+            {data.regionTotals.length === 0 ? (
+              <p className="text-xs text-gray-500">No regional data available yet.</p>
+            ) : (
+              data.regionTotals.map((item) => {
+                const widthPct = Math.max(Math.round((item.count / maxRegion) * 100), 3);
+                return (
                   <div
-                    aria-hidden="true"
-                    className="absolute inset-y-0 left-0 bg-blue-600/10"
-                    style={{ width: `${widthPct}%` }}
-                  />
-                  <div className="relative flex items-center justify-between text-xs">
-                    <span translate="no" className="font-mono text-gray-700">
-                      {item.country}
-                    </span>
-                    <span className="font-mono font-medium tabular-nums text-gray-900">
-                      {formatCount(item.count)}
-                    </span>
+                    key={item.country}
+                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 left-0 bg-blue-600/10"
+                      style={{ width: `${widthPct}%` }}
+                    />
+                    <div className="relative flex items-center justify-between text-xs">
+                      <span translate="no" className="font-mono text-gray-700">
+                        {item.country}
+                      </span>
+                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                        {formatCount(item.count)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </section>
 
@@ -221,29 +233,33 @@ export default async function TrendsPage() {
             </h2>
           </div>
           <div className="space-y-1.5 p-4">
-            {data.asnTotals.map((item) => {
-              const widthPct = Math.max(Math.round((item.count / maxAsn) * 100), 3);
-              return (
-                <div
-                  key={item.asn}
-                  className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
-                >
+            {data.asnTotals.length === 0 ? (
+              <p className="text-xs text-gray-500">No ASN observations recorded yet.</p>
+            ) : (
+              data.asnTotals.map((item) => {
+                const widthPct = Math.max(Math.round((item.count / maxAsn) * 100), 3);
+                return (
                   <div
-                    aria-hidden="true"
-                    className="absolute inset-y-0 left-0 bg-teal-600/10"
-                    style={{ width: `${widthPct}%` }}
-                  />
-                  <div className="relative flex items-center justify-between text-xs">
-                    <span translate="no" className="font-mono text-gray-700">
-                      {item.asn}
-                    </span>
-                    <span className="font-mono font-medium tabular-nums text-gray-900">
-                      {formatCount(item.count)}
-                    </span>
+                    key={item.asn}
+                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="absolute inset-y-0 left-0 bg-teal-600/10"
+                      style={{ width: `${widthPct}%` }}
+                    />
+                    <div className="relative flex items-center justify-between text-xs">
+                      <span translate="no" className="font-mono text-gray-700">
+                        {item.asn}
+                      </span>
+                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                        {formatCount(item.count)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </section>
       </div>

@@ -12,24 +12,24 @@
     "test": "node --test src/lib/observatory.test.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.49.4",
-    "d3-geo": "^3.1.2",
-    "next": "16.0.10",
+    "@supabase/supabase-js": "2.119.2",
+    "d3-geo": "3.1.2",
+    "next": "16.4.6",
     "react": "19.2.1",
     "react-dom": "19.2.1",
-    "topojson-client": "^3.1.0",
-    "world-atlas": "^2.0.2",
-    "zod": "3.24.2"
+    "topojson-client": "3.1.0",
+    "world-atlas": "2.0.2",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.4",
-    "@types/d3-geo": "^3.1.1",
+    "@types/d3-geo": "3.1.1",
     "@types/node": "22.15.3",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
-    "@types/topojson-client": "^3.1.5",
-    "eslint": "9.25.1",
-    "eslint-config-next": "16.0.10",
+    "@types/topojson-client": "3.1.5",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.6",
     "tailwindcss": "4.1.4",
     "typescript": "5.8.3"
   }

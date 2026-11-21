@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatJstDateTime, safeDisplayText } from "./format.ts";
 import {
+  evaluateSensorHealth,
   getEventDetail,
   getOverviewData,
   getPaginatedEvents,
@@ -57,6 +58,9 @@ describe("observatory data layer (mock mode)", () => {
     const trends = await getTrendsData();
     assert.ok(trends.dailySeries.length >= 7);
     assert.ok(trends.protocolTotals.length > 0);
+    for (const day of trends.dailySeries) {
+      assert.equal("uniqueSources" in day, false);
+    }
 
     assert.match(formatJstDateTime("2026-11-21T00:00:00.000Z"), /2026\/11\/21 09:00:00 JST/);
     assert.equal(safeDisplayText("abc\u0000\u202edef"), "abcdef");
@@ -76,5 +80,25 @@ describe("observatory data layer (mock mode)", () => {
     assert.ok(jp && jp.count === 10 && jp.d.length > 10);
     const sg = map.markers.find((m) => m.code === "SG");
     assert.ok(sg && sg.count === 3);
+  });
+
+  it("evaluates sensor health using heartbeat freshness to separate healthy, stale, and inactive nodes", () => {
+    const now = Date.parse("2026-11-21T10:00:00.000Z");
+    assert.equal(
+      evaluateSensorHealth({ is_active: true, last_heartbeat_at: "2026-11-21T09:55:00.000Z" }, now),
+      "healthy",
+    );
+    assert.equal(
+      evaluateSensorHealth({ is_active: true, last_heartbeat_at: "2026-11-21T09:30:00.000Z" }, now),
+      "stale",
+    );
+    assert.equal(
+      evaluateSensorHealth({ is_active: true, last_heartbeat_at: null }, now),
+      "stale",
+    );
+    assert.equal(
+      evaluateSensorHealth({ is_active: false, last_heartbeat_at: "2026-11-21T09:59:00.000Z" }, now),
+      "inactive",
+    );
   });
 });

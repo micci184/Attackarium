@@ -48,7 +48,8 @@ const COUNTRY_REGEX = /^[A-Z]{2}$/;
 const HTTP_METHOD_REGEX = /^[A-Z]{2,16}$/;
 const IPV4_REGEX =
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-const IPV6_REGEX = /^[0-9a-f:]{2,45}$/i;
+const IPV6_HEX_GROUP_REGEX = /^[0-9a-f]{1,4}$/i;
+const RAW_OBJECT_KEY_REGEX = /^[A-Za-z0-9][A-Za-z0-9/_.-]{0,511}$/;
 
 export interface NormalizedAttackEvent {
   id: string;
@@ -76,8 +77,52 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+function isValidIpv6(value: string): boolean {
+  if (value.length < 2 || value.length > 45 || !value.includes(":")) {
+    return false;
+  }
+  const doubleColonParts = value.split("::");
+  if (doubleColonParts.length > 2) {
+    return false;
+  }
+
+  const expandPart = (part: string): string[] | null => {
+    if (part === "") return [];
+    const tokens = part.split(":");
+    const groups: string[] = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (i === tokens.length - 1 && token.includes(".")) {
+        if (!IPV4_REGEX.test(token)) return null;
+        groups.push("0", "0"); // IPv4 suffix counts as two 16-bit groups
+      } else if (IPV6_HEX_GROUP_REGEX.test(token)) {
+        groups.push(token);
+      } else {
+        return null;
+      }
+    }
+    return groups;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const groups = expandPart(doubleColonParts[0]);
+    return groups !== null && groups.length === 8;
+  }
+
+  // IPv4 suffix is only valid in the right-hand part of "::"
+  if (doubleColonParts[0].includes(".")) {
+    return false;
+  }
+  const left = expandPart(doubleColonParts[0]);
+  const right = expandPart(doubleColonParts[1]);
+  if (left === null || right === null) {
+    return false;
+  }
+  return left.length + right.length < 8;
+}
+
 function isValidIp(value: string): boolean {
-  return IPV4_REGEX.test(value) || (value.includes(":") && IPV6_REGEX.test(value));
+  return IPV4_REGEX.test(value) || isValidIpv6(value);
 }
 
 export function validateBatchPayload(
@@ -225,12 +270,12 @@ export function validateBatchPayload(
     if (raw.raw_object_key !== undefined && raw.raw_object_key !== null) {
       if (
         typeof raw.raw_object_key !== "string" ||
-        raw.raw_object_key.length > 512 ||
+        !RAW_OBJECT_KEY_REGEX.test(raw.raw_object_key) ||
         raw.raw_object_key.includes("..")
       ) {
         return { ok: false, error: `events[${i}].raw_object_key is invalid` };
       }
-      rawObjectKey = stripControlChars(raw.raw_object_key).trim() || null;
+      rawObjectKey = raw.raw_object_key;
     }
 
     let metadata: Record<string, unknown> = {};

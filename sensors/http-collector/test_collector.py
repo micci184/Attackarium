@@ -97,6 +97,44 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertLessEqual(len(records[0]["http_path"]), 128)
         self.assertEqual(records[0]["event_type"], "http_secret_file_probe")
 
+    def test_redacts_secrets_in_referer_query_string(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request(
+            "GET",
+            "/login",
+            headers={
+                "Referer": "https://example.invalid/auth?session=SECRET_SESS&next=/home",
+            },
+        )
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+
+        records = self._read_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            records[0]["metadata"]["headers"].get("referer"),
+            "https://example.invalid/auth?session=[REDACTED]&next=/home",
+        )
+
+    def test_rejects_requests_when_concurrency_cap_is_exhausted(self) -> None:
+        # Exhaust all permits in the server semaphore to deterministically test 503 shedding
+        permits = self.config.max_concurrent_connections
+        for _ in range(permits):
+            self.assertTrue(self.server.connection_semaphore.acquire(blocking=False))
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", "/overload-check")
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 503)
+            conn.close()
+            self.assertEqual(self.server.rejected_overload, 1)
+        finally:
+            for _ in range(permits):
+                self.server.connection_semaphore.release()
+
 
 if __name__ == "__main__":
     unittest.main()

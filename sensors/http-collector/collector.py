@@ -54,6 +54,7 @@ class CollectorConfig:
     max_body_bytes: int = 4096
     max_header_value_length: int = 256
     socket_timeout_seconds: float = 5.0
+    max_concurrent_connections: int = 32
 
 
 def strip_control(value: str) -> str:
@@ -88,7 +89,10 @@ def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:
     for key, value in headers.items():
         lk = key.lower()
         if lk in SAFE_HEADER_ALLOWLIST:
-            selected[lk] = strip_control(str(value))[:max_len]
+            raw_val = strip_control(str(value))
+            if lk == "referer":
+                raw_val = redact_path(raw_val, max_len)
+            selected[lk] = raw_val[:max_len]
     return selected
 
 
@@ -116,8 +120,33 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
     ) -> None:
         self.config = config
         self.write_lock = threading.Lock()
+        self.connection_semaphore = threading.BoundedSemaphore(
+            max(1, config.max_concurrent_connections)
+        )
+        self.rejected_overload = 0
         self.config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(server_address, CaptureRequestHandler)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self.connection_semaphore.acquire(blocking=False):
+            self.rejected_overload += 1
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_semaphore.release()
 
     def write_record(self, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"

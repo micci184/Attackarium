@@ -37,8 +37,9 @@ Indexes to start:
 - `detections(event_id)` and `event_cve_matches(cve_id)`.
 - `daily_stats(date_utc DESC)`.
 
-`src_ip` is optional/private raw data; consider limiting retention or converting to salted keyed hashes
-when raw values are no longer required. Do **not** expose it in anonymous views.
+`src_ip` is optional/private raw data; the ingest function derives a keyed HMAC hash (`src_ip_hash`)
+using `IP_HASH_SALT` and clears plaintext `src_ip` by default (`INGEST_ALLOW_RAW_IP=false`).
+Raw `src_ip` is never exposed in anonymous views (`public_*` views enforce `security_barrier = true`).
 
 ## Access model
 

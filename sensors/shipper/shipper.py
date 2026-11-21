@@ -15,16 +15,20 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import re
 import sqlite3
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 EVENT_NAMESPACE_UUID = uuid.UUID("7f3d56f8-3d1d-4d0e-942c-0df9b7489f41")
+HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
+LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 OPENCANARY_LOGTYPE_MAP: dict[int, tuple[str, str]] = {
     2000: ("ftp", "ftp_login_attempt"),
@@ -59,10 +63,25 @@ class ShipperConfig:
 class ShipperMetrics:
     enqueued: int = 0
     dropped_spool_full: int = 0
+    dropped_invalid: int = 0
     batches_sent: int = 0
     batches_failed: int = 0
     events_delivered: int = 0
     last_error: str | None = None
+    last_retry_after_seconds: float | None = None
+
+
+def validate_ingest_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme == "https" and host:
+        return url
+    if scheme == "http" and host in LOCAL_HTTP_HOSTS:
+        return url
+    raise ValueError(
+        "ingest_url must use https:// (http:// is allowed only for loopback testing)"
+    )
 
 
 def build_signature_payload(
@@ -96,7 +115,11 @@ def normalize_record(raw: dict[str, Any], sensor_id: str) -> dict[str, Any] | No
         if not (1 <= dst_port <= 65535):
             return None
 
-        event_id = str(raw.get("id") or uuid.uuid4())
+        raw_id = str(raw.get("id") or "")
+        try:
+            event_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            event_id = str(uuid.uuid4())
         observed_at = str(
             raw.get("observed_at")
             or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -111,7 +134,9 @@ def normalize_record(raw: dict[str, Any], sensor_id: str) -> dict[str, Any] | No
         if raw.get("src_ip"):
             event["src_ip"] = str(raw["src_ip"])
         if raw.get("http_method"):
-            event["http_method"] = str(raw["http_method"]).upper()[:16]
+            candidate_method = str(raw["http_method"]).strip().upper()[:16]
+            if HTTP_METHOD_REGEX.match(candidate_method):
+                event["http_method"] = candidate_method
         if raw.get("http_path"):
             event["http_path"] = str(raw["http_path"])[:512]
         if raw.get("fingerprint"):
@@ -280,6 +305,7 @@ class BoundedSqliteSpool:
 
 class EventShipper:
     def __init__(self, config: ShipperConfig) -> None:
+        validate_ingest_url(config.ingest_url)
         self.config = config
         self.spool = BoundedSqliteSpool(config.spool_path, config.max_spool_bytes)
         self.metrics = ShipperMetrics()
@@ -312,18 +338,16 @@ class EventShipper:
         if self.consecutive_failures <= 0:
             return 0.0
         delay = self.config.base_backoff_seconds * (2 ** (self.consecutive_failures - 1))
+        if self.metrics.last_retry_after_seconds is not None:
+            delay = max(delay, self.metrics.last_retry_after_seconds)
         return min(delay, self.config.max_backoff_seconds)
 
-    def flush_once(self, now_sec: int | None = None) -> bool:
-        """Attempt to send one signed batch. Returns True if delivered or empty."""
-        batch = self.spool.peek_batch(
-            self.config.max_batch_events, self.config.max_batch_bytes
-        )
-        if not batch:
-            return True
-
-        seqs = [seq for seq, _ in batch]
-        events = [ev for _, ev in batch]
+    def _send_events(
+        self,
+        events: list[dict[str, Any]],
+        now_sec: int | None = None,
+    ) -> tuple[str, int | None, float | None]:
+        """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
         raw_body = json.dumps({"events": events}, ensure_ascii=True, separators=(",", ":"))
         timestamp = str(int(now_sec if now_sec is not None else time.time()))
         request_id = f"req-{uuid.uuid4().hex[:24]}"
@@ -350,22 +374,83 @@ class EventShipper:
                 req, timeout=self.config.http_timeout_seconds
             ) as resp:
                 if 200 <= resp.status < 300:
-                    self.spool.delete_seqs(seqs)
-                    self.metrics.batches_sent += 1
-                    self.metrics.events_delivered += len(events)
-                    self.consecutive_failures = 0
-                    self.metrics.last_error = None
-                    return True
-                self._record_failure(f"unexpected_status_{resp.status}")
-                return False
+                    return ("ok", resp.status, None)
+                return ("transient", resp.status, None)
         except urllib.error.HTTPError as exc:
-            self._record_failure(f"http_{exc.code}")
-            return False
+            retry_after: float | None = None
+            raw_ra = exc.headers.get("Retry-After") if exc.headers else None
+            if raw_ra:
+                try:
+                    parsed_ra = float(raw_ra)
+                    if parsed_ra > 0:
+                        retry_after = parsed_ra
+                except ValueError:
+                    retry_after = None
+            if exc.code == 400:
+                return ("permanent_400", 400, None)
+            return ("transient", exc.code, retry_after)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            self._record_failure(type(exc).__name__)
-            return False
+            return (f"network:{type(exc).__name__}", None, None)
 
-    def _record_failure(self, err: str) -> None:
+    def flush_once(self, now_sec: int | None = None) -> bool:
+        """Attempt to send one signed batch. Returns True if delivered or empty."""
+        batch = self.spool.peek_batch(
+            self.config.max_batch_events, self.config.max_batch_bytes
+        )
+        if not batch:
+            return True
+
+        seqs = [seq for seq, _ in batch]
+        events = [ev for _, ev in batch]
+        outcome, status_code, retry_after = self._send_events(events, now_sec)
+
+        if outcome == "ok":
+            self.spool.delete_seqs(seqs)
+            self.metrics.batches_sent += 1
+            self.metrics.events_delivered += len(events)
+            self.consecutive_failures = 0
+            self.metrics.last_error = None
+            self.metrics.last_retry_after_seconds = None
+            return True
+
+        # Isolate permanent HTTP 400 poison-pill events so valid events are not blocked
+        if outcome == "permanent_400":
+            if len(batch) == 1:
+                self.spool.delete_seqs(seqs)
+                self.metrics.dropped_invalid += 1
+                self.metrics.last_error = "http_400_dropped"
+                return True
+
+            progressed = False
+            for seq, ev in batch:
+                sub_outcome, sub_status, sub_ra = self._send_events([ev], now_sec)
+                if sub_outcome == "ok":
+                    self.spool.delete_seqs([seq])
+                    self.metrics.batches_sent += 1
+                    self.metrics.events_delivered += 1
+                    progressed = True
+                elif sub_outcome == "permanent_400":
+                    self.spool.delete_seqs([seq])
+                    self.metrics.dropped_invalid += 1
+                    progressed = True
+                else:
+                    self._record_failure(
+                        f"http_{sub_status}" if sub_status else sub_outcome, sub_ra
+                    )
+                    return False
+
+            if progressed:
+                self.consecutive_failures = 0
+                self.metrics.last_error = None
+                self.metrics.last_retry_after_seconds = None
+            return progressed
+
+        err_label = f"http_{status_code}" if status_code is not None else outcome
+        self._record_failure(err_label, retry_after)
+        return False
+
+    def _record_failure(self, err: str, retry_after: float | None = None) -> None:
         self.metrics.batches_failed += 1
         self.metrics.last_error = err
+        self.metrics.last_retry_after_seconds = retry_after
         self.consecutive_failures += 1

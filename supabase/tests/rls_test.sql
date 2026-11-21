@@ -154,9 +154,11 @@ values
   );
 
 -- 2. Verify public_events projection excludes all sensitive columns
+--    and all public_* views enforce security_barrier = true
 do $$
 declare
   v_forbidden_cols text[];
+  v_unprotected_views text[];
 begin
   select array_agg(column_name)
   into v_forbidden_cols
@@ -168,9 +170,114 @@ begin
   if v_forbidden_cols is not null then
     raise exception 'Sensitive columns exposed in public_events: %', v_forbidden_cols;
   end if;
+
+  select array_agg(c.relname)
+  into v_unprotected_views
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public'
+    and c.relkind = 'v'
+    and c.relname like 'public_%'
+    and (c.reloptions is null or not ('security_barrier=true' = any(c.reloptions)));
+
+  if v_unprotected_views is not null then
+    raise exception 'Public views missing security_barrier=true: %', v_unprotected_views;
+  end if;
 end $$;
 
--- 3. Switch to anonymous role and assert strict default-deny on ALL base tables
+-- 2b. Verify atomic commit_ingest_batch RPC (idempotency, replay, rate limit, unknown sensor)
+do $$
+declare
+  v_status text;
+  v_inserted integer;
+  v_now timestamptz := now();
+  v_batch jsonb := jsonb_build_array(
+    jsonb_build_object(
+      'id', '33333333-3333-4333-8333-333333333333',
+      'observed_at', (v_now - interval '1 minute')::text,
+      'protocol', 'ssh',
+      'dst_port', 22,
+      'event_type', 'ssh_login_attempt',
+      'src_ip', null,
+      'src_ip_hash', 'deadbeef',
+      'src_country', 'JP',
+      'src_asn', 'AS64512',
+      'metadata', jsonb_build_object('banner', 'OpenSSH')
+    )
+  );
+begin
+  -- First batch succeeds and inserts 1 event
+  select status, inserted_count into v_status, v_inserted
+  from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-rpc-0001',
+    v_now,
+    v_now + interval '10 minutes',
+    2,
+    v_batch
+  );
+  if v_status <> 'ok' or v_inserted <> 1 then
+    raise exception 'Expected ok/1 from commit_ingest_batch, got %/%', v_status, v_inserted;
+  end if;
+
+  -- Replay of same request_id is rejected
+  select status, inserted_count into v_status, v_inserted
+  from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-rpc-0001',
+    v_now + interval '1 second',
+    v_now + interval '10 minutes',
+    2,
+    v_batch
+  );
+  if v_status <> 'replayed' or v_inserted <> 0 then
+    raise exception 'Expected replayed/0, got %/%', v_status, v_inserted;
+  end if;
+
+  -- Retry with new request_id hits rate_limit (already 2 receipts in window: req-unique-0001 + req-rpc-0001)
+  select status, inserted_count into v_status, v_inserted
+  from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-rpc-0002',
+    v_now + interval '2 seconds',
+    v_now + interval '10 minutes',
+    2,
+    v_batch
+  );
+  if v_status <> 'rate_limited' or v_inserted <> 0 then
+    raise exception 'Expected rate_limited/0, got %/%', v_status, v_inserted;
+  end if;
+
+  -- Higher limit allows retry and deduplicates event id (0 new rows)
+  select status, inserted_count into v_status, v_inserted
+  from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-rpc-0003',
+    v_now + interval '3 seconds',
+    v_now + interval '10 minutes',
+    10,
+    v_batch
+  );
+  if v_status <> 'ok' or v_inserted <> 0 then
+    raise exception 'Expected ok/0 on duplicate event retry, got %/%', v_status, v_inserted;
+  end if;
+
+  -- Unregistered sensor returns unknown_sensor without inserting receipts
+  select status, inserted_count into v_status, v_inserted
+  from public.commit_ingest_batch(
+    'sensor-missing-99',
+    'req-rpc-0004',
+    v_now,
+    v_now + interval '10 minutes',
+    10,
+    v_batch
+  );
+  if v_status <> 'unknown_sensor' then
+    raise exception 'Expected unknown_sensor, got %', v_status;
+  end if;
+end $$;
+
+-- 3. Switch to anonymous role and assert strict default-deny on ALL base tables and RPCs
 set local role anon;
 
 do $$
@@ -197,6 +304,23 @@ begin
         null; -- expected
     end;
   end loop;
+end $$;
+
+-- Verify anon cannot execute commit_ingest_batch RPC
+do $$
+begin
+  perform * from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-anon-evil-1',
+    now(),
+    now() + interval '10 minutes',
+    10,
+    '[]'::jsonb
+  );
+  raise exception 'SECURITY FAILURE: anon was allowed to EXECUTE commit_ingest_batch';
+exception
+  when insufficient_privilege then
+    null; -- expected
 end $$;
 
 -- Verify anon cannot write to base tables or public views
@@ -234,8 +358,8 @@ begin
   end if;
 
   select count(*) into v_events_count from public.public_events;
-  if v_events_count <> 1 then
-    raise exception 'Expected 1 public_events row, got %', v_events_count;
+  if v_events_count <> 2 then
+    raise exception 'Expected 2 public_events rows, got %', v_events_count;
   end if;
 
   select count(*) into v_vuln_count from public.public_vulnerabilities;
@@ -252,6 +376,52 @@ begin
   if v_stats_count <> 1 then
     raise exception 'Expected 1 public_daily_stats row, got %', v_stats_count;
   end if;
+end $$;
+
+-- 5. Verify authenticated role ALSO faces strict default-deny on base tables and ingest RPC
+reset role;
+set local role authenticated;
+
+do $$
+declare
+  v_table text;
+  v_tables text[] := array[
+    'sensors',
+    'attack_events',
+    'detections',
+    'vulnerabilities',
+    'event_cve_matches',
+    'daily_stats',
+    'daily_reports',
+    'ingest_receipts'
+  ];
+  v_cnt integer;
+begin
+  foreach v_table in array v_tables loop
+    begin
+      execute format('select count(*) from public.%I', v_table) into v_cnt;
+      raise exception 'SECURITY FAILURE: authenticated was allowed to SELECT from base table %', v_table;
+    exception
+      when insufficient_privilege then
+        null; -- expected
+    end;
+  end loop;
+end $$;
+
+do $$
+begin
+  perform * from public.commit_ingest_batch(
+    'sensor-test-01',
+    'req-auth-evil-1',
+    now(),
+    now() + interval '10 minutes',
+    10,
+    '[]'::jsonb
+  );
+  raise exception 'SECURITY FAILURE: authenticated was allowed to EXECUTE commit_ingest_batch';
+exception
+  when insufficient_privilege then
+    null; -- expected
 end $$;
 
 rollback;

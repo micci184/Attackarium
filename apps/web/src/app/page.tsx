@@ -13,6 +13,15 @@ export default async function OverviewPage() {
   const data = await getOverviewData();
   const worldMapData = buildWorldMapData(data.regionTotals24h);
 
+  const sensorBadge =
+    data.activeSensorCount === 0
+      ? { label: "Offline", textClass: "text-gray-600", dotClass: "bg-gray-400" }
+      : data.healthySensorCount === data.activeSensorCount
+        ? { label: "Healthy", textClass: "text-emerald-700", dotClass: "bg-emerald-600" }
+        : data.healthySensorCount > 0
+          ? { label: "Degraded", textClass: "text-amber-700", dotClass: "bg-amber-500" }
+          : { label: "Heartbeat Stale", textClass: "text-red-700", dotClass: "bg-red-600" };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -54,19 +63,24 @@ export default async function OverviewPage() {
 
         <div className="p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Active Sensors
+            Healthy Sensors
           </p>
           <div className="mt-1.5 flex items-baseline gap-2">
             <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900">
-              {formatCount(data.activeSensorCount)}
+              {formatCount(data.healthySensorCount)}
             </p>
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
-              Healthy
+            <span
+              className={`inline-flex items-center gap-1 text-xs font-medium ${sensorBadge.textClass}`}
+            >
+              <span
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 rounded-full ${sensorBadge.dotClass}`}
+              />
+              {sensorBadge.label}
             </span>
           </div>
           <p className="mt-1 text-[11px] text-gray-400">
-            of {formatCount(data.sensors.length)} registered
+            {formatCount(data.activeSensorCount)} active / {formatCount(data.sensors.length)} registered
           </p>
         </div>
 
@@ -94,7 +108,11 @@ export default async function OverviewPage() {
       <WorldGeoMap
         data={worldMapData}
         title="Observed Source Regions (24h · GeoIP Estimate)"
-        subtitle="Country/region-level heatmap for the past 24 hours (raw IPs and exact locations are excluded)"
+        subtitle={
+          data.is24hBreakdownSampled
+            ? `Country/region heatmap based on the latest ${formatCount(data.sampled24hCount)} of ${formatCount(data.totalEvents24h)} events (raw IPs excluded)`
+            : "Country/region-level heatmap for the past 24 hours (raw IPs and exact locations are excluded)"
+        }
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -103,6 +121,11 @@ export default async function OverviewPage() {
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
               Protocol Distribution (24h)
+              {data.is24hBreakdownSampled ? (
+                <span className="ml-1.5 font-normal normal-case text-gray-400">
+                  (latest {formatCount(data.sampled24hCount)} sampled)
+                </span>
+              ) : null}
             </h2>
             <Link
               href="/trends"
@@ -182,18 +205,28 @@ export default async function OverviewPage() {
                     <span
                       translate="no"
                       className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 text-[11px] font-medium ${
-                        sensor.is_active
+                        sensor.healthStatus === "healthy"
                           ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : "border-gray-200 bg-gray-100 text-gray-600"
+                          : sensor.healthStatus === "stale"
+                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                            : "border-gray-200 bg-gray-100 text-gray-600"
                       }`}
                     >
                       <span
                         aria-hidden="true"
                         className={`h-1.5 w-1.5 rounded-full ${
-                          sensor.is_active ? "bg-emerald-600" : "bg-gray-400"
+                          sensor.healthStatus === "healthy"
+                            ? "bg-emerald-600"
+                            : sensor.healthStatus === "stale"
+                              ? "bg-amber-500"
+                              : "bg-gray-400"
                         }`}
                       />
-                      {sensor.is_active ? "Active" : "Inactive"}
+                      {sensor.healthStatus === "healthy"
+                        ? "Healthy"
+                        : sensor.healthStatus === "stale"
+                          ? "Stale Heartbeat"
+                          : "Inactive"}
                     </span>
                   </div>
 
@@ -251,38 +284,46 @@ export default async function OverviewPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {data.recentEvents.map((ev) => (
-                <tr key={ev.id} className="transition-colors hover:bg-gray-50">
-                  <td className="whitespace-nowrap px-4 py-2 font-mono tabular-nums text-gray-600">
-                    {formatJstShort(ev.observed_at)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <ProtocolBadge protocol={ev.protocol} />
-                  </td>
-                  <td className="px-3 py-2 font-mono tabular-nums text-gray-700">
-                    {ev.dst_port}
-                  </td>
-                  <td translate="no" className="px-3 py-2 font-mono text-gray-800">
-                    {safeDisplayText(ev.event_type)}
-                  </td>
-                  <td
-                    translate="no"
-                    className="whitespace-nowrap px-3 py-2 font-mono text-gray-500"
-                  >
-                    {safeDisplayText(ev.src_country)} / {safeDisplayText(ev.src_asn)}
-                  </td>
-                  <td className="max-w-xs truncate px-4 py-2 font-mono">
-                    <Link
-                      href={`/events/${ev.id}`}
-                      translate="no"
-                      className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-                    >
-                      {ev.http_method ? `${ev.http_method} ` : ""}
-                      {safeDisplayText(ev.http_path_redacted, ev.fingerprint ?? "Inspect")}
-                    </Link>
+              {data.recentEvents.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                    No observations recorded yet.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                data.recentEvents.map((ev) => (
+                  <tr key={ev.id} className="transition-colors hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-4 py-2 font-mono tabular-nums text-gray-600">
+                      {formatJstShort(ev.observed_at)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <ProtocolBadge protocol={ev.protocol} />
+                    </td>
+                    <td className="px-3 py-2 font-mono tabular-nums text-gray-700">
+                      {ev.dst_port}
+                    </td>
+                    <td translate="no" className="px-3 py-2 font-mono text-gray-800">
+                      {safeDisplayText(ev.event_type)}
+                    </td>
+                    <td
+                      translate="no"
+                      className="whitespace-nowrap px-3 py-2 font-mono text-gray-500"
+                    >
+                      {safeDisplayText(ev.src_country)} / {safeDisplayText(ev.src_asn)}
+                    </td>
+                    <td className="max-w-xs truncate px-4 py-2 font-mono">
+                      <Link
+                        href={`/events/${ev.id}`}
+                        translate="no"
+                        className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                      >
+                        {ev.http_method ? `${ev.http_method} ` : ""}
+                        {safeDisplayText(ev.http_path_redacted, ev.fingerprint ?? "Inspect")}
+                      </Link>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

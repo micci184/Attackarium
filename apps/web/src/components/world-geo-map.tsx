@@ -28,7 +28,7 @@ function getFillColor(count: number, maxCount: number): string {
   return SCALE_COLORS[5];
 }
 
-interface HoveredRegion {
+interface InspectedRegion {
   code: string;
   name: string;
   count: number;
@@ -39,11 +39,31 @@ export function WorldGeoMap({
   title = "Observed Source Regions (GeoIP Estimate)",
   subtitle = "Country/region-level choropleth heatmap (raw IPs and exact coordinates are never exposed)",
 }: WorldGeoMapProps) {
-  const [hovered, setHovered] = useState<HoveredRegion | null>(null);
+  const [hovered, setHovered] = useState<InspectedRegion | null>(null);
+  const [pinned, setPinned] = useState<InspectedRegion | null>(null);
+
+  const activeRegion = hovered ?? pinned;
+
+  const togglePinned = (region: InspectedRegion) => {
+    setPinned((curr) => (curr?.code === region.code ? null : region));
+  };
+
+  const handleRegionKeyDown = (
+    event: React.KeyboardEvent<SVGElement>,
+    region: InspectedRegion,
+  ) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      togglePinned(region);
+    } else if (event.key === "Escape") {
+      setHovered(null);
+      setPinned(null);
+    }
+  };
 
   const sharePct =
-    hovered && data.totalMapped > 0
-      ? ((hovered.count / data.totalMapped) * 100).toFixed(1)
+    activeRegion && data.totalMapped > 0
+      ? ((activeRegion.count / data.totalMapped) * 100).toFixed(1)
       : "0.0";
 
   return (
@@ -56,28 +76,38 @@ export function WorldGeoMap({
           <p className="mt-0.5 text-[11px] text-gray-500">{subtitle}</p>
         </div>
 
-        {/* Fixed-height inspector strip (no jumping layout on hover) */}
+        {/* Fixed-height inspector strip (no jumping layout on hover/selection) */}
         <div
           aria-live="polite"
           className="flex h-7 items-center gap-2 rounded border border-gray-200 bg-gray-50 px-2.5 font-mono text-[11px] tabular-nums text-gray-700"
         >
-          {hovered ? (
+          {activeRegion ? (
             <>
               <span translate="no" className="font-semibold text-[#632ca6]">
-                {hovered.code}
+                {activeRegion.code}
               </span>
               <span className="max-w-[140px] truncate font-sans text-gray-600">
-                {hovered.name}
+                {activeRegion.name}
               </span>
               <span className="text-gray-300">|</span>
               <span className="font-semibold text-gray-900">
-                {hovered.count.toLocaleString("en-US")}
+                {activeRegion.count.toLocaleString("en-US")}
               </span>
               <span className="text-gray-500">({sharePct}%)</span>
+              {pinned && !hovered ? (
+                <button
+                  type="button"
+                  onClick={() => setPinned(null)}
+                  aria-label={`Clear selected region ${pinned.name}`}
+                  className="ml-1 rounded px-1 font-sans text-[10px] text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                >
+                  Clear
+                </button>
+              ) : null}
             </>
           ) : (
             <span className="font-sans text-gray-400">
-              Hover or focus a region to inspect event volume
+              Hover, click, or focus a region to inspect event volume
             </span>
           )}
         </div>
@@ -92,33 +122,31 @@ export function WorldGeoMap({
         >
           <g>
             {data.countries.map((country) => {
-              const isSelected = hovered?.code === country.code;
+              const isSelected = activeRegion?.code === country.code;
+              const isPinned = pinned?.code === country.code;
               const fill = getFillColor(country.count, data.maxCount);
+              const region: InspectedRegion = {
+                code: country.code,
+                name: country.name,
+                count: country.count,
+              };
               return (
                 <path
                   key={country.id}
                   d={country.d}
                   fill={fill}
                   stroke={isSelected ? "#431a75" : "#ffffff"}
-                  strokeWidth={isSelected ? 1.1 : 0.6}
-                  className="cursor-pointer transition-colors"
+                  strokeWidth={isSelected ? 1.2 : 0.6}
+                  className="cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-[#632ca6]"
+                  role={country.count > 0 ? "button" : undefined}
+                  aria-pressed={country.count > 0 ? isPinned : undefined}
                   tabIndex={country.count > 0 ? 0 : -1}
                   aria-label={`${country.name} (${country.code}): ${country.count} events`}
-                  onMouseEnter={() =>
-                    setHovered({
-                      code: country.code,
-                      name: country.name,
-                      count: country.count,
-                    })
-                  }
+                  onClick={() => togglePinned(region)}
+                  onKeyDown={(e) => handleRegionKeyDown(e, region)}
+                  onMouseEnter={() => setHovered(region)}
                   onMouseLeave={() => setHovered(null)}
-                  onFocus={() =>
-                    setHovered({
-                      code: country.code,
-                      name: country.name,
-                      count: country.count,
-                    })
-                  }
+                  onFocus={() => setHovered(region)}
                   onBlur={() => setHovered(null)}
                 />
               );
@@ -129,8 +157,14 @@ export function WorldGeoMap({
           {data.markers.length > 0 ? (
             <g>
               {data.markers.map((marker) => {
-                const isSelected = hovered?.code === marker.code;
+                const isSelected = activeRegion?.code === marker.code;
+                const isPinned = pinned?.code === marker.code;
                 const fill = getFillColor(marker.count, data.maxCount);
+                const region: InspectedRegion = {
+                  code: marker.code,
+                  name: marker.name,
+                  count: marker.count,
+                };
                 return (
                   <circle
                     key={marker.code}
@@ -140,24 +174,16 @@ export function WorldGeoMap({
                     fill={fill}
                     stroke={isSelected ? "#431a75" : "#ffffff"}
                     strokeWidth={1.2}
-                    className="cursor-pointer transition-colors"
+                    className="cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-[#632ca6]"
+                    role="button"
+                    aria-pressed={isPinned}
                     tabIndex={0}
                     aria-label={`${marker.name} (${marker.code}): ${marker.count} events`}
-                    onMouseEnter={() =>
-                      setHovered({
-                        code: marker.code,
-                        name: marker.name,
-                        count: marker.count,
-                      })
-                    }
+                    onClick={() => togglePinned(region)}
+                    onKeyDown={(e) => handleRegionKeyDown(e, region)}
+                    onMouseEnter={() => setHovered(region)}
                     onMouseLeave={() => setHovered(null)}
-                    onFocus={() =>
-                      setHovered({
-                        code: marker.code,
-                        name: marker.name,
-                        count: marker.count,
-                      })
-                    }
+                    onFocus={() => setHovered(region)}
                     onBlur={() => setHovered(null)}
                   />
                 );
