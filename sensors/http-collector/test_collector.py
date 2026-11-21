@@ -178,17 +178,19 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         sock = socket.create_connection(("127.0.0.1", self.port), timeout=2)
         sock.sendall(b"GET / HTTP/1.1\r\nUser-Agent: " + (b"A" * 4000) + b"\r\n\r\n")
         sock.settimeout(2)
+        raw_response = b""
         try:
-            sock.recv(128)
+            raw_response = sock.recv(256)
         except OSError:
             pass
         sock.close()
 
+        self.assertIn(b"431", raw_response)
         stored = self.output_path.read_text(encoding="utf-8")
         self.assertNotIn("A" * 64, stored)
-        self.assertTrue(
-            any(rec["metadata"].get("header_rejected") for rec in self._read_records())
-        )
+        records = self._read_records()
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["metadata"].get("header_rejected"))
 
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         conn.request("GET", "/after-header-limit")
@@ -196,6 +198,7 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         resp.read()
         self.assertEqual(resp.status, 404)
         conn.close()
+        self.assertEqual(len(self._read_records()), 2)
 
 
 if __name__ == "__main__":

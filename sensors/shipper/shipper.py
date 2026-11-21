@@ -241,6 +241,35 @@ class BoundedSqliteSpool:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_cursors (
+                path TEXT PRIMARY KEY,
+                inode INTEGER NOT NULL,
+                offset INTEGER NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
+
+    def get_cursor(self, path: Path) -> tuple[int | None, int]:
+        row = self.conn.execute(
+            "SELECT inode, offset FROM file_cursors WHERE path = ?",
+            (str(path),),
+        ).fetchone()
+        if not row:
+            return None, 0
+        return int(row[0]), int(row[1])
+
+    def set_cursor(self, path: Path, inode: int, offset: int) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO file_cursors (path, inode, offset)
+            VALUES (?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, offset = excluded.offset
+            """,
+            (str(path), inode, offset),
+        )
         self.conn.commit()
 
     def close(self) -> None:
@@ -499,6 +528,19 @@ class EventShipper:
             "last_delivery_at": self.metrics.last_delivery_at,
         }
 
+    def ingest_jsonl_file(self, path: Path, max_bytes: int = 1024 * 1024) -> int:
+        """Tail complete JSONL lines from path, persisting the file cursor in SQLite."""
+        inode, offset = self.spool.get_cursor(path)
+        lines, new_inode, new_offset, skipped_oversize = read_new_jsonl(
+            path, offset, inode=inode, max_bytes=max_bytes
+        )
+        if skipped_oversize:
+            self.metrics.dropped_invalid += skipped_oversize
+        added = self.ingest_jsonl_lines(lines) if lines else 0
+        if new_inode is not None and (new_inode != inode or new_offset != offset):
+            self.spool.set_cursor(path, new_inode, new_offset)
+        return added
+
     def write_metrics(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -507,26 +549,45 @@ class EventShipper:
         )
 
 
-def read_new_jsonl(path: Path, offset: int, max_bytes: int = 1024 * 1024) -> tuple[list[str], int]:
-    """Read complete JSONL lines added after offset. Incomplete trailing bytes stay unread."""
+def read_new_jsonl(
+    path: Path,
+    offset: int,
+    inode: int | None = None,
+    max_bytes: int = 1024 * 1024,
+) -> tuple[list[str], int | None, int, int]:
+    """Read complete JSONL lines added after offset.
+
+    Resets to offset 0 when the file was rotated (inode changed) or truncated
+    (size < offset). If a single line without a newline fills max_bytes, skip
+    the oversized corrupt chunk instead of stalling forever.
+    Returns (lines, current_inode, new_offset, skipped_oversize_chunks).
+    """
     if not path.exists():
-        return [], offset
+        return [], inode, offset, 0
+    st = path.stat()
+    current_inode = st.st_ino
+    if (inode is not None and current_inode != inode) or st.st_size < offset:
+        offset = 0
+
     with path.open("rb") as fp:
         fp.seek(offset)
         chunk = fp.read(max_bytes)
     if not chunk:
-        return [], offset
+        return [], current_inode, offset, 0
     if chunk.endswith(b"\n"):
         consumed = chunk
         new_offset = offset + len(chunk)
     else:
         last_nl = chunk.rfind(b"\n")
         if last_nl < 0:
-            return [], offset
+            if len(chunk) >= max_bytes:
+                # Corrupt or hostile line exceeding max_bytes without newline: skip it.
+                return [], current_inode, offset + len(chunk), 1
+            return [], current_inode, offset, 0
         consumed = chunk[: last_nl + 1]
         new_offset = offset + last_nl + 1
     lines = consumed.decode("utf-8", errors="replace").splitlines()
-    return lines, new_offset
+    return lines, current_inode, new_offset, 0
 
 
 def main() -> None:
@@ -553,13 +614,10 @@ def main() -> None:
         os.environ.get("SHIPPER_METRICS_PATH", "/var/lib/attackarium/shipper-metrics.json")
     )
     shipper = EventShipper(cfg)
-    offsets = {path: 0 for path in sources}
     try:
         while True:
             for path in sources:
-                lines, offsets[path] = read_new_jsonl(path, offsets[path])
-                if lines:
-                    shipper.ingest_jsonl_lines(lines)
+                shipper.ingest_jsonl_file(path)
             shipper.flush_once()
             shipper.write_metrics(metrics_path)
             delay = shipper.next_backoff_seconds()

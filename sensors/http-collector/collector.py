@@ -270,6 +270,14 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
         return
 
     def _handle_any(self) -> None:
+        if self._header_rejected:
+            self.send_response(431)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return
+
         cfg = self.server.config
         method = strip_control(self.command or "GET").upper()[:16]
         redacted_path = redact_path(self.path or "/", cfg.max_path_length)

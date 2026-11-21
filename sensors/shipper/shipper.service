@@ -20,7 +20,7 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-ReadWritePaths=/var/log/attackarium /var/lib/attackarium
+ReadWritePaths=/var/lib/attackarium
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
 
