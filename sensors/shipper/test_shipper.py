@@ -312,7 +312,7 @@ class ShipperIntegrationTests(unittest.TestCase):
             (2000, 21, "ftp", "ftp_login_attempt"),
             (6001, 23, "telnet", "telnet_login_attempt"),
             (8001, 3306, "mysql", "mysql_login_attempt"),
-            (11001, 6379, "redis", "redis_command_probe"),
+            (17001, 6379, "redis", "redis_command_probe"),
         ]
         for logtype, port, protocol, event_type in samples:
             normalized = normalize_record(
@@ -331,6 +331,20 @@ class ShipperIntegrationTests(unittest.TestCase):
             self.assertEqual(normalized["event_type"], event_type)
             self.assertNotIn("password", normalized["metadata"])
             self.assertNotIn("username", normalized["metadata"])
+
+        ntp = normalize_record(
+            {
+                "dst_port": 123,
+                "src_host": "198.51.100.30",
+                "src_port": 41000,
+                "logtype": 11001,
+                "utc_time": "2026-11-21 11:00:00.000000",
+            },
+            "sensor-dev-01",
+        )
+        self.assertIsNotNone(ntp)
+        self.assertEqual(ntp["protocol"], "other")
+        self.assertEqual(ntp["event_type"], "opencanary_11001")
 
     def test_counts_invalid_lines_and_writes_metrics_after_delivery(self) -> None:
         spool_path = Path(self.tmpdir.name) / "metrics.sqlite3"
@@ -443,6 +457,32 @@ class ShipperIntegrationTests(unittest.TestCase):
             shipper.ingest_jsonl_file(log_path, max_bytes=1024)
             self.assertTrue(shipper.flush_once())
             self.assertIn("55555555-5555-4555-8555-000000000006", self.state.received_event_ids)
+        finally:
+            shipper.close()
+
+    def test_sends_periodic_signed_heartbeat_when_spool_is_idle(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "heartbeat.sqlite3"
+        cfg = ShipperConfig(
+            sensor_id="sensor-dev-01",
+            hmac_secret=TEST_SECRET,
+            ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+            spool_path=spool_path,
+            heartbeat_interval_seconds=300.0,
+        )
+        shipper = EventShipper(cfg)
+        try:
+            self.assertTrue(shipper.flush_once(now_sec=1000))
+            self.assertEqual(len(self.state.received_request_ids), 1)
+            self.assertEqual(len(self.state.received_event_ids), 0)
+            self.assertIsNotNone(shipper.metrics.last_delivery_at)
+
+            # Within the interval, no redundant heartbeat is sent
+            self.assertTrue(shipper.flush_once(now_sec=1100))
+            self.assertEqual(len(self.state.received_request_ids), 1)
+
+            # After the interval elapses, another signed heartbeat is sent
+            self.assertTrue(shipper.flush_once(now_sec=1300))
+            self.assertEqual(len(self.state.received_request_ids), 2)
         finally:
             shipper.close()
 

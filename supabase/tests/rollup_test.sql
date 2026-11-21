@@ -297,12 +297,167 @@ begin
   end if;
 end $$;
 
+-- OpenCanary logtype 17001 is a Redis command, not an unclassified event.
+insert into public.attack_events (
+  id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, metadata
+) values (
+  '17171717-1717-4171-8171-171717171717',
+  'sensor-rollup-01',
+  timestamptz '2026-11-21 12:00:00+00',
+  'other',
+  6379,
+  'opencanary_17001',
+  null,
+  '{"logtype": 17001}'::jsonb
+);
+
+update public.attack_events
+set
+  protocol = 'redis',
+  event_type = 'redis_command_probe',
+  attack_category = 'auth_attempt'
+where protocol = 'other'
+  and event_type = 'opencanary_17001'
+  and dst_port = 6379
+  and metadata->>'logtype' = '17001';
+
+do $$
+declare
+  v_protocol text;
+  v_event_type text;
+  v_category text;
+begin
+  select protocol, event_type, attack_category
+  into v_protocol, v_event_type, v_category
+  from public.attack_events
+  where id = '17171717-1717-4171-8171-171717171717';
+
+  if v_protocol <> 'redis'
+    or v_event_type <> 'redis_command_probe'
+    or v_category <> 'auth_attempt'
+  then
+    raise exception 'redis reclassification failed: % % %', v_protocol, v_event_type, v_category;
+  end if;
+end $$;
+
+insert into public.sensors (id, name, type, region, is_active, last_heartbeat_at, created_at)
+values (
+  'sensor-coverage-01',
+  'Coverage Sensor',
+  'combined',
+  'us-east-1',
+  true,
+  timestamptz '2026-11-21 15:00:00+00',
+  timestamptz '2026-11-01 00:00:00+00'
+);
+
+select public.sync_sensor_coverage_gaps(timestamptz '2026-11-21 15:20:00+00');
+select public.sync_sensor_coverage_gaps(timestamptz '2026-11-21 15:20:00+00');
+
+do $$
+declare
+  v_open bigint;
+  v_started timestamptz;
+begin
+  select count(*), min(started_at)
+  into v_open, v_started
+  from public.sensor_status_events
+  where sensor_id = 'sensor-coverage-01'
+    and status = 'offline'
+    and ended_at is null;
+
+  if v_open <> 1 or v_started <> timestamptz '2026-11-21 15:00:00+00' then
+    raise exception 'expected one open coverage gap at the last heartbeat, got % starting %', v_open, v_started;
+  end if;
+end $$;
+
+update public.sensors
+set last_heartbeat_at = timestamptz '2026-11-21 15:30:00+00'
+where id = 'sensor-coverage-01';
+
+select public.sync_sensor_coverage_gaps(timestamptz '2026-11-21 15:30:00+00');
+
+do $$
+declare
+  v_open bigint;
+  v_ended timestamptz;
+begin
+  select count(*) into v_open
+  from public.sensor_status_events
+  where sensor_id = 'sensor-coverage-01'
+    and ended_at is null
+    and status in ('offline', 'degraded', 'error');
+
+  select ended_at into v_ended
+  from public.sensor_status_events
+  where sensor_id = 'sensor-coverage-01'
+    and status = 'offline';
+
+  if v_open <> 0 or v_ended <> timestamptz '2026-11-21 15:30:00+00' then
+    raise exception 'coverage gap did not close on a fresh heartbeat: open % ended %', v_open, v_ended;
+  end if;
+end $$;
+
+-- Inactive sensors keep their open gap even if last_heartbeat_at is still recent.
+insert into public.sensors (id, name, type, region, is_active, last_heartbeat_at, created_at)
+values (
+  'sensor-inactive-01',
+  'Inactive Sensor',
+  'combined',
+  'us-east-1',
+  false,
+  timestamptz '2026-11-21 15:25:00+00',
+  timestamptz '2026-11-01 00:00:00+00'
+);
+
+insert into public.sensor_status_events (sensor_id, status, started_at, summary)
+values (
+  'sensor-inactive-01',
+  'offline',
+  timestamptz '2026-11-21 15:20:00+00',
+  'Paused for maintenance'
+);
+
+select public.sync_sensor_coverage_gaps(timestamptz '2026-11-21 15:30:00+00');
+
+do $$
+declare
+  v_open bigint;
+begin
+  select count(*) into v_open
+  from public.sensor_status_events
+  where sensor_id = 'sensor-inactive-01'
+    and ended_at is null;
+
+  if v_open <> 1 then
+    raise exception 'inactive sensor gap should remain open, got %', v_open;
+  end if;
+end $$;
+
 set local role anon;
 
 do $$
 begin
-  perform public.rollup_observation_aggregates(now());
+  perform public.rollup_observation_aggregates(now(), 8);
   raise exception 'anon executed rollup';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  perform public.sync_sensor_coverage_gaps(now());
+  raise exception 'anon executed coverage sync';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  perform public.run_scheduled_observation_maintenance();
+  raise exception 'anon executed scheduled maintenance';
 exception
   when insufficient_privilege then
     null;

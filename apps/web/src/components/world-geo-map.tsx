@@ -121,7 +121,7 @@ export function WorldGeoMap({
           className="h-auto w-full select-none"
         >
           <g>
-            {data.countries.map((country) => {
+            {data.countries.map((country, index) => {
               const isSelected = activeRegion?.code === country.code;
               const isPinned = pinned?.code === country.code;
               const fill = getFillColor(country.count, data.maxCount);
@@ -132,7 +132,7 @@ export function WorldGeoMap({
               };
               return (
                 <path
-                  key={country.id}
+                  key={`${country.id}:${index}`}
                   d={country.d}
                   fill={fill}
                   stroke={isSelected ? "#431a75" : "#ffffff"}

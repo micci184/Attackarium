@@ -418,6 +418,26 @@ describe("ingest Edge Function core security & idempotency", () => {
     assert.equal(res3.headers.get("retry-after"), "60");
   });
 
+  it("accepts signed empty batches as sensor heartbeats without inserting events", async () => {
+    const repo = new InMemoryIngestRepo();
+    const hbReq = await makeSignedRequest({
+      body: JSON.stringify({ events: [] }),
+      requestId: "req-heartbeat-001",
+    });
+    const res = await handleIngestRequest(hbReq, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      accepted: number;
+      inserted: number;
+      duplicates: number;
+    };
+    assert.equal(body.accepted, 0);
+    assert.equal(body.inserted, 0);
+    assert.equal(body.duplicates, 0);
+    assert.equal(repo.events.size, 0);
+    assert.equal(repo.heartbeats.get("sensor-dev-01"), new Date(BASE_NOW_MS).toISOString());
+  });
+
   it("rejects non-POST methods (405) and non-JSON content types (415)", async () => {
     const repo = new InMemoryIngestRepo();
     const getReq = await makeSignedRequest({ body: "", method: "GET", requestId: "req-method-1" });
