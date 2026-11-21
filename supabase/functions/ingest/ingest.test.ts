@@ -154,6 +154,8 @@ describe("ingest Edge Function core security & idempotency", () => {
     assert.ok(sshEv);
     assert.equal(sshEv.metadata.password, "[REDACTED]");
     assert.equal("src_ip" in sshEv, false);
+    assert.equal(sshEv.attack_category, "auth_attempt");
+    assert.equal(httpEv.attack_category, "http_path_probe");
   });
 
   it("deduplicates retried events with a new request_id without creating duplicate rows", async () => {
@@ -363,6 +365,16 @@ describe("ingest Edge Function core security & idempotency", () => {
       requestId: "req-bad-schema-5",
     });
     assert.equal((await handleIngestRequest(badIpv6Req, makeConfig(), repo, BASE_NOW_MS)).status, 400);
+
+    const badCategoryEvent = {
+      ...generateSyntheticBatch(BASE_NOW_MS, 1)[0],
+      attack_category: "confirmed_exploit",
+    };
+    const badCategoryReq = await makeSignedRequest({
+      body: JSON.stringify({ events: [badCategoryEvent] }),
+      requestId: "req-bad-schema-7",
+    });
+    assert.equal((await handleIngestRequest(badCategoryReq, makeConfig(), repo, BASE_NOW_MS)).status, 400);
 
     const badKeyEvent = {
       ...generateSyntheticBatch(BASE_NOW_MS, 1)[0],

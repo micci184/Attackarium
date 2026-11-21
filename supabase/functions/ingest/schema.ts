@@ -26,12 +26,26 @@ export type AllowedProtocol =
 
 const ALLOWED_TOP_LEVEL_KEYS = new Set(["events"]);
 
+export const ATTACK_CATEGORIES = [
+  "port_scan",
+  "auth_attempt",
+  "http_path_probe",
+  "web_attack_attempt",
+  "suspected_cve_probe",
+] as const;
+
+export type AttackCategory = (typeof ATTACK_CATEGORIES)[number];
+
+const ATTACK_CATEGORY_SET = new Set<string>(ATTACK_CATEGORIES);
+const AUTH_PROTOCOLS = new Set(["ssh", "telnet", "ftp", "mysql", "redis"]);
+
 const ALLOWED_EVENT_KEYS = new Set([
   "id",
   "observed_at",
   "protocol",
   "dst_port",
   "event_type",
+  "attack_category",
   "src_ip",
   "src_country",
   "src_asn",
@@ -55,6 +69,7 @@ export interface NormalizedAttackEvent {
   protocol: AllowedProtocol;
   dst_port: number;
   event_type: string;
+  attack_category: AttackCategory | null;
   /**
    * Present only while the request is being validated. Ingest deletes this
    * field after deriving src_ip_hash. It is not a stored column.
@@ -72,6 +87,25 @@ export interface NormalizedAttackEvent {
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
+
+/**
+ * Coarse observation label. An omitted category is derived from protocol.
+ * suspected_cve_probe is never invented here; a later rule must set it.
+ */
+export function deriveAttackCategory(
+  protocol: string,
+  eventType: string,
+  explicit: string | null,
+): AttackCategory | null {
+  if (explicit && ATTACK_CATEGORY_SET.has(explicit)) {
+    return explicit as AttackCategory;
+  }
+  if (AUTH_PROTOCOLS.has(protocol)) return "auth_attempt";
+  if (protocol === "http" || protocol === "https") {
+    return eventType === "http_payload_probe" ? "web_attack_attempt" : "http_path_probe";
+  }
+  return null;
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -218,6 +252,14 @@ export function validateBatchPayload(
       return { ok: false, error: `events[${i}].event_type length must be 1..100` };
     }
 
+    let explicitCategory: string | null = null;
+    if (raw.attack_category !== undefined && raw.attack_category !== null) {
+      if (typeof raw.attack_category !== "string" || !ATTACK_CATEGORY_SET.has(raw.attack_category)) {
+        return { ok: false, error: `events[${i}].attack_category is invalid` };
+      }
+      explicitCategory = raw.attack_category;
+    }
+
     let srcIp: string | null = null;
     if (raw.src_ip !== undefined && raw.src_ip !== null) {
       if (typeof raw.src_ip !== "string" || !isValidIp(raw.src_ip.trim())) {
@@ -281,6 +323,7 @@ export function validateBatchPayload(
       protocol: raw.protocol as AllowedProtocol,
       dst_port: raw.dst_port,
       event_type: eventType,
+      attack_category: deriveAttackCategory(raw.protocol as string, eventType, explicitCategory),
       ...(srcIp ? { src_ip: srcIp } : {}),
       src_ip_hash: null,
       src_country: srcCountry,
