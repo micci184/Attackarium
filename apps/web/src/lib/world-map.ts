@@ -119,11 +119,13 @@ function getWorldGeometry(): CachedGeometry {
   const pathGenerator = geoPath(projection);
 
   const countries: Array<{ id: string; code: string; name: string; d: string }> = [];
-  for (const feat of filteredFeatures) {
-    const rawId = String(feat.id ?? "").padStart(3, "0");
+  for (let i = 0; i < filteredFeatures.length; i += 1) {
+    const feat = filteredFeatures[i];
+    const hasNumericId = feat.id !== undefined && feat.id !== null && String(feat.id).trim() !== "";
+    const rawId = hasNumericId ? String(feat.id).padStart(3, "0") : `UNK-${i}`;
     const dRaw = pathGenerator(feat);
     if (!dRaw) continue;
-    const code = NUMERIC_TO_ALPHA2[rawId] ?? rawId;
+    const code = hasNumericId ? (NUMERIC_TO_ALPHA2[rawId] ?? rawId) : rawId;
     const name = feat.properties?.name ?? code;
     countries.push({
       id: rawId,

@@ -515,6 +515,24 @@ end $$;
 
 do $$
 begin
+  perform public.sync_sensor_coverage_gaps(now());
+  raise exception 'SECURITY FAILURE: authenticated was allowed to EXECUTE sync_sensor_coverage_gaps';
+exception
+  when insufficient_privilege then
+    null; -- expected
+end $$;
+
+do $$
+begin
+  perform public.run_scheduled_observation_maintenance();
+  raise exception 'SECURITY FAILURE: authenticated was allowed to EXECUTE run_scheduled_observation_maintenance';
+exception
+  when insufficient_privilege then
+    null; -- expected
+end $$;
+
+do $$
+begin
   if (select count(*) from public.public_event_aggregates) <> 1
     or (select count(*) from public.public_observed_patterns) <> 1
     or (select count(*) from public.public_sensor_status_events) <> 1

@@ -145,6 +145,8 @@ describe("observatory data layer (mock mode)", () => {
     assert.equal(map.maxCount, 10);
     assert.equal(map.totalMapped, 18);
     assert.equal(map.countries.some((c) => c.id === "010"), false); // Antarctica excluded
+    assert.equal(new Set(map.countries.map((c) => c.id)).size, map.countries.length);
+    assert.equal(new Set(map.countries.map((c) => c.code)).size, map.countries.length);
     const jp = map.countries.find((c) => c.code === "JP");
     assert.ok(jp && jp.count === 10 && jp.d.length > 10);
     const sg = map.markers.find((m) => m.code === "SG");

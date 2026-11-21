@@ -40,7 +40,8 @@ OPENCANARY_LOGTYPE_MAP: dict[int, tuple[str, str]] = {
     4002: ("ssh", "ssh_login_attempt"),
     6001: ("telnet", "telnet_login_attempt"),
     8001: ("mysql", "mysql_login_attempt"),
-    11001: ("redis", "redis_command_probe"),
+    # OpenCanary LoggerBase.LOG_REDIS_COMMAND. 11001 is NTP monlist, not Redis.
+    17001: ("redis", "redis_command_probe"),
 }
 
 ALLOWED_PROTOCOLS = frozenset(
@@ -60,6 +61,7 @@ class ShipperConfig:
     http_timeout_seconds: float = 10.0
     base_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 60.0
+    heartbeat_interval_seconds: float = 300.0
 
 
 @dataclass
@@ -356,6 +358,7 @@ class EventShipper:
         self.spool = BoundedSqliteSpool(config.spool_path, config.max_spool_bytes)
         self.metrics = ShipperMetrics()
         self.consecutive_failures = 0
+        self._last_heartbeat_sec: float | None = None
 
     def close(self) -> None:
         self.spool.close()
@@ -442,13 +445,34 @@ class EventShipper:
             return (f"network:{type(exc).__name__}", None, None)
 
     def flush_once(self, now_sec: int | None = None) -> bool:
-        """Attempt to send one signed batch. Returns True if delivered or empty."""
+        """Attempt to send one signed batch (or periodic heartbeat when idle)."""
+        current_sec = float(now_sec if now_sec is not None else time.time())
         self.spool.purge_expired()
         batch = self.spool.peek_batch(
             self.config.max_batch_events, self.config.max_batch_bytes
         )
         if not batch:
-            return True
+            interval = self.config.heartbeat_interval_seconds
+            if interval <= 0:
+                return True
+            if (
+                self._last_heartbeat_sec is not None
+                and current_sec - self._last_heartbeat_sec < interval
+            ):
+                return True
+            outcome, status_code, retry_after = self._send_events([], now_sec)
+            if outcome == "ok":
+                self._last_heartbeat_sec = current_sec
+                self.consecutive_failures = 0
+                self.metrics.last_error = None
+                self.metrics.last_retry_after_seconds = None
+                self.metrics.last_delivery_at = dt.datetime.now(
+                    dt.timezone.utc
+                ).isoformat().replace("+00:00", "Z")
+                return True
+            err_label = f"http_{status_code}" if status_code is not None else outcome
+            self._record_failure(err_label, retry_after)
+            return False
 
         seqs = [seq for seq, _ in batch]
         events = [ev for _, ev in batch]
@@ -458,6 +482,7 @@ class EventShipper:
             self.spool.delete_seqs(seqs)
             self.metrics.batches_sent += 1
             self.metrics.events_delivered += len(events)
+            self._last_heartbeat_sec = current_sec
             self.consecutive_failures = 0
             self.metrics.last_error = None
             self.metrics.last_retry_after_seconds = None
@@ -609,6 +634,9 @@ def main() -> None:
         hmac_secret=secret,
         ingest_url=ingest_url,
         spool_path=Path(os.environ.get("SHIPPER_SPOOL_PATH", "/var/lib/attackarium/spool.sqlite3")),
+        heartbeat_interval_seconds=float(
+            os.environ.get("SHIPPER_HEARTBEAT_INTERVAL_SECONDS", "300")
+        ),
     )
     metrics_path = Path(
         os.environ.get("SHIPPER_METRICS_PATH", "/var/lib/attackarium/shipper-metrics.json")

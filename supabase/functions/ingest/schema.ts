@@ -183,9 +183,8 @@ export function validateBatchPayload(
   if (!Array.isArray(rawEvents)) {
     return { ok: false, error: "'events' must be an array" };
   }
-  if (rawEvents.length === 0) {
-    return { ok: false, error: "'events' must contain at least 1 event" };
-  }
+  // Empty batches act as signed sensor heartbeats so quiet periods stay
+  // distinguishable from sensor outages.
   if (rawEvents.length > options.maxBatchEvents) {
     return {
       ok: false,
