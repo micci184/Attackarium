@@ -1,5 +1,6 @@
--- Idempotent rollup, day/week deltas, and retention. Rolls back all fixtures.
--- Session TimeZone is UTC+9 so a UTC day boundary is not the local midnight.
+-- Idempotent rollup, day/week deltas, pattern totals, and retention.
+-- Rolls back all fixtures. Session TimeZone is UTC+9 so a UTC day boundary is
+-- not the local midnight.
 \set ON_ERROR_STOP on
 
 begin;
@@ -9,7 +10,7 @@ set local time zone interval '+09:00';
 insert into public.sensors (id, name, type, region, is_active)
 values ('sensor-rollup-01', 'Rollup Sensor', 'combined', 'us-east-1', true);
 
--- 14 retained days ending yesterday, plus events around the 30-day UTC cutoff.
+-- 14 days ending yesterday, plus events around the 30-day UTC cutoff.
 insert into public.attack_events (
   id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, src_ip_hash
 )
@@ -50,51 +51,31 @@ insert into public.attack_events (
   'cccccccc-cccc-4ccc-8ccc-ccccccccccc1',
   'sensor-rollup-01',
   timestamptz '2026-11-19 05:00:00+00',
-  'ssh',
-  22,
-  'ssh_login_attempt',
-  'auth_attempt',
-  'hash-a'
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-a'
 ),
 (
   'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1',
   'sensor-rollup-01',
   timestamptz '2026-10-01 10:00:00+00',
-  'ssh',
-  22,
-  'ssh_login_attempt',
-  'auth_attempt',
-  'hash-a'
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-a'
 ),
 (
   'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2',
   'sensor-rollup-01',
   timestamptz '2026-10-01 11:00:00+00',
-  'ssh',
-  22,
-  'ssh_login_attempt',
-  'auth_attempt',
-  'hash-a'
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-a'
 ),
 (
   'dddddddd-dddd-4ddd-8ddd-ddddddddddd1',
   'sensor-rollup-01',
   timestamptz '2026-10-21 23:30:00+00',
-  'ssh',
-  22,
-  'ssh_login_attempt',
-  'auth_attempt',
-  'hash-a'
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-a'
 ),
 (
   'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1',
   'sensor-rollup-01',
   timestamptz '2026-10-22 00:00:00+00',
-  'ssh',
-  22,
-  'ssh_login_attempt',
-  'auth_attempt',
-  'hash-a'
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-a'
 );
 
 insert into public.ingest_receipts (sensor_id, request_id, received_at, expires_at)
@@ -121,6 +102,26 @@ exception
     null;
 end $$;
 
+do $$
+begin
+  perform public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00', 7);
+  raise exception 'rollup window shorter than ingest age was accepted';
+exception
+  when invalid_parameter_value then
+    null;
+end $$;
+
+do $$
+begin
+  perform public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00', 31);
+  raise exception 'rollup window wider than retention was accepted';
+exception
+  when invalid_parameter_value then
+    null;
+end $$;
+
+-- The job ran on 2026-10-02 and again today, twice.
+select public.rollup_observation_aggregates(timestamptz '2026-10-02 12:00:00+00');
 select public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00');
 select public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00');
 
@@ -169,7 +170,6 @@ begin
   into v_week, v_week_prev, v_events
   from public.observation_count_deltas(timestamptz '2026-11-21 15:00:00+00')
   where comparison = 'week';
-  -- Current 7 days include the extra HTTP event and the repeated SSH hash.
   if v_week <> 9 or v_week_prev <> 7 or v_events <> 2 then
     raise exception 'week delta mismatch: current % previous % delta %', v_week, v_week_prev, v_events;
   end if;
@@ -198,11 +198,8 @@ declare
   v_deleted_events bigint;
   v_deleted_receipts bigint;
   v_remaining bigint;
-  v_old_aggregate bigint;
-  v_pattern bigint;
-  v_daily bigint;
-  v_fresh_receipts bigint;
   v_boundary bigint;
+  v_fresh_receipts bigint;
 begin
   select deleted_events, deleted_receipts
   into v_deleted_events, v_deleted_receipts
@@ -224,24 +221,58 @@ begin
     raise exception 'UTC cutoff day was split';
   end if;
 
-  select event_count into v_old_aggregate
-  from public.event_aggregates
-  where granularity = 'day'
-    and bucket_start = timestamptz '2026-10-01 00:00:00+00'
-    and protocol = 'ssh';
-  if v_old_aggregate <> 2 then
-    raise exception 'pruned day aggregate was not kept, got %', v_old_aggregate;
+  select count(*) into v_fresh_receipts
+  from public.ingest_receipts
+  where request_id = 'req-fresh';
+  if v_fresh_receipts <> 1 then
+    raise exception 'unexpired receipt was deleted';
   end if;
+end $$;
 
-  perform public.rollup_observation_aggregates(timestamptz '2026-11-21 16:00:00+00');
+-- After retention: five new events today, and one stray event on a pruned day.
+insert into public.attack_events (
+  id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, src_ip_hash
+)
+select
+  (
+    substr(md5('new' || i::text), 1, 8) || '-2222-4222-8222-' || substr(md5('new' || i::text), 1, 12)
+  )::uuid,
+  'sensor-rollup-01',
+  timestamptz '2026-11-21 10:00:00+00' + (i || ' minutes')::interval,
+  'ssh',
+  22,
+  'ssh_login_attempt',
+  'auth_attempt',
+  'hash-c'
+from pg_catalog.generate_series(1, 5) as i;
 
+insert into public.attack_events (
+  id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, src_ip_hash
+) values (
+  'ffffffff-ffff-4fff-8fff-fffffffffff1',
+  'sensor-rollup-01',
+  timestamptz '2026-10-01 12:00:00+00',
+  'ssh', 22, 'ssh_login_attempt', 'auth_attempt', 'hash-z'
+);
+
+set local role service_role;
+select public.run_observation_maintenance(timestamptz '2026-11-21 16:00:00+00', 30);
+reset role;
+
+do $$
+declare
+  v_old_aggregate bigint;
+  v_daily bigint;
+  v_pattern bigint;
+  v_first_seen timestamptz;
+begin
   select event_count into v_old_aggregate
   from public.event_aggregates
   where granularity = 'day'
     and bucket_start = timestamptz '2026-10-01 00:00:00+00'
     and protocol = 'ssh';
   if v_old_aggregate <> 2 then
-    raise exception 'rerollup rewrote a bucket whose events were gone, got %', v_old_aggregate;
+    raise exception 'a pruned day bucket was rewritten, got %', v_old_aggregate;
   end if;
 
   select event_count into v_daily
@@ -253,20 +284,16 @@ begin
     raise exception 'daily stat for a pruned day changed, got %', v_daily;
   end if;
 
-  select total_count into v_pattern
+  select total_count, first_seen_at into v_pattern, v_first_seen
   from public.observed_patterns
   where pattern_type = 'attack_category'
     and pattern_key = 'auth_attempt'
     and protocol = 'ssh';
-  if v_pattern <> 19 then
-    raise exception 'pattern total shrank after retention, got %', v_pattern;
+  if v_pattern <> 24 then
+    raise exception 'pattern lifetime total should be 19 + 5, got %', v_pattern;
   end if;
-
-  select count(*) into v_fresh_receipts
-  from public.ingest_receipts
-  where request_id = 'req-fresh';
-  if v_fresh_receipts <> 1 then
-    raise exception 'unexpired receipt was deleted';
+  if v_first_seen <> timestamptz '2026-10-01 10:00:00+00' then
+    raise exception 'pattern first_seen_at moved after retention, got %', v_first_seen;
   end if;
 end $$;
 
@@ -276,6 +303,18 @@ do $$
 begin
   perform public.rollup_observation_aggregates(now());
   raise exception 'anon executed rollup';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+reset role;
+set local role authenticated;
+
+do $$
+begin
+  perform count(*) from public.pattern_daily_counts;
+  raise exception 'authenticated read pattern_daily_counts';
 exception
   when insufficient_privilege then
     null;

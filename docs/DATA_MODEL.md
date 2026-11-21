@@ -16,7 +16,8 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | `attack_events` | `id`, `sensor_id`, `observed_at`, `received_at`, `protocol`, `dst_port`, `event_type`, `attack_category` (Phase 1 ext), `src_ip_hash`, `src_country`, `src_asn`, `http_method`, `http_path_redacted`, `fingerprint`, `metadata` | `id` stable UUID for idempotent upsert; `sensor_id` FK. No `src_ip` column and no `raw_object_key`. `src_ip_hash` and `metadata` are PRIVATE |
 | `daily_stats` | `date_utc`, `sensor_id`, `protocol`, `event_type`, `event_count`, `unique_source_count`, `updated_at` | Composite primary key; long-term aggregates only |
 | `event_aggregates` (Phase 1 ext) | `bucket_start`, `granularity` (`hour` / `day`), `sensor_id`, `protocol`, `attack_category`, `event_count`, `unique_source_count` | Supports 24h/7d/30d trends and day-over-day comparison without scanning raw events |
-| `observed_patterns` (Phase 1 ext) | `pattern_type` (`http_path` / `signature` / `attack_category`), `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `total_count` | Tracks representative HTTP paths and attack patterns |
+| `observed_patterns` (Phase 1 ext) | `pattern_type` (`http_path` / `signature` / `attack_category`), `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `total_count` | Tracks representative HTTP paths and attack patterns. Lifetime values are derived from `pattern_daily_counts` |
+| `pattern_daily_counts` (Phase 1 ext) | `date_utc`, `pattern_type`, `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `event_count` | PRIVATE. Per-day pattern counts kept after detail retention, so pattern totals stay exact |
 | `sensor_status_events` (Phase 1 ext) | `id`, `sensor_id`, `status` (`healthy` / `degraded` / `offline` / `error`), `started_at`, `ended_at`, `summary` | Records collection outages so UI separates zero-traffic periods from coverage gaps |
 | `ingest_receipts` | `sensor_id`, `request_id`, `received_at`, `expires_at` | Bounded anti-replay nonce & atomic per-sensor sliding-window rate-limit store |
 
@@ -85,11 +86,13 @@ switch.
 
 ## Retention and backups (configurable by cost and volume)
 
-1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `sensor_status_events`):**
+1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `pattern_daily_counts`, `sensor_status_events`):**
    Keep for **at least 1 year**. Prefer these over raw detail when the database nears its quota.
 2. **Sanitized events (`attack_events`, including `src_ip_hash`):**
    Keep for **at least 30 days**. Shorten this window first if storage fills, and do not go below 30 days without a new decision. `prune_observation_retention` rejects a shorter window and deletes only whole UTC days older than the cutoff.
 3. **EC2 raw logs:** OpenCanary JSONL and the collector JSONL are deleted within **24 hours**. The SQLite spool keeps undelivered sanitized-plus-transient-IP events only until delivery, the byte cap, or 24 hours.
-4. **Anti-replay nonces (`ingest_receipts`):** expire on the existing receipt TTL. The same job deletes receipts whose `expires_at` has passed. They are not an archive. `run_observation_maintenance` recomputes live buckets from the events still stored, then prunes. A second run replaces those counts. Buckets and pattern totals for deleted events stay in place. There is no raw-payload sample store to clean up.
-5. **Backups:** MVP does not add S3, a second database, or an archive pipeline. Postgres is the durable store.
-6. **Quota monitoring:** Alert before the database quota blocks ingest. There is no separate billing product beyond the single AWS Budget.
+4. **Anti-replay nonces (`ingest_receipts`):** expire on the existing receipt TTL. The same job deletes receipts whose `expires_at` has passed. They are not an archive.
+5. **Rollup job (`run_observation_maintenance`):** rebuilds the most recent UTC days (8 by default, at most 30) from stored events, then prunes. Rerunning it gives the same counts. Days older than the window are never rewritten, so their buckets and pattern totals survive pruning, and a stray old event cannot overwrite them. After an outage longer than the window, run once with a wider window (up to 30 days) to catch up. Rollup and pruning take the same advisory lock. There is no raw-payload sample store to clean up.
+6. **Backups:** MVP does not add S3, a second database, or an archive pipeline. Postgres is the durable store.
+7. **Quota monitoring:** Alert before the database quota blocks ingest. There is no separate billing product beyond the single AWS Budget. `pattern_daily_counts` grows with the number of distinct redacted paths per day, so watch it first if attackers vary paths heavily.
+8. **CVE evidence:** `detections` and `event_cve_matches` cascade-delete with their event. Decide how to keep CVE evidence past event retention before Phase 2 stores any.

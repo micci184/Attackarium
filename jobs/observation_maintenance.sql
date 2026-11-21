@@ -1,5 +1,5 @@
 -- Service-role entrypoint for the observation rollup and retention job.
--- The function rolls aggregates up before it deletes aged detail rows.
--- Event retention below 30 days is rejected. Aggregate rows are not deleted.
--- There is no raw-payload store to prune.
+-- Rebuilds the last 8 UTC days, then deletes events older than 90 days.
+-- After the job has been down longer than 8 days, pass a third argument
+-- of up to 30 to rebuild the missed days.
 select public.run_observation_maintenance(pg_catalog.now(), 90);
