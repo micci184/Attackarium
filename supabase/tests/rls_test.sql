@@ -19,6 +19,7 @@ insert into public.attack_events (
   protocol,
   dst_port,
   event_type,
+  attack_category,
   src_ip_hash,
   src_country,
   src_asn,
@@ -34,6 +35,7 @@ values (
   'http',
   80,
   'http_probe',
+  'http_path_probe',
   'salted-hash-example',
   'JP',
   'AS64512',
@@ -299,6 +301,32 @@ begin
   end if;
 end $$;
 
+update public.sensors
+set monitored_services = array['ssh', 'http']::text[]
+where id = 'sensor-test-01';
+
+insert into public.event_aggregates (
+  bucket_start, granularity, sensor_id, protocol, attack_category, event_count, unique_source_count
+) values (
+  date_trunc('hour', now()), 'hour', 'sensor-test-01', 'http', 'http_path_probe', 3, 2
+);
+
+insert into public.observed_patterns (
+  pattern_type, pattern_key, protocol, first_seen_at, last_seen_at, total_count
+) values (
+  'http_path', '/wp-login.php', 'http', now() - interval '1 day', now(), 4
+);
+
+insert into public.sensor_status_events (
+  sensor_id, status, started_at, ended_at, summary
+) values (
+  'sensor-test-01',
+  'offline',
+  now() - interval '2 hours',
+  now() - interval '1 hour',
+  'synthetic collection gap'
+);
+
 -- 3. Switch to anonymous role and assert strict default-deny on ALL base tables and RPCs
 set local role anon;
 
@@ -313,7 +341,10 @@ declare
     'event_cve_matches',
     'daily_stats',
     'daily_reports',
-    'ingest_receipts'
+    'ingest_receipts',
+    'event_aggregates',
+    'observed_patterns',
+    'sensor_status_events'
   ];
   v_cnt integer;
 begin
@@ -398,6 +429,39 @@ begin
   if v_stats_count <> 1 then
     raise exception 'Expected 1 public_daily_stats row, got %', v_stats_count;
   end if;
+
+  if (select count(*) from public.public_event_aggregates) <> 1 then
+    raise exception 'Expected 1 public_event_aggregates row';
+  end if;
+  if (select count(*) from public.public_observed_patterns) <> 1 then
+    raise exception 'Expected 1 public_observed_patterns row';
+  end if;
+  if (select count(*) from public.public_sensor_status_events) <> 1 then
+    raise exception 'Expected 1 public_sensor_status_events row';
+  end if;
+  if not exists (
+    select 1 from public.public_events where attack_category = 'http_path_probe'
+  ) then
+    raise exception 'public_events did not expose attack_category';
+  end if;
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'public_sensor_status_events'
+      and column_name = 'summary'
+  ) then
+    raise exception 'sensor status summary leaked into the public view';
+  end if;
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'public_sensors'
+      and column_name = 'last_error_summary'
+  ) then
+    raise exception 'last_error_summary leaked into public_sensors';
+  end if;
 end $$;
 
 -- 5. Verify authenticated role ALSO faces strict default-deny on base tables and ingest RPC
@@ -415,7 +479,10 @@ declare
     'event_cve_matches',
     'daily_stats',
     'daily_reports',
-    'ingest_receipts'
+    'ingest_receipts',
+    'event_aggregates',
+    'observed_patterns',
+    'sensor_status_events'
   ];
   v_cnt integer;
 begin
@@ -444,6 +511,17 @@ begin
 exception
   when insufficient_privilege then
     null; -- expected
+end $$;
+
+do $$
+begin
+  if (select count(*) from public.public_event_aggregates) <> 1
+    or (select count(*) from public.public_observed_patterns) <> 1
+    or (select count(*) from public.public_sensor_status_events) <> 1
+    or (select count(*) from public.public_events where attack_category = 'auth_attempt') <> 1
+  then
+    raise exception 'authenticated could not read the sanitized observation views';
+  end if;
 end $$;
 
 rollback;
