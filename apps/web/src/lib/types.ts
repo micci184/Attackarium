@@ -165,6 +165,10 @@ export interface TrendsData {
   httpPaths: HttpPathTotal[];
 }
 
+export type EventPeriodFilter = TrendPeriod | "all";
+
+export type EventCategoryFilter = AttackCategory | "unclassified" | "all";
+
 export interface PaginatedEventsResult {
   sourceMode: "mock" | "supabase";
   items: PublicEvent[];
@@ -173,6 +177,8 @@ export interface PaginatedEventsResult {
   totalCount: number;
   totalPages: number;
   protocolFilter: Protocol | "all";
+  periodFilter: EventPeriodFilter;
+  categoryFilter: EventCategoryFilter;
 }
 
 export interface EventDetailData {

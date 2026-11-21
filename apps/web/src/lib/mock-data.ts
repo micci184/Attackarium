@@ -1,4 +1,5 @@
 import type {
+  AttackCategory,
   Protocol,
   PublicDailyStat,
   PublicDetection,
@@ -134,6 +135,12 @@ function synthUuid(n: number): string {
   return `10000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 }
 
+function mockAttackCategory(protocol: Protocol): AttackCategory | null {
+  if (protocol === "http" || protocol === "https") return "http_path_probe";
+  if (protocol === "redis") return null;
+  return "auth_attempt";
+}
+
 export const MOCK_EVENTS: PublicEvent[] = Array.from({ length: 36 }, (_, idx) => {
   const tpl = EVENT_TEMPLATES[idx % EVENT_TEMPLATES.length];
   const observedMs = BASE_MS - idx * 14 * 60 * 1000;
@@ -150,6 +157,7 @@ export const MOCK_EVENTS: PublicEvent[] = Array.from({ length: 36 }, (_, idx) =>
     http_method: tpl.http_method,
     http_path_redacted: tpl.http_path_redacted,
     fingerprint: tpl.fingerprint,
+    attack_category: mockAttackCategory(tpl.protocol),
   };
 });
 

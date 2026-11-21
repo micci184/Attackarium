@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ProtocolBadge } from "@/components/protocol-badge";
+import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
   formatConfidence,
   formatEpss,
@@ -81,6 +82,15 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
             </dd>
           </div>
           <div className="border-b border-gray-100 px-4 py-3">
+            <dt className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
+              Attack Category
+            </dt>
+            <dd className="mt-1 text-gray-900">{attackCategoryLabel(event.attack_category)}</dd>
+            <dd className="mt-1 text-[11px] text-gray-500">
+              A category describes the observed request shape. It does not prove that an exploit succeeded.
+            </dd>
+          </div>
+          <div className="border-b border-gray-100 px-4 py-3 sm:border-r">
             <dt className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
               Event Type
             </dt>
