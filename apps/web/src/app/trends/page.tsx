@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ObservationMeta } from "@/components/observation-meta";
 import { PatternLists } from "@/components/pattern-lists";
@@ -48,6 +49,29 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
       </div>
 
       <MethodologyBanner sourceMode={data.sourceMode} />
+
+      {data.coverageGaps.length > 0 ? (
+        <section
+          aria-label="Collection gap notice"
+          className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-950"
+        >
+          <p className="min-w-0 flex-1 leading-relaxed">
+            <span aria-hidden="true" className="mr-1.5 font-mono font-bold">
+              [GAP]
+            </span>
+            <span className="font-semibold">Collection gap detected in this window:</span>{" "}
+            {formatCount(data.coverageGaps.length)} outage/degraded interval(s) overlap the
+            selected range. Marked buckets may undercount traffic and must not be read as zero
+            activity.
+          </p>
+          <Link
+            href="/sensors"
+            className="shrink-0 rounded font-medium text-amber-950 underline hover:text-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+          >
+            Inspect Sensors →
+          </Link>
+        </section>
+      ) : null}
 
       <VolumeChart
         series={data.series}
