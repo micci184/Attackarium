@@ -69,6 +69,18 @@ variable "enable_https_decoy" {
   default     = false
 }
 
+variable "enable_bootstrap_egress" {
+  description = "Temporarily allow outbound 80/443 during initial OS/package bootstrap only. Must be false during normal operation."
+  type        = bool
+  default     = false
+}
+
+variable "enable_termination_protection" {
+  description = "Protect the EC2 instance against accidental termination so incident evidence is preserved (ADR-021: stop, do not terminate)."
+  type        = bool
+  default     = true
+}
+
 variable "monthly_budget_usd" {
   description = "Monthly AWS Budget threshold in USD (ADR-020: 40 USD target)."
   type        = number

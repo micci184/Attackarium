@@ -83,8 +83,17 @@ resource "aws_route_table_association" "sensor_public" {
 }
 
 # -----------------------------------------------------------------------------
-# Layer 1 Firewall: VPC Security Group (strict ingress + strict egress allowlist)
+# Layer 1 Firewall: Lock down VPC default SG + dedicated sensor SG
 # -----------------------------------------------------------------------------
+resource "aws_default_security_group" "lockdown" {
+  vpc_id = aws_vpc.sensor.id
+
+  # Intentionally empty ingress/egress blocks to revoke AWS's default allow-all egress.
+  tags = {
+    Name = "${local.name_prefix}-default-sg-locked"
+  }
+}
+
 resource "aws_security_group" "sensor" {
   name        = "${local.name_prefix}-sg"
   description = "Attackarium isolated sensor SG: decoy ports + restricted admin SSH + explicit egress allowlist"
@@ -155,6 +164,28 @@ resource "aws_vpc_security_group_egress_rule" "aws_ntp" {
   cidr_ipv4         = "${local.aws_time_sync_ip}/32"
 }
 
+resource "aws_vpc_security_group_egress_rule" "bootstrap_https" {
+  count = var.enable_bootstrap_egress ? 1 : 0
+
+  security_group_id = aws_security_group.sensor.id
+  description       = "TEMPORARY bootstrap-only HTTPS egress for apt/pip (set enable_bootstrap_egress=false after setup)"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_egress_rule" "bootstrap_http" {
+  count = var.enable_bootstrap_egress ? 1 : 0
+
+  security_group_id = aws_security_group.sensor.id
+  description       = "TEMPORARY bootstrap-only HTTP egress for Ubuntu apt mirrors (set enable_bootstrap_egress=false after setup)"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 # -----------------------------------------------------------------------------
 # EC2 Sensor Host (ADR-019: t3a.small, standard credits, gp3 20 GiB encrypted, no IAM role)
 # -----------------------------------------------------------------------------
@@ -170,6 +201,7 @@ resource "aws_instance" "sensor" {
   vpc_security_group_ids      = [aws_security_group.sensor.id]
   key_name                    = aws_key_pair.operator.key_name
   associate_public_ip_address = true
+  disable_api_termination     = var.enable_termination_protection
 
   # Explicitly attach NO IAM instance profile so the sensor holds zero AWS credentials.
   iam_instance_profile = null
@@ -195,12 +227,13 @@ resource "aws_instance" "sensor" {
   }
 
   user_data = templatefile("${path.module}/templates/cloud-init.yaml.tftpl", {
-    admin_ssh_port      = var.admin_ssh_port
-    admin_ssh_cidrs     = var.admin_ssh_cidrs
-    decoy_tcp_ports     = local.decoy_tcp_ports
-    ingest_egress_cidrs = var.ingest_egress_cidrs
-    vpc_dns_ip          = local.vpc_dns_ip
-    aws_time_sync_ip    = local.aws_time_sync_ip
+    admin_ssh_port          = var.admin_ssh_port
+    admin_ssh_cidrs         = var.admin_ssh_cidrs
+    decoy_tcp_ports         = local.decoy_tcp_ports
+    ingest_egress_cidrs     = var.ingest_egress_cidrs
+    vpc_dns_ip              = local.vpc_dns_ip
+    aws_time_sync_ip        = local.aws_time_sync_ip
+    enable_bootstrap_egress = var.enable_bootstrap_egress
   })
   user_data_replace_on_change = false
 
@@ -210,7 +243,8 @@ resource "aws_instance" "sensor" {
 }
 
 # -----------------------------------------------------------------------------
-# Cost Guardrail: Single AWS Budget (ADR-020: 40 USD, email at 50/80/100%, no auto-stop)
+# Cost Guardrail: Single AWS Budget scoped to Project=Attackarium tag (ADR-020)
+# Requires activating the "Project" user-defined Cost Allocation Tag in AWS Billing.
 # -----------------------------------------------------------------------------
 resource "aws_budgets_budget" "monthly_cost" {
   name         = "${local.name_prefix}-monthly-usd"
@@ -218,6 +252,11 @@ resource "aws_budgets_budget" "monthly_cost" {
   limit_amount = tostring(var.monthly_budget_usd)
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = ["user:Project$Attackarium"]
+  }
 
   dynamic "notification" {
     for_each = toset(["50", "80", "100"])
