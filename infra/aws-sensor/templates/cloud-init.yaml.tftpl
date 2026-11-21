@@ -1,0 +1,94 @@
+#cloud-config
+# Attackarium isolated sensor host bootstrap (Ubuntu Server LTS).
+# - Disables Ubuntu 24.04 ssh.socket so sshd binds strictly to admin_ssh_port
+#   and leaves TCP/22 free for OpenCanary.
+# - Layer 2 firewall (nftables) mirrors the VPC Security Group egress allowlist
+#   and applies per-source new-connection rate limiting on decoy ports.
+
+users:
+  - default
+  - name: attackarium
+    system: true
+    shell: /usr/sbin/nologin
+  - name: opencanary
+    system: true
+    groups: [attackarium]
+    shell: /usr/sbin/nologin
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-attackarium-hardening.conf
+    permissions: "0600"
+    owner: root:root
+    content: |
+      Port ${admin_ssh_port}
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PubkeyAuthentication yes
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      X11Forwarding no
+
+  - path: /etc/nftables.conf
+    permissions: "0600"
+    owner: root:root
+    content: |
+      #!/usr/sbin/nft -f
+      flush ruleset
+
+      table inet attackarium {
+        set decoy_flood {
+          type ipv4_addr
+          flags dynamic,timeout
+          timeout 1m
+        }
+
+        chain input {
+          type filter hook input priority 0; policy drop;
+
+          iif "lo" accept
+          ct state established,related accept
+          ct state invalid drop
+
+          # Operator management SSH on dedicated port from allowlisted CIDRs only
+          ip saddr { ${join(", ", admin_ssh_cidrs)} } tcp dport ${admin_ssh_port} accept
+
+          # Honeypot decoy TCP ports with per-source new-connection rate cap
+          tcp dport { ${join(", ", decoy_tcp_ports)} } ct state new add @decoy_flood { ip saddr limit rate over 30/second burst 60 packets } drop
+          tcp dport { ${join(", ", decoy_tcp_ports)} } accept
+        }
+
+        chain forward {
+          type filter hook forward priority 0; policy drop;
+        }
+
+        chain output {
+          type filter hook output priority 0; policy drop;
+
+          oif "lo" accept
+          ct state established,related accept
+          ct state invalid drop
+
+          # DNS to VPC resolver only
+          ip daddr ${vpc_dns_ip} udp dport 53 accept
+          ip daddr ${vpc_dns_ip} tcp dport 53 accept
+
+          # Time sync to Amazon Time Sync Service only
+          ip daddr ${aws_time_sync_ip} udp dport 123 accept
+
+          # HTTPS outbound strictly to approved Supabase ingest CIDRs
+          ip daddr { ${join(", ", ingest_egress_cidrs)} } tcp dport 443 accept
+        }
+      }
+
+runcmd:
+  - install -d -m 2770 -o attackarium -g attackarium /var/log/attackarium
+  - install -d -m 0750 -o attackarium -g attackarium /var/lib/attackarium
+  - install -d -m 0750 -o opencanary -g opencanary /var/lib/attackarium/opencanary
+  - install -d -m 0700 -o root -g root /etc/attackarium
+  - systemctl enable nftables
+  - nft -f /etc/nftables.conf
+  # Ubuntu 24.04 uses ssh.socket on port 22 by default; switch to ssh.service so Port ${admin_ssh_port} takes effect.
+  - systemctl disable --now ssh.socket || true
+  - systemctl enable --now ssh.service || systemctl restart sshd

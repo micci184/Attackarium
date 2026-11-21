@@ -8,7 +8,13 @@ Type=simple
 User=opencanary
 Group=opencanary
 WorkingDirectory=/var/lib/attackarium/opencanary
-ExecStart=/opt/attackarium/venv/bin/opencanaryd --dev --uid=opencanary --gid=opencanary
+RuntimeDirectory=opencanary
+RuntimeDirectoryMode=0750
+# opencanaryd always wraps twistd in sudo unless it is already root.
+# NoNewPrivileges blocks that sudo, so start twistd directly. The unit user
+# holds CAP_NET_BIND_SERVICE, which is enough to bind the decoy ports.
+# Config is opencanary.conf in WorkingDirectory.
+ExecStart=/opt/attackarium/venv/bin/twistd --nodaemon --pidfile=/run/opencanary/opencanary.pid -y /opt/attackarium/venv/bin/opencanary.tac
 Restart=on-failure
 RestartSec=5
 

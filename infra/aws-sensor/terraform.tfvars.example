@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars locally (never commit terraform.tfvars).
+aws_region          = "us-east-1"
+admin_ssh_port      = 2222
+admin_ssh_cidrs     = ["203.0.113.10/32"]
+ssh_public_key      = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithOperatorPublicKey operator@example"
+ingest_egress_cidrs = ["198.51.100.0/24"]
+enable_https_decoy  = false
+monthly_budget_usd  = 40
+budget_alert_emails = ["operator@example.com"]
