@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatJstDateTime, safeDisplayText } from "./format.ts";
 import {
+  buildDailySeries,
+  buildHourlySeries,
+  dailyWindowStartDate,
+  parseTrendPeriod,
+  seriesHasLeadingGap,
+  topHttpPaths,
+  topPatterns,
+} from "./dashboard-metrics.ts";
+import {
   evaluateSensorHealth,
   getEventDetail,
   getOverviewData,
@@ -15,7 +24,11 @@ describe("observatory data layer (mock mode)", () => {
     process.env.USE_MOCK = "true";
     const overview = await getOverviewData();
     assert.equal(overview.sourceMode, "mock");
-    assert.ok(overview.totalEvents24h > 0);
+    assert.equal(overview.totalEvents24h, 36);
+    assert.equal(overview.priorEvents24h, 0);
+    assert.ok(overview.patterns24h.length > 0);
+    assert.ok(overview.httpPaths24h.length > 0);
+    assert.ok(overview.dataUpdatedAt);
     assert.ok(overview.recentEvents.length > 0);
 
     for (const ev of overview.recentEvents) {
@@ -56,14 +69,35 @@ describe("observatory data layer (mock mode)", () => {
   it("aggregates trends series and formats JST / strips control chars", async () => {
     process.env.USE_MOCK = "true";
     const trends = await getTrendsData();
-    assert.ok(trends.dailySeries.length >= 7);
+    assert.equal(trends.period, "30d");
+    assert.equal(trends.series.length, 30);
+    assert.equal(trends.seriesSource, "daily_stats");
     assert.ok(trends.protocolTotals.length > 0);
-    for (const day of trends.dailySeries) {
+    assert.ok(trends.patterns.length > 0);
+    assert.ok(trends.httpPaths.length > 0);
+    for (const day of trends.series) {
       assert.equal("uniqueSources" in day, false);
     }
 
+    const hourly = await getTrendsData("24h");
+    assert.equal(hourly.series.length, 24);
+    assert.equal(hourly.seriesSource, "events");
+    assert.equal(
+      hourly.series.reduce((sum, bucket) => sum + bucket.totalEvents, 0),
+      36,
+    );
+
+    const week = await getTrendsData("7d");
+    assert.equal(week.series.length, 7);
+    assert.equal(
+      week.series.reduce((sum, bucket) => sum + bucket.totalEvents, 0),
+      week.protocolTotals.reduce((sum, item) => sum + item.count, 0),
+    );
+
     assert.match(formatJstDateTime("2026-11-21T00:00:00.000Z"), /2026\/11\/21 09:00:00 JST/);
     assert.equal(safeDisplayText("abc\u0000\u202edef"), "abcdef");
+    assert.equal(parseTrendPeriod("7d"), "7d");
+    assert.equal(parseTrendPeriod("nope"), "30d");
   });
 
   it("builds flat world map data covering both polygons (JP) and small-territory markers (SG)", () => {
@@ -100,5 +134,44 @@ describe("observatory data layer (mock mode)", () => {
       evaluateSensorHealth({ is_active: false, last_heartbeat_at: "2026-11-21T09:59:00.000Z" }, now),
       "inactive",
     );
+  });
+
+  it("handles empty series, leading history gaps, attack categories, and HTTP path filtering", () => {
+    const nowMs = Date.parse("2026-11-22T00:00:00.000Z");
+
+    assert.equal(dailyWindowStartDate(nowMs, 7), "2026-11-16");
+    assert.equal(dailyWindowStartDate(nowMs, 30), "2026-10-24");
+
+    const emptyDaily = buildDailySeries([], nowMs, 7);
+    assert.equal(emptyDaily.length, 7);
+    assert.equal(seriesHasLeadingGap(emptyDaily, null), false);
+
+    const gappedDaily = buildDailySeries([{ dateUtc: "2026-11-22", eventCount: 5 }], nowMs, 7);
+    assert.equal(seriesHasLeadingGap(gappedDaily, "2026-11-20T00:00:00.000Z"), true);
+    assert.equal(seriesHasLeadingGap(gappedDaily, "2026-11-01T00:00:00.000Z"), false);
+
+    const hourly = buildHourlySeries(["2026-11-21T23:30:00.000Z", "invalid-date"], nowMs);
+    assert.equal(hourly.length, 24);
+    assert.equal(
+      hourly.reduce((sum, bucket) => sum + bucket.totalEvents, 0),
+      1,
+    );
+
+    const patterns = topPatterns([
+      { protocol: "http", event_type: "http_probe", attack_category: "http_path_probe" },
+      { protocol: "http", event_type: "http_probe", attack_category: "http_path_probe" },
+      { protocol: "ssh", event_type: "ssh_new_connection", attack_category: null },
+    ]);
+    assert.equal(patterns[0]?.label, "HTTP path probe");
+    assert.equal(patterns[0]?.count, 2);
+    assert.equal(patterns[1]?.label, "ssh_new_connection");
+
+    const paths = topHttpPaths([
+      { protocol: "http", http_method: "GET", http_path_redacted: "/.env" },
+      { protocol: "http", http_method: null, http_path_redacted: "/.env" },
+      { protocol: "ssh", http_method: "GET", http_path_redacted: "/ignored" },
+      { protocol: "https", http_method: "POST", http_path_redacted: null },
+    ]);
+    assert.deepEqual(paths, [{ method: "GET", path: "/.env", count: 2 }]);
   });
 });

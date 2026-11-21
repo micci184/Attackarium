@@ -13,6 +13,20 @@ export const ProtocolSchema = z.enum([
 
 export type Protocol = z.infer<typeof ProtocolSchema>;
 
+export const AttackCategorySchema = z.enum([
+  "port_scan",
+  "auth_attempt",
+  "http_path_probe",
+  "web_attack_attempt",
+  "suspected_cve_probe",
+]);
+
+export type AttackCategory = z.infer<typeof AttackCategorySchema>;
+
+export const TREND_PERIODS = ["24h", "7d", "30d"] as const;
+
+export type TrendPeriod = (typeof TREND_PERIODS)[number];
+
 export const PublicSensorSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -43,6 +57,7 @@ export const PublicEventSchema = z.object({
   http_method: z.string().nullable(),
   http_path_redacted: z.string().nullable(),
   fingerprint: z.string().nullable(),
+  attack_category: AttackCategorySchema.nullable().optional(),
 });
 
 export type PublicEvent = z.infer<typeof PublicEventSchema>;
@@ -96,9 +111,29 @@ export interface OverviewSensor extends PublicSensor {
   healthStatus: SensorHealthStatus;
 }
 
+export interface PatternTotal {
+  key: string;
+  label: string;
+  protocol: Protocol;
+  count: number;
+}
+
+export interface HttpPathTotal {
+  method: string;
+  path: string;
+  count: number;
+}
+
+export interface TrendBucket {
+  bucketStart: string;
+  label: string;
+  totalEvents: number;
+}
+
 export interface OverviewData {
   sourceMode: "mock" | "supabase";
   totalEvents24h: number;
+  priorEvents24h: number;
   sampled24hCount: number;
   is24hBreakdownSampled: boolean;
   uniqueCountries24h: number;
@@ -107,16 +142,27 @@ export interface OverviewData {
   sensors: OverviewSensor[];
   protocolBreakdown: Array<{ protocol: Protocol; count: number; sharePct: number }>;
   regionTotals24h: Array<{ country: string; count: number }>;
+  patterns24h: PatternTotal[];
+  httpPaths24h: HttpPathTotal[];
+  dataUpdatedAt: string | null;
   recentEvents: PublicEvent[];
 }
 
 export interface TrendsData {
   sourceMode: "mock" | "supabase";
-  dailySeries: Array<{ dateUtc: string; totalEvents: number }>;
+  period: TrendPeriod;
+  series: TrendBucket[];
+  seriesSource: "events" | "daily_stats";
+  historyStartedAt: string | null;
+  dataUpdatedAt: string | null;
+  registeredSensorCount: number;
+  isEventSampled: boolean;
   protocolTotals: Array<{ protocol: Protocol; count: number }>;
   portTotals: Array<{ dstPort: number; protocol: Protocol; count: number }>;
   regionTotals: Array<{ country: string; count: number }>;
   asnTotals: Array<{ asn: string; count: number }>;
+  patterns: PatternTotal[];
+  httpPaths: HttpPathTotal[];
 }
 
 export interface PaginatedEventsResult {

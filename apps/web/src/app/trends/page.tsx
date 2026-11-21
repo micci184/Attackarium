@@ -1,17 +1,26 @@
 import { MethodologyBanner } from "@/components/methodology-banner";
+import { ObservationMeta } from "@/components/observation-meta";
+import { PatternLists } from "@/components/pattern-lists";
+import { PeriodNav } from "@/components/period-nav";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
+import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
-import { formatCount } from "@/lib/format";
+import { seriesHasLeadingGap, parseTrendPeriod, trendPeriodLabel } from "@/lib/dashboard-metrics";
+import { formatCount, formatJstDateTime } from "@/lib/format";
 import { getTrendsData } from "@/lib/observatory";
 import { buildWorldMapData } from "@/lib/world-map";
 
 export const dynamic = "force-dynamic";
 
-export default async function TrendsPage() {
-  const data = await getTrendsData();
+interface TrendsPageProps {
+  searchParams: Promise<{ period?: string }>;
+}
+
+export default async function TrendsPage({ searchParams }: TrendsPageProps) {
+  const params = await searchParams;
+  const period = parseTrendPeriod(params.period);
+  const data = await getTrendsData(period);
   const worldMapData = buildWorldMapData(data.regionTotals);
-  const series = data.dailySeries.slice(-7);
-  const maxDaily = Math.max(...series.map((d) => d.totalEvents), 1);
   const maxProto = Math.max(...data.protocolTotals.map((p) => p.count), 1);
   const maxPort = Math.max(...data.portTotals.map((p) => p.count), 1);
   const maxRegion = Math.max(...data.regionTotals.map((r) => r.count), 1);
@@ -25,77 +34,43 @@ export default async function TrendsPage() {
             Trends
           </h1>
           <p className="mt-0.5 text-xs text-gray-500">
-            Daily rollups and top breakdowns by protocol, destination port, region, and ASN
+            Event volume for the selected window, plus protocol, pattern, and sanitized HTTP path trends
           </p>
+          <div className="mt-2">
+            <ObservationMeta
+              windowLabel={trendPeriodLabel(period)}
+              updatedAt={data.dataUpdatedAt}
+              sensorCount={data.registeredSensorCount}
+            />
+          </div>
         </div>
-        <span
-          translate="no"
-          className="rounded border border-gray-200 bg-white px-2.5 py-1.5 font-mono text-xs text-gray-600"
-        >
-          Past 7d (UTC)
-        </span>
+        <PeriodNav period={period} />
       </div>
 
       <MethodologyBanner sourceMode={data.sourceMode} />
 
-      {/* Daily Event Volume Chart */}
-      <section className="rounded border border-gray-200 bg-white">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-            Daily Event Volume (UTC)
-          </h2>
-          <span className="font-mono text-[11px] tabular-nums text-gray-400">
-            Peak: {formatCount(maxDaily)} events/day
-          </span>
-        </div>
+      <VolumeChart
+        series={data.series}
+        heading={period === "24h" ? "Hourly Event Volume (UTC)" : "Daily Event Volume (UTC)"}
+        emptyLabel="No stored observations in this window."
+        footnote={
+          seriesHasLeadingGap(data.series, data.historyStartedAt)
+            ? `Early zero buckets precede the first stored observation (${formatJstDateTime(data.historyStartedAt)}). They indicate missing history, not a measured quiet period.`
+            : data.seriesSource === "daily_stats"
+              ? "Daily totals come from rollup rows. A zero day has no stored rollup."
+              : "Totals are counted from stored events. A zero bucket has no stored observation."
+        }
+      />
 
-        <div className="p-4">
-          {series.length === 0 ? (
-            <p className="text-xs text-gray-500">No daily rollup data available yet.</p>
-          ) : (
-            <div className="relative">
-              {/* Subtle horizontal grid lines */}
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-x-0 top-6 bottom-6 flex flex-col justify-between"
-              >
-                <div className="border-t border-dashed border-gray-200" />
-                <div className="border-t border-dashed border-gray-200" />
-                <div className="border-t border-dashed border-gray-200" />
-                <div className="border-t border-gray-200" />
-              </div>
-
-              <div className="relative grid grid-cols-7 items-end gap-3 pt-1 sm:gap-5">
-                {series.map((day) => {
-                  const pct = Math.max(Math.round((day.totalEvents / maxDaily) * 100), 4);
-                  return (
-                    <div
-                      key={day.dateUtc}
-                      className="flex min-w-0 flex-col items-center gap-1.5"
-                    >
-                      <span className="font-mono text-[11px] font-medium tabular-nums text-gray-700">
-                        {formatCount(day.totalEvents)}
-                      </span>
-                      <div className="flex h-44 w-full max-w-[52px] items-end">
-                        <div
-                          className="w-full rounded-t-sm bg-[#632ca6] transition-[height]"
-                          style={{ height: `${pct}%` }}
-                        />
-                      </div>
-                      <span
-                        translate="no"
-                        className="font-mono text-[11px] tabular-nums text-gray-500"
-                      >
-                        {day.dateUtc.slice(5)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+      <PatternLists
+        patterns={data.patterns}
+        httpPaths={data.httpPaths}
+        sampledNote={
+          data.isEventSampled
+            ? "Path and pattern lists use the newest stored events in this window, not every row."
+            : null
+        }
+      />
 
       <WorldGeoMap
         data={worldMapData}
@@ -108,7 +83,7 @@ export default async function TrendsPage() {
         <section className="rounded border border-gray-200 bg-white">
           <div className="border-b border-gray-200 px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Top Protocols (<span translate="no">daily_stats</span>)
+              Protocols In This Window
             </h2>
           </div>
           <div className="space-y-1.5 p-4">
