@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js / Vercel
+apps/web/.next/
+apps/web/out/
+apps/web/next-env.d.ts
+*.tsbuildinfo
+.vercel/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+*.jks
+secrets/
+credentials/
+
+# Local sensor logs, spools, and raw captures (NEVER commit real attacker traffic or IPs)
+*.jsonl
+*.pcap
+*.pcapng
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+sensors/**/spool/
+sensors/**/logs/
+sensors/**/data/
+
+# Supabase local artifacts
+supabase/.temp/
+supabase/.branches/
+
+# Terraform / IaC local state and overrides
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+
+# Python / virtualenv
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Test & coverage artifacts
+coverage/
+test-results/
+playwright-report/
+
+# Logs and OS files
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db

@@ -15,6 +15,20 @@ All timestamps are `timestamptz` UTC; UI converts to JST for display.
 | `daily_stats` | `date_utc`, `sensor_id`, `protocol`, `event_type`, `event_count`, `unique_source_count` | Composite unique key; aggregates only |
 | `daily_reports` | `id`, `date_utc`, `status`, `summary_md`, `x_post_draft`, `model_id`, `source_window_start`, `source_window_end`, `reviewed_at` | Draft/reviewed/rejected/published states |
 | `ingest_receipts` | `sensor_id`, `request_id`, `received_at`, `expires_at` | Optional bounded anti-replay nonce store |
+| `user_mcp_entitlements` | `user_id`, `terms_accepted_at`, `terms_version`, `mcp_enabled`, `is_suspended`, `updated_at` | Minimal authz state ONLY; never duplicate Supabase Auth emails/profiles or store PII |
+| `mcp_usage_buckets` | `bucket_start`, `granularity`, `request_kind`, `tool_name`, `call_count`, `success_count`, `error_count`, `auth_failure_count`, `rate_limited_count`, `avg_latency_ms`, `active_user_count` | Admin-only aggregates; distinguish `initialize` vs `tool_call`; **never store prompts or tokens** |
+| `admin_audit_logs` | `id`, `actor_user_id`, `action`, `target_type`, `target_id`, `metadata`, `created_at` | Append-only operator audit log; tamper-resistant, never publicly readable |
+
+## Data minimization and breach blast-radius reduction
+
+- Do not collect app-specific user profile fields (name, address, phone number).
+- Do not duplicate Supabase Auth user attributes (such as email) into application tables.
+  Note that Google/GitHub login inherently stores account metadata (e.g., email) inside
+  Supabase Auth itself; do not promise "zero personal data".
+- Never store MCP user prompts/questions, OAuth access/refresh tokens, raw attack payloads,
+  or plaintext credentials in analytics or public-facing tables.
+- Protect against both **data leakage** and **data tampering** via default-deny RLS,
+  least-privilege server credentials, strict write paths, and append-only audit logs.
 
 Indexes to start:
 
@@ -23,8 +37,9 @@ Indexes to start:
 - `detections(event_id)` and `event_cve_matches(cve_id)`.
 - `daily_stats(date_utc DESC)`.
 
-`src_ip` is optional/private raw data; consider limiting retention or converting to salted keyed hashes
-when raw values are no longer required. Do **not** expose it in anonymous views.
+`src_ip` is optional/private raw data; the ingest function derives a keyed HMAC hash (`src_ip_hash`)
+using `IP_HASH_SALT` and clears plaintext `src_ip` by default (`INGEST_ALLOW_RAW_IP=false`).
+Raw `src_ip` is never exposed in anonymous views (`public_*` views enforce `security_barrier = true`).
 
 ## Access model
 

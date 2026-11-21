@@ -29,9 +29,8 @@ Not in MVP:
 
 ### Phase 0 — Policy and operational gate
 
-- [ ] Pick AWS account, region, DNS/domain strategy, and monthly spend cap.
-- [ ] Obtain AWS confirmation of the planned *public, responding low-interaction honeypot* on Lightsail,
-      OR select the user's previously approved EC2 deployment pattern.
+- [ ] Pick AWS account, EC2 region/instance sizing, DNS/domain strategy, and monthly spend cap.
+- [ ] Confirm AWS acceptable-use / policy alignment for the planned *public, responding low-interaction honeypot* on **EC2**.
 - [ ] Confirm incident/abuse report contact, credentials rotation, teardown procedure, and log retention.
 - [ ] Decide whether IP addresses will be retained privately (and for how long) and document publication policy.
 
@@ -90,6 +89,16 @@ and a benign/probing sample does not generate a false confirmed-exploit label.
 **Done when:** dashboard shows real observations and historical trends,
 the daily report can be reviewed and exported, and sensor/DB failure modes have been tested.
 
+### Phase 5 — Remote MCP, OAuth 2.1 & Operator Admin Console
+
+- [ ] Add minimal DB tables/RLS for MCP entitlements (`user_mcp_entitlements`), aggregated MCP Usage (`mcp_usage_buckets`, separating initialize vs tool calls), and append-only `admin_audit_logs`.
+- [ ] Enable Supabase Auth (Google/GitHub) as OAuth 2.1 Authorization Code + PKCE server and publish required OAuth metadata.
+- [ ] Build general-user MCP page: connection instructions, available read-only tool catalog, Terms acceptance, and OAuth consent/revocation (**no usage count dashboard for general users**).
+- [ ] Implement read-only Remote MCP server on **Vercel Functions** via official `mcp-handler` (Streamable HTTP, no Cloudflare Workers), reusing shared read-only query helpers, enforcing all 5 server-side authz gates + per-user rate limits, and logging zero prompts/tokens.
+- [ ] Build operator-only Admin Console & protected admin APIs (default-deny, server-side admin ID allowlist, mandatory MFA, audit logs) including admin-only MCP Usage analytics.
+
+**Done when:** Cursor/MCP clients connect via OAuth 2.1 PKCE, unauthenticated/unentitled/unaccepted/suspended users are blocked, MCP cannot write or administer DB, and MCP Usage + admin APIs are accessible exclusively to the MFA-verified operator.
+
 ## 3. Minimal release acceptance checklist
 
 - Live event visible on dashboard within an agreed refresh window (initial goal: 60 seconds).
@@ -103,14 +112,13 @@ the daily report can be reviewed and exported, and sensor/DB failure modes have 
 
 ## 4. Initial cost plan
 
-- AWS sensor: conditional **Lightsail 2 GiB / 60 GiB / public IPv4, USD 12/month** according
-  to published plan pricing; switch to EC2 if AWS approval or operational controls require it.
-- Vercel Hobby: free only for eligible personal/noncommercial usage and within limits.
-- Supabase Free: 500 MB database, 1 GB Storage (at the referenced date); limits require monitoring.
+- AWS EC2 sensor: minimal isolated EC2 instance + public IPv4 + EBS (exact instance size & region confirmed in Phase 0 with explicit monthly spend cap and billing alerts).
+- Vercel Hobby: free only for eligible personal/noncommercial usage and within limits (hosts Next.js dashboard, Admin Console, and Vercel Functions Remote MCP).
+- Supabase Free: 500 MB database, 1 GB Storage, Supabase Auth (at the referenced date); limits require monitoring.
 - LLM token usage, domain, backups/archival, traffic overages: **variable, not included**.
 - Do not buy paid infrastructure or deploy a public honeypot until the owner approves the concrete plan.
 
-References: [AWS Lightsail pricing](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-bundles.html),
+References: [AWS EC2 pricing](https://aws.amazon.com/ec2/pricing/),
 [Vercel Hobby](https://vercel.com/docs/plans/hobby),
 [Supabase quotas](https://supabase.com/docs/guides/platform/billing-on-supabase).
 

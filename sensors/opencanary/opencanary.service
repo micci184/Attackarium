@@ -1,0 +1,31 @@
+[Unit]
+Description=Attackarium OpenCanary Low-Interaction Decoy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opencanary
+Group=opencanary
+WorkingDirectory=/var/lib/attackarium/opencanary
+ExecStart=/opt/attackarium/venv/bin/opencanaryd --dev --uid=opencanary --gid=opencanary
+Restart=on-failure
+RestartSec=5
+
+# Least-privilege hardening: only allow binding privileged decoy ports (<1024)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log/attackarium /var/lib/attackarium/opencanary
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

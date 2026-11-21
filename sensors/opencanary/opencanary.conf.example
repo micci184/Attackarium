@@ -1,0 +1,46 @@
+{
+  "device.node_id": "sensor-replace-with-immutable-id",
+  "ip.ignorelist": [],
+  "git.enabled": false,
+  "ftp.enabled": true,
+  "ftp.port": 21,
+  "ftp.banner": "FTP server ready",
+  "http.enabled": false,
+  "https.enabled": false,
+  "httpproxy.enabled": false,
+  "ssh.enabled": true,
+  "ssh.port": 22,
+  "ssh.version": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10",
+  "telnet.enabled": true,
+  "telnet.port": 23,
+  "mysql.enabled": true,
+  "mysql.port": 3306,
+  "mysql.banner": "5.7.42-0ubuntu0.18.04.1",
+  "redis.enabled": true,
+  "redis.port": 6379,
+  "mssql.enabled": false,
+  "snmp.enabled": false,
+  "vnc.enabled": false,
+  "rdp.enabled": false,
+  "sip.enabled": false,
+  "smb.enabled": false,
+  "logger": {
+    "class": "PyLogger",
+    "kwargs": {
+      "formatters": {
+        "plain": {
+          "format": "%(message)s"
+        }
+      },
+      "handlers": {
+        "jsonfile": {
+          "class": "logging.handlers.RotatingFileHandler",
+          "filename": "/var/log/attackarium/opencanary.jsonl",
+          "maxBytes": 20971520,
+          "backupCount": 3,
+          "formatter": "plain"
+        }
+      }
+    }
+  }
+}

@@ -1,30 +1,37 @@
-# Honeypot Observatory
+# Attackarium — Honeypot Observatory
 
-OpenCanary を中心に、インターネット上の攻撃を観測・蓄積・分析し、
-CVE / CISA KEV / EPSS と関連付けて公開する非商用の攻撃観測サイト。
+A noncommercial attack observatory that captures, stores, and analyzes unsolicited
+Internet traffic using OpenCanary and a minimal HTTP/HTTPS collector, enriches
+evidence-backed detections with CVE / CISA KEV / FIRST EPSS context, and exposes
+sanitized trends via a public Next.js dashboard and a read-only Remote MCP server.
 
-> **Status:** Architecture / implementation planning. **No public honeypot is deployed.**
-> This repository currently contains design documents and directory placeholders, not running services.
+> **Status:** Early implementation / MVP in progress. **No public honeypot is deployed.**
+> Local migrations, ingest tests, synthetic dashboard views, and sensor prototypes are under development.
 
 ## Goals
 
-- SSH / Telnet / FTP / DB の試行を OpenCanary で収集する。
-- HTTP / HTTPS のスキャン・リクエストを軽量 Web センサーで収集する。
-- 履歴・日次集計を PostgreSQL に蓄積し、公開ダッシュボードで時系列表示する。
-- ルールによる攻撃パターン検出結果を、CVE / KEV / EPSS 情報で補足する。
-- 匿名化・集計した観測データから AI で日次レポートを作り、人間の確認後に X に投稿する。
+- Capture SSH / Telnet / FTP / MySQL / Redis probes using OpenCanary on an isolated AWS EC2 sensor host.
+- Capture bounded HTTP / HTTPS scans and requests using a dedicated, non-executing web collector.
+- Store historical telemetry and daily rollups in Supabase PostgreSQL with default-deny RLS.
+- Enrich deterministic rule detections with NVD (CVE), CISA KEV, and FIRST EPSS context without claiming confirmed exploitation.
+- Expose sanitized observations via a public Next.js dashboard and an OAuth 2.1 authenticated, read-only Remote MCP server on Vercel Functions (`mcp-handler`).
+- Generate draft daily AI summaries from anonymized aggregates for human review before any X publication.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  subgraph sensor["AWS: isolated sensor host"]
+  subgraph sensor["AWS EC2: isolated sensor host"]
     oc["OpenCanary: SSH / Telnet / FTP / DB"] --> ship["Local durable spool + shipper"]
     http["HTTP / HTTPS collector"] --> ship
   end
   ship -->|"Authenticated batched HTTPS"| ingest["Supabase Edge Function: ingest"]
   ingest --> pg[("Supabase PostgreSQL")]
-  pg --> web["Next.js on Vercel"]
+  auth["Supabase Auth (OAuth 2.1 / PKCE)"] --> mcp["Remote MCP (Vercel Functions / mcp-handler)"]
+  auth --> admin["Admin Console (Next.js / Vercel, MFA + Allowlist)"]
+  pg --> web["Public Dashboard (Next.js / Vercel)"]
+  pg --> mcp
+  pg --> admin
   feeds["CVE / CISA KEV / FIRST EPSS"] --> jobs["Enrichment + rules + daily AI summary"]
   pg --> jobs
   jobs --> pg
@@ -53,11 +60,11 @@ docs/DECISIONS.md            Architecture decision log
 
 ## Next steps
 
-1. Confirm AWS account/region, hosting policy and the sensor host choice (**Lightsail subject to AWS confirmation; otherwise an approved EC2 configuration**).
-2. Implement schema migrations and the ingest Edge Function, using synthetic test events.
-3. Implement the dashboard against test data before exposing the sensor.
-4. Deploy the isolated sensors only after security and abuse-response checks pass.
-5. Add correlation, daily reporting, and manually reviewed X publication.
+1. Confirm AWS EC2 account/region, instance sizing, spend cap, and abuse-response policy.
+2. Complete Phase 1–2 local verification (PostgreSQL/RLS, ingest API, public dashboard, sensors).
+3. Implement read-only Remote MCP (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1) and operator-only Admin Console (MFA + allowlist + MCP Usage).
+4. Deploy the isolated EC2 sensor only after all security and abuse-response checks pass.
+5. Add correlation (CVE/KEV/EPSS), daily reporting, and manually reviewed X publication.
 
 ## Documents
 

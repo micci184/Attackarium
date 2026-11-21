@@ -9,11 +9,11 @@ outbound pivoting, secret theft and log-poisoning/prompt injection.
 
 ## Hard deployment gates
 
-1. **Provider policy:** AWS lists Lightsail among allowed *penetration testing* resources, but that
-   is **not conclusive approval** for a public responding honeypot. Obtain explicit AWS guidance
-   for this workload or use a previously verified EC2 configuration and validate its restrictions.
-2. **Egress:** Lightsail's instance firewall governs inbound traffic; it does **not** restrict
-   outbound traffic. Implement host-level egress rules and verify allowlisting by tests.
+1. **Provider policy & EC2 host:** Sensor hosting uses **AWS EC2** (OpenCanary + dedicated HTTP/HTTPS
+   collector). Validate AWS acceptable-use / policy compliance, billing alerts, and explicit spend cap
+   before public exposure.
+2. **Egress:** Enforce strict outbound (egress) allowlisting at **both** AWS EC2 Security Group / NACL
+   and host OS layers (`nftables`/`iptables`); verify allowlisting by automated tests.
 3. **Management:** dedicated non-decoy management path/port, key-based access, no password login,
    management source allowlist; maintain a recovery procedure that cannot be publicly abused.
 4. **Privilege:** run decoys as unprivileged accounts with only necessary bind-port capabilities;
@@ -30,6 +30,25 @@ outbound pivoting, secret theft and log-poisoning/prompt injection.
    vectors, not authoritative instructions. Do not permit LLM-driven commands, network calls or posting.
 10. **Incident response:** abuse contact, cost alerts, sensor shutdown, log and secret rotation plan;
     never run real malware or attacker commands on the sensor.
+11. **Remote MCP auth & authz (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1):**
+    - Use OAuth 2.1 Authorization Code + PKCE and expose required OAuth discovery metadata.
+    - Verify JWT/access token signature, issuer (`iss`), audience (`aud`), expiry (`exp`), and scopes.
+    - Enforce all 5 gates server-side: (1) Google/GitHub sign-in, (2) Terms acceptance, (3) active account,
+      (4) explicit MCP entitlement (`authenticated != entitled`), (5) OAuth client consent.
+    - Reflect account suspension or entitlement revocation on subsequent MCP calls without relying on
+      stale client state.
+    - Keep MCP strictly **read-only** (no DB writes, deletes, or admin tools) and apply per-user rate limits.
+    - Never log user prompts/questions or auth tokens; store aggregated usage metrics only.
+12. **Operator-only Admin Console & APIs:**
+    - Default-deny for all non-operator users; never rely on a DB `is_admin` flag alone.
+    - Require server-side operator user ID allowlist (`ADMIN_ALLOWED_USER_IDS`), mandatory MFA (`aal2`),
+      server-side authorization on every admin API route, and append-only audit logs.
+    - MCP Usage analytics are strictly admin-only; never expose usage count dashboards to general users.
+    - Optional additional edge protection (e.g., Cloudflare Access) may be layered in front of admin routes.
+13. **Data minimization & anti-tampering:**
+    - Do not collect custom profile PII (name/address/phone) or copy Supabase Auth user tables.
+    - Combine leak prevention (RLS, redaction, minimal storage) with anti-tampering (strict write paths,
+      HMAC/OAuth verification, append-only audit logs).
 
 ## Operational monitoring
 
@@ -53,6 +72,8 @@ outbound pivoting, secret theft and log-poisoning/prompt injection.
 ## Primary references
 
 - [AWS penetration testing policy](https://aws.amazon.com/security/penetration-testing/)
-- [AWS Lightsail firewall behavior](https://docs.aws.amazon.com/lightsail/latest/userguide/understanding-firewall-and-port-mappings-in-amazon-lightsail.html)
+- [Amazon EC2 security groups](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html)
 - [Supabase quotas](https://supabase.com/docs/guides/platform/billing-on-supabase)
 - [Supabase production checklist](https://supabase.com/docs/guides/deployment/going-into-prod)
+- [Supabase Auth OAuth 2.1 for MCP](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication)
+- [Vercel MCP servers (`mcp-handler`)](https://vercel.com/docs/mcp/deploy-mcp-servers-to-vercel)
