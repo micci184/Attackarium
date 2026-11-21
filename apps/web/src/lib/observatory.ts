@@ -12,6 +12,7 @@ import {
   buildDailySeries,
   buildHourlySeries,
   countEventsInWindow,
+  dailyWindowStartDate,
   earliestTimestamp,
   eventsToDailyRows,
   latestTimestamp,
@@ -227,17 +228,22 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   const nowMs = client ? Date.now() : MOCK_REFERENCE_NOW_MS;
   const windowStartMs = nowMs - periodLengthMs(period);
 
+  const days = periodDayCount(period);
+  const sinceDate = dailyWindowStartDate(nowMs, days);
+
   let dailyStats = MOCK_DAILY_STATS;
   let recentEvents = MOCK_EVENTS;
   let registeredSensorCount = MOCK_SENSORS.length;
-  let historyStartedAt = earliestTimestamp(MOCK_EVENTS.map((event) => event.observed_at));
+  let historyStartedAt = earliestTimestamp([
+    ...MOCK_EVENTS.map((event) => event.observed_at),
+    ...MOCK_DAILY_STATS.map((row) => `${row.date_utc}T00:00:00.000Z`),
+  ]);
   let eventMatchCount = MOCK_EVENTS.length;
   let sourceMode: "mock" | "supabase" = "mock";
 
   if (client) {
     sourceMode = "supabase";
     const sinceIso = new Date(windowStartMs).toISOString();
-    const sinceDate = new Date(windowStartMs).toISOString().slice(0, 10);
     const [statsRes, eventsRes, sensorsRes, oldestRes] = await Promise.all([
       client
         .from("public_daily_stats")
@@ -271,7 +277,10 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
     const oldest = z
       .array(z.object({ observed_at: z.string() }))
       .parse(oldestRes.data ?? []);
-    historyStartedAt = oldest[0]?.observed_at ?? null;
+    historyStartedAt = earliestTimestamp([
+      oldest[0]?.observed_at,
+      dailyStats[0] ? `${dailyStats[0].date_utc}T00:00:00.000Z` : null,
+    ]);
   }
 
   const windowEvents =
@@ -281,14 +290,13 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
           return ms >= windowStartMs && ms <= nowMs;
         })
       : recentEvents;
-  const sinceDate = new Date(windowStartMs).toISOString().slice(0, 10);
   const windowStats = dailyStats.filter((row) => row.date_utc >= sinceDate);
   const useDailyStats = period !== "24h" && windowStats.length > 0;
   const series = useDailyStats
     ? buildDailySeries(
         windowStats.map((row) => ({ dateUtc: row.date_utc, eventCount: row.event_count })),
         nowMs,
-        periodDayCount(period),
+        days,
       )
     : period === "24h"
       ? buildHourlySeries(
@@ -302,7 +310,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
             nowMs,
           ),
           nowMs,
-          periodDayCount(period),
+          days,
         );
 
   const protocolMap = new Map<Protocol, number>();

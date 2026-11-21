@@ -4,6 +4,7 @@ import { formatJstDateTime, safeDisplayText } from "./format.ts";
 import {
   buildDailySeries,
   buildHourlySeries,
+  dailyWindowStartDate,
   parseTrendPeriod,
   seriesHasLeadingGap,
   topHttpPaths,
@@ -86,6 +87,13 @@ describe("observatory data layer (mock mode)", () => {
       36,
     );
 
+    const week = await getTrendsData("7d");
+    assert.equal(week.series.length, 7);
+    assert.equal(
+      week.series.reduce((sum, bucket) => sum + bucket.totalEvents, 0),
+      week.protocolTotals.reduce((sum, item) => sum + item.count, 0),
+    );
+
     assert.match(formatJstDateTime("2026-11-21T00:00:00.000Z"), /2026\/11\/21 09:00:00 JST/);
     assert.equal(safeDisplayText("abc\u0000\u202edef"), "abcdef");
     assert.equal(parseTrendPeriod("7d"), "7d");
@@ -131,12 +139,16 @@ describe("observatory data layer (mock mode)", () => {
   it("handles empty series, leading history gaps, attack categories, and HTTP path filtering", () => {
     const nowMs = Date.parse("2026-11-22T00:00:00.000Z");
 
+    assert.equal(dailyWindowStartDate(nowMs, 7), "2026-11-16");
+    assert.equal(dailyWindowStartDate(nowMs, 30), "2026-10-24");
+
     const emptyDaily = buildDailySeries([], nowMs, 7);
     assert.equal(emptyDaily.length, 7);
-    assert.equal(seriesHasLeadingGap(emptyDaily), false);
+    assert.equal(seriesHasLeadingGap(emptyDaily, null), false);
 
     const gappedDaily = buildDailySeries([{ dateUtc: "2026-11-22", eventCount: 5 }], nowMs, 7);
-    assert.equal(seriesHasLeadingGap(gappedDaily), true);
+    assert.equal(seriesHasLeadingGap(gappedDaily, "2026-11-20T00:00:00.000Z"), true);
+    assert.equal(seriesHasLeadingGap(gappedDaily, "2026-11-01T00:00:00.000Z"), false);
 
     const hourly = buildHourlySeries(["2026-11-21T23:30:00.000Z", "invalid-date"], nowMs);
     assert.equal(hourly.length, 24);

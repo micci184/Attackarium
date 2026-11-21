@@ -6,7 +6,7 @@ import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
 import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
 import { seriesHasLeadingGap, parseTrendPeriod, trendPeriodLabel } from "@/lib/dashboard-metrics";
-import { formatCount } from "@/lib/format";
+import { formatCount, formatJstDateTime } from "@/lib/format";
 import { getTrendsData } from "@/lib/observatory";
 import { buildWorldMapData } from "@/lib/world-map";
 
@@ -54,8 +54,8 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         heading={period === "24h" ? "Hourly Event Volume (UTC)" : "Daily Event Volume (UTC)"}
         emptyLabel="No stored observations in this window."
         footnote={
-          seriesHasLeadingGap(data.series)
-            ? "Early zero buckets have no stored total. They are missing history, not a measured quiet period."
+          seriesHasLeadingGap(data.series, data.historyStartedAt)
+            ? `Early zero buckets precede the first stored observation (${formatJstDateTime(data.historyStartedAt)}). They indicate missing history, not a measured quiet period.`
             : data.seriesSource === "daily_stats"
               ? "Daily totals come from rollup rows. A zero day has no stored rollup."
               : "Totals are counted from stored events. A zero bucket has no stored observation."

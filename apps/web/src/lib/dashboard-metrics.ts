@@ -44,6 +44,10 @@ function addUtcDays(dateUtc: string, days: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+export function dailyWindowStartDate(nowMs: number, days: number): string {
+  return addUtcDays(utcDateString(nowMs), -(days - 1));
+}
+
 export function countEventsInWindow(
   observedAt: Iterable<string>,
   startMs: number,
@@ -193,9 +197,19 @@ export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[
     .slice(0, limit);
 }
 
-export function seriesHasLeadingGap(series: TrendBucket[]): boolean {
-  const firstWithData = series.findIndex((bucket) => bucket.totalEvents > 0);
-  return firstWithData > 0;
+export function seriesHasLeadingGap(
+  series: TrendBucket[],
+  historyStartedAt: string | null,
+): boolean {
+  if (series.length === 0 || !historyStartedAt) return false;
+  const historyMs = Date.parse(historyStartedAt);
+  if (Number.isNaN(historyMs)) return false;
+  const firstBucket = series[0];
+  const firstBucketMs = firstBucket.bucketStart.includes("T")
+    ? Date.parse(firstBucket.bucketStart)
+    : Date.parse(`${firstBucket.bucketStart}T00:00:00.000Z`);
+  if (Number.isNaN(firstBucketMs)) return false;
+  return historyMs > firstBucketMs;
 }
 
 export function trendPeriodLabel(period: TrendPeriod): string {
