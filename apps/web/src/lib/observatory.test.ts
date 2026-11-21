@@ -259,6 +259,20 @@ describe("observatory data layer (mock mode)", () => {
     assert.equal(gaps.length, 2);
     assert.equal(formatOutageDuration("2026-11-20T01:00:00.000Z", "2026-11-20T03:30:00.000Z", nowMs), "2h 30m");
 
+    const pointEvent = [
+      {
+        id: "40000000-0000-4000-8000-000000000013",
+        sensor_id: "sensor-synthetic-01",
+        status: "error" as const,
+        started_at: "2026-11-22T12:00:00.000Z",
+        ended_at: null,
+      },
+    ];
+    assert.equal(
+      filterCoverageGapsInWindow(pointEvent, Date.parse("2026-11-22T00:00:00.000Z"), nowMs, nowMs).length,
+      1,
+    );
+
     const sensorsData = await getSensorsData();
     assert.equal(sensorsData.sourceMode, "mock");
     assert.equal(sensorsData.sensors.length, 1);

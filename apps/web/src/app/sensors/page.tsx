@@ -286,8 +286,10 @@ export default async function SensorsPage() {
                       <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-gray-600">
                         {ev.ended_at ? (
                           formatJstDateTime(ev.ended_at)
-                        ) : (
+                        ) : isCoverageGapStatus(ev.status) ? (
                           <span className="font-semibold text-red-700">Ongoing</span>
+                        ) : (
+                          <span className="font-medium text-emerald-700">Current</span>
                         )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-2 font-mono tabular-nums text-gray-700">

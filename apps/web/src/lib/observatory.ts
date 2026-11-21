@@ -281,6 +281,8 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
 
   const days = periodDayCount(period);
   const sinceDate = dailyWindowStartDate(nowMs, days);
+  const seriesStartMs =
+    period === "24h" ? windowStartMs : Date.parse(`${sinceDate}T00:00:00.000Z`);
 
   let dailyStats = MOCK_DAILY_STATS;
   let recentEvents = MOCK_EVENTS;
@@ -296,6 +298,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   if (client) {
     sourceMode = "supabase";
     const sinceIso = new Date(windowStartMs).toISOString();
+    const statusSinceIso = new Date(seriesStartMs).toISOString();
     const [statsRes, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
       client
         .from("public_daily_stats")
@@ -318,7 +321,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
       client
         .from("public_sensor_status_events")
         .select("id, sensor_id, status, started_at, ended_at")
-        .or(`ended_at.is.null,ended_at.gte.${sinceIso}`)
+        .or(`ended_at.is.null,ended_at.gte.${statusSinceIso}`)
         .order("started_at", { ascending: false })
         .limit(200),
     ]);
@@ -407,8 +410,6 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
     asnMap.set(asn, (asnMap.get(asn) ?? 0) + 1);
   }
 
-  const seriesStartMs =
-    period === "24h" ? windowStartMs : Date.parse(`${sinceDate}T00:00:00.000Z`);
   const coverageGaps = filterCoverageGapsInWindow(statusEvents, seriesStartMs, nowMs, nowMs);
   const annotatedSeries = annotateSeriesCoverage(series, coverageGaps, nowMs);
 

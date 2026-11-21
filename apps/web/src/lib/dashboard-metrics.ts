@@ -271,6 +271,9 @@ export function intervalOverlapsWindow(
   if (Number.isNaN(startMs)) return false;
   const endMs = event.ended_at ? Date.parse(event.ended_at) : nowMs;
   if (Number.isNaN(endMs) || endMs < startMs) return false;
+  if (endMs === startMs) {
+    return startMs >= windowStartMs && startMs <= windowEndMs;
+  }
   return startMs < windowEndMs && endMs > windowStartMs;
 }
 
