@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
 import hmac
 import json
 import re
@@ -71,6 +72,7 @@ class ShipperMetrics:
     events_delivered: int = 0
     last_error: str | None = None
     last_retry_after_seconds: float | None = None
+    last_delivery_at: str | None = None
 
 
 def validate_ingest_url(url: str) -> str:
@@ -264,16 +266,16 @@ class BoundedSqliteSpool:
         self.conn.commit()
         return int(cursor.rowcount)
 
-    def enqueue(self, event: dict[str, Any]) -> bool:
+    def enqueue(self, event: dict[str, Any]) -> bool | None:
         self.purge_expired()
         payload_json = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
         byte_size = len(payload_json.encode("utf-8"))
 
         if self.total_bytes() + byte_size > self.max_bytes:
-            return False
+            return None
 
         try:
-            self.conn.execute(
+            cursor = self.conn.execute(
                 """
                 INSERT OR IGNORE INTO spool_events (event_id, payload_json, byte_size, created_at)
                 VALUES (?, ?, ?, ?)
@@ -281,7 +283,9 @@ class BoundedSqliteSpool:
                 (event["id"], payload_json, byte_size, time.time()),
             )
             self.conn.commit()
-            return True
+            # A repeated JSONL line keeps the existing row. It is not a new event
+            # and it is not a capacity drop.
+            return cursor.rowcount > 0
         except sqlite3.Error:
             return False
 
@@ -336,14 +340,17 @@ class EventShipper:
             try:
                 raw = json.loads(text)
             except json.JSONDecodeError:
+                self.metrics.dropped_invalid += 1
                 continue
             normalized = normalize_record(raw, self.config.sensor_id)
             if not normalized:
+                self.metrics.dropped_invalid += 1
                 continue
-            if self.spool.enqueue(normalized):
+            queued = self.spool.enqueue(normalized)
+            if queued is True:
                 self.metrics.enqueued += 1
                 added += 1
-            else:
+            elif queued is None:
                 self.metrics.dropped_spool_full += 1
         return added
 
@@ -425,6 +432,9 @@ class EventShipper:
             self.consecutive_failures = 0
             self.metrics.last_error = None
             self.metrics.last_retry_after_seconds = None
+            self.metrics.last_delivery_at = dt.datetime.now(dt.timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
             return True
 
         # Isolate permanent HTTP 400 poison-pill events so valid events are not blocked
@@ -442,6 +452,9 @@ class EventShipper:
                     self.spool.delete_seqs([seq])
                     self.metrics.batches_sent += 1
                     self.metrics.events_delivered += 1
+                    self.metrics.last_delivery_at = dt.datetime.now(dt.timezone.utc).isoformat().replace(
+                        "+00:00", "Z"
+                    )
                     progressed = True
                 elif sub_outcome == "permanent_400":
                     self.spool.delete_seqs([seq])
@@ -468,3 +481,94 @@ class EventShipper:
         self.metrics.last_error = err
         self.metrics.last_retry_after_seconds = retry_after
         self.consecutive_failures += 1
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        """Local counters only. A successful batch is what moves the remote heartbeat."""
+        return {
+            "queue_depth": self.spool.count(),
+            "queue_bytes": self.spool.total_bytes(),
+            "enqueued": self.metrics.enqueued,
+            "dropped_spool_full": self.metrics.dropped_spool_full,
+            "dropped_invalid": self.metrics.dropped_invalid,
+            "batches_sent": self.metrics.batches_sent,
+            "batches_failed": self.metrics.batches_failed,
+            "events_delivered": self.metrics.events_delivered,
+            "consecutive_failures": self.consecutive_failures,
+            "backoff_seconds": self.next_backoff_seconds(),
+            "last_error": self.metrics.last_error,
+            "last_delivery_at": self.metrics.last_delivery_at,
+        }
+
+    def write_metrics(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.metrics_snapshot(), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+def read_new_jsonl(path: Path, offset: int, max_bytes: int = 1024 * 1024) -> tuple[list[str], int]:
+    """Read complete JSONL lines added after offset. Incomplete trailing bytes stay unread."""
+    if not path.exists():
+        return [], offset
+    with path.open("rb") as fp:
+        fp.seek(offset)
+        chunk = fp.read(max_bytes)
+    if not chunk:
+        return [], offset
+    if chunk.endswith(b"\n"):
+        consumed = chunk
+        new_offset = offset + len(chunk)
+    else:
+        last_nl = chunk.rfind(b"\n")
+        if last_nl < 0:
+            return [], offset
+        consumed = chunk[: last_nl + 1]
+        new_offset = offset + last_nl + 1
+    lines = consumed.decode("utf-8", errors="replace").splitlines()
+    return lines, new_offset
+
+
+def main() -> None:
+    sensor_id = os.environ.get("SENSOR_ID", "")
+    secret = os.environ.get("INGEST_HMAC_SECRET", "")
+    ingest_url = os.environ.get("INGEST_URL", "")
+    if not sensor_id or not secret or not ingest_url:
+        raise SystemExit("SENSOR_ID, INGEST_HMAC_SECRET, and INGEST_URL are required")
+    sources = [
+        Path(item)
+        for item in os.environ.get(
+            "SHIPPER_JSONL_PATHS",
+            "/var/log/attackarium/opencanary.jsonl,/var/log/attackarium/http-collector.jsonl",
+        ).split(",")
+        if item.strip()
+    ]
+    cfg = ShipperConfig(
+        sensor_id=sensor_id,
+        hmac_secret=secret,
+        ingest_url=ingest_url,
+        spool_path=Path(os.environ.get("SHIPPER_SPOOL_PATH", "/var/lib/attackarium/spool.sqlite3")),
+    )
+    metrics_path = Path(
+        os.environ.get("SHIPPER_METRICS_PATH", "/var/lib/attackarium/shipper-metrics.json")
+    )
+    shipper = EventShipper(cfg)
+    offsets = {path: 0 for path in sources}
+    try:
+        while True:
+            for path in sources:
+                lines, offsets[path] = read_new_jsonl(path, offsets[path])
+                if lines:
+                    shipper.ingest_jsonl_lines(lines)
+            shipper.flush_once()
+            shipper.write_metrics(metrics_path)
+            delay = shipper.next_backoff_seconds()
+            time.sleep(delay if delay > 0 else 1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        shipper.close()
+
+
+if __name__ == "__main__":
+    main()
