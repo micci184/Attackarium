@@ -98,7 +98,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
               {safeDisplayText(event.event_type)}
             </dd>
           </div>
-          <div className="border-b border-gray-100 px-4 py-3 sm:border-r">
+          <div className="border-b border-gray-100 px-4 py-3">
             <dt className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
               Approx. Region / ASN
             </dt>
@@ -106,7 +106,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
               {safeDisplayText(event.src_country)} / {safeDisplayText(event.src_asn)}
             </dd>
           </div>
-          <div className="border-b border-gray-100 px-4 py-3">
+          <div className="border-b border-gray-100 px-4 py-3 sm:col-span-2">
             <dt className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
               Fingerprint
             </dt>
@@ -122,7 +122,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
               translate="no"
               className="mt-1.5 break-all rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-800"
             >
-              {event.http_method ? `${event.http_method} ` : ""}
+              {event.http_method ? `${safeDisplayText(event.http_method)} ` : ""}
               {safeDisplayText(event.http_path_redacted)}
             </dd>
           </div>
