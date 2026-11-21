@@ -37,8 +37,8 @@ variable "admin_ssh_cidrs" {
   type        = list(string)
 
   validation {
-    condition     = length(var.admin_ssh_cidrs) > 0 && !contains(var.admin_ssh_cidrs, "0.0.0.0/0")
-    error_message = "admin_ssh_cidrs must contain at least one explicit operator CIDR and must never include 0.0.0.0/0."
+    condition     = length(var.admin_ssh_cidrs) > 0 && !contains(var.admin_ssh_cidrs, "0.0.0.0/0") && alltrue([for c in var.admin_ssh_cidrs : can(cidrhost(c, 0))])
+    error_message = "admin_ssh_cidrs must contain at least one valid IPv4 CIDR and must never include 0.0.0.0/0."
   }
 }
 
@@ -58,8 +58,8 @@ variable "ingest_egress_cidrs" {
   type        = list(string)
 
   validation {
-    condition     = length(var.ingest_egress_cidrs) > 0 && !contains(var.ingest_egress_cidrs, "0.0.0.0/0")
-    error_message = "ingest_egress_cidrs must list explicit destination CIDRs and must never allow 0.0.0.0/0."
+    condition     = length(var.ingest_egress_cidrs) > 0 && !contains(var.ingest_egress_cidrs, "0.0.0.0/0") && alltrue([for c in var.ingest_egress_cidrs : can(cidrhost(c, 0))])
+    error_message = "ingest_egress_cidrs must list valid explicit IPv4 CIDRs and must never allow 0.0.0.0/0."
   }
 }
 

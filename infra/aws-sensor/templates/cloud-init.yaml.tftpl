@@ -12,6 +12,7 @@ users:
     shell: /usr/sbin/nologin
   - name: opencanary
     system: true
+    groups: [attackarium]
     shell: /usr/sbin/nologin
 
 write_files:
@@ -78,15 +79,11 @@ write_files:
 
           # HTTPS outbound strictly to approved Supabase ingest CIDRs
           ip daddr { ${join(", ", ingest_egress_cidrs)} } tcp dport 443 accept
-%{ if enable_bootstrap_egress ~}
-          # TEMPORARY bootstrap-only egress for apt/pip (disable after setup)
-          tcp dport { 80, 443 } accept
-%{ endif ~}
         }
       }
 
 runcmd:
-  - install -d -m 0750 -o attackarium -g attackarium /var/log/attackarium
+  - install -d -m 2770 -o attackarium -g attackarium /var/log/attackarium
   - install -d -m 0750 -o attackarium -g attackarium /var/lib/attackarium
   - install -d -m 0750 -o opencanary -g opencanary /var/lib/attackarium/opencanary
   - install -d -m 0700 -o root -g root /etc/attackarium

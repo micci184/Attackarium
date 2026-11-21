@@ -12,14 +12,15 @@ locals {
   )
 }
 
-# Resolve the latest official Canonical Ubuntu Server LTS AMI without pinning a version number (ADR-019).
+# Resolve the latest official Canonical Ubuntu Server LTS AMI without pinning a single release (ADR-019).
+# Even-year .04 releases match LTS only and exclude interim releases (e.g. .10 or odd-year .04).
 data "aws_ami" "ubuntu_lts" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-*-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-*-2[468].04-amd64-server-*"]
   }
 
   filter {
@@ -227,15 +228,19 @@ resource "aws_instance" "sensor" {
   }
 
   user_data = templatefile("${path.module}/templates/cloud-init.yaml.tftpl", {
-    admin_ssh_port          = var.admin_ssh_port
-    admin_ssh_cidrs         = var.admin_ssh_cidrs
-    decoy_tcp_ports         = local.decoy_tcp_ports
-    ingest_egress_cidrs     = var.ingest_egress_cidrs
-    vpc_dns_ip              = local.vpc_dns_ip
-    aws_time_sync_ip        = local.aws_time_sync_ip
-    enable_bootstrap_egress = var.enable_bootstrap_egress
+    admin_ssh_port      = var.admin_ssh_port
+    admin_ssh_cidrs     = var.admin_ssh_cidrs
+    decoy_tcp_ports     = local.decoy_tcp_ports
+    ingest_egress_cidrs = var.ingest_egress_cidrs
+    vpc_dns_ip          = local.vpc_dns_ip
+    aws_time_sync_ip    = local.aws_time_sync_ip
   })
   user_data_replace_on_change = false
+
+  # Prevent daily Ubuntu AMI updates from forcing instance replacement on later SG/budget applies.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 
   tags = {
     Name = local.name_prefix
