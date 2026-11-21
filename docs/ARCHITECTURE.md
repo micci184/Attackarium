@@ -6,20 +6,25 @@ This is an experimental, noncommercial **attack-observability** project. The goa
 well-labeled observations and trends, not to prove that a particular CVE was exploited
 successfully or to provide a globally representative view of attack traffic.
 
-Initial deployment: **one isolated AWS sensor host**, Supabase for history, Vercel for UI.
+Initial deployment: **one isolated AWS EC2 sensor host**, Supabase (PostgreSQL + Auth OAuth 2.1)
+for history and authorization, and Vercel (Next.js + Vercel Functions) for the public dashboard,
+read-only Remote MCP server, and operator-only Admin Console.
 Keep components separable so a second region, IP address, or sensor can be added later.
 
 ## 2. Component responsibilities
 
 | Component | Responsibility | Placement |
 | --- | --- | --- |
-| OpenCanary | Low-interaction SSH, Telnet, FTP, MySQL, Redis decoys (final ports/config TBD) | Sensor host |
-| HTTP collector | Record bounded HTTP request metadata and selected sanitized payload samples | Same sensor host, separate process |
-| Shipper | Read JSONL, normalize, assign stable event IDs, write bounded local durable spool, retry batches with backoff | Sensor host |
+| OpenCanary | Low-interaction SSH, Telnet, FTP, MySQL, Redis decoys (final ports/config TBD) | AWS EC2 sensor host |
+| HTTP collector | Record bounded HTTP request metadata and selected sanitized payload samples | Same EC2 host, separate process |
+| Shipper | Read JSONL, normalize, assign stable event IDs, write bounded local durable spool, retry batches with backoff | AWS EC2 sensor host |
 | Ingest | Authenticate per-sensor HMAC; validate size/schema/timestamps; rate-limit and deduplicate; insert private events | Supabase Edge Function |
-| PostgreSQL | Store events, detections, vulnerability enrichments, rollups, reports | Supabase |
+| PostgreSQL | Store events, detections, vulnerability enrichments, rollups, reports, minimal MCP entitlements & aggregated usage, audit logs | Supabase |
+| Auth / OAuth 2.1 | Google/GitHub sign-in, OAuth 2.1 Authorization Code + PKCE for Remote MCP, MFA for operator admin | Supabase Auth |
 | Background jobs | Pull external feeds; run deterministic rules; aggregate; request AI summary; create review draft | Scheduled server-side jobs |
-| Public dashboard | Show safe rollups and curated redacted observations, never raw untrusted payloads | Vercel / Next.js |
+| Public dashboard | Show safe rollups and curated redacted observations, never raw untrusted payloads; user MCP connection guide/consent | Vercel / Next.js |
+| Remote MCP Server | Read-only Streamable HTTP MCP tools via Vercel `mcp-handler` reusing shared read-only data layer; never Cloudflare Workers | Vercel Functions |
+| Admin Console | Operator-only MCP Usage analytics, entitlement management, report review, audit trail (default-deny, server allowlist, MFA) | Vercel / Next.js |
 
 ## 3. Protocol and port assignment
 
@@ -83,6 +88,9 @@ or later upgrade database compute. Avoid shipping all raw records to the public 
 - [OpenCanary service configuration](https://opencanary.readthedocs.io/en/latest/starting/configuration.html)
 - [OpenCanary Linux Web Server](https://opencanary.readthedocs.io/en/latest/services/webserver.html)
 - [Supabase Cron](https://supabase.com/docs/guides/cron)
+- [Vercel MCP Server Deployment (`mcp-handler`)](https://vercel.com/docs/mcp/deploy-mcp-servers-to-vercel)
+- [Supabase Auth OAuth 2.1 for MCP](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication)
+- [Supabase Build Your Own MCP](https://supabase.com/docs/guides/ai-tools/byo-mcp)
 - [CISA KEV data](https://github.com/cisagov/kev-data)
 - [FIRST EPSS](https://www.first.org/epss/)
 - [FIRST EPSS data formats](https://www.first.org/epss/data)
