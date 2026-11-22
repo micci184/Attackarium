@@ -52,6 +52,8 @@ jobs:
         run: node --test supabase/functions/ingest/ingest.test.ts
       - name: Run KEV and EPSS sync tests
         run: node --test jobs/threat-intel/threat-intel.test.ts
+      - name: Run candidate CVE matching tests
+        run: node --test jobs/cve-matching/cve-matching.test.ts
 
   sensor-tests:
     name: Sensor Collector & Shipper Tests
