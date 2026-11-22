@@ -9,11 +9,14 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/lib/observatory.test.ts src/lib/mcp-access.test.ts"
+    "test": "node --test src/lib/observatory.test.ts src/lib/mcp-access.test.ts src/lib/mcp-server.test.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
     "@supabase/supabase-js": "2.119.2",
     "d3-geo": "3.1.2",
+    "jose": "6.2.18",
+    "mcp-handler": "2.4.0",
     "next": "16.4.6",
     "react": "19.2.1",
     "react-dom": "19.2.1",
