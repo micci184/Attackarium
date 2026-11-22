@@ -60,8 +60,8 @@ or Vercel changes; each new resource or exposure still needs explicit approval.
 - Put the Next.js/TypeScript app in `apps/web`, Supabase Edge Functions in
   `supabase/functions`, migrations in `supabase/migrations`, sensor components in
   `sensors`, scheduled analysis in `jobs`, and infrastructure in `infra`.
-- Keep repository documentation, source comments, and UI copy in **English**
-  (GitHub Issues remain in Japanese).
+- Keep repository documentation, source comments, UI copy, pull requests, and
+  GitHub Issues in **English**.
 - Use the official provider Skills when installed. Consult
   `supabase-postgres-best-practices` **before** SQL/migration/RLS changes,
   `supabase` for hosted Supabase/Edge Functions, `vercel-react-best-practices`
