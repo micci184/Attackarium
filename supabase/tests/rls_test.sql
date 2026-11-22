@@ -155,6 +155,17 @@ end $$;
 
 do $$
 begin
+  update public.vulnerabilities
+  set cvss_vector = '   '
+  where cve_id = 'CVE-2024-0001';
+  raise exception 'Expected whitespace-only cvss_vector to fail';
+exception
+  when check_violation then
+    null;
+end $$;
+
+do $$
+begin
   insert into public.epss_daily_scores (cve_id, score_date, epss_score, epss_percentile)
   values ('CVE-2024-0001', date '2026-11-20', 1.1, 0.50000);
   raise exception 'Expected epss_score above 1 to fail';
@@ -437,6 +448,25 @@ do $$
 begin
   delete from public.public_events;
   raise exception 'SECURITY FAILURE: anon was allowed to DELETE from public.public_events';
+exception
+  when insufficient_privilege then
+    null; -- expected
+end $$;
+
+do $$
+begin
+  insert into public.epss_daily_scores (cve_id, score_date, epss_score, epss_percentile)
+  values ('CVE-2024-0001', date '2026-11-22', 0.50000, 0.90000);
+  raise exception 'SECURITY FAILURE: anon was allowed to INSERT into public.epss_daily_scores';
+exception
+  when insufficient_privilege then
+    null; -- expected
+end $$;
+
+do $$
+begin
+  delete from public.public_epss_daily_scores;
+  raise exception 'SECURITY FAILURE: anon was allowed to DELETE from public.public_epss_daily_scores';
 exception
   when insufficient_privilege then
     null; -- expected

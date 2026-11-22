@@ -72,7 +72,7 @@ switch.
 - `attack_events(observed_at DESC)`, `(sensor_id, observed_at DESC)`, `(protocol, observed_at DESC)`, `(dst_port, observed_at DESC)`.
 - Unique `attack_events(id)` to support idempotent upsert.
 - `detections(event_id)`, `(rule_id, created_at DESC)`, and `event_cve_matches(cve_id)`, `(event_id)`, `(detection_id)`.
-- `epss_daily_scores` primary key `(cve_id, score_date)` also indexes the foreign key to `vulnerabilities`.
+- `epss_daily_scores` primary key `(cve_id, score_date)` also indexes the foreign key to `vulnerabilities`; `epss_daily_scores(score_date DESC)` supports date-range and retention queries.
 - `daily_stats(date_utc DESC)`, `(sensor_id, date_utc DESC)`.
 - `ingest_receipts(expires_at)`, `(sensor_id, received_at DESC)`.
 - Phase 1 extension indexes: `attack_events(attack_category, observed_at DESC) WHERE attack_category IS NOT NULL`, `event_aggregates(granularity, bucket_start DESC)` plus `sensor_id`, `observed_patterns(pattern_type, last_seen_at DESC)`, `sensor_status_events(sensor_id, started_at DESC)`.
