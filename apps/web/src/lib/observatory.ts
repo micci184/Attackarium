@@ -251,7 +251,10 @@ export async function getOverviewData(): Promise<OverviewData> {
       sensors,
       protocolBreakdown: summary.protocolBreakdown,
       regionTotals24h: summary.regionTotals,
-      patterns24h: topPatterns(MOCK_EVENTS),
+      patterns24h: topPatterns(MOCK_EVENTS).map((pattern) => ({
+        ...pattern,
+        eventsHref: eventsFilterHref(pattern.protocol, pattern.key.split(":")[1]),
+      })),
       httpPaths24h: topHttpPaths(MOCK_EVENTS),
       dataUpdatedAt: latestTimestamp(MOCK_EVENTS.map((event) => event.received_at)),
       recentEvents,
@@ -367,7 +370,7 @@ export async function getOverviewData(): Promise<OverviewData> {
   const totalEvents24h = sumTrendBuckets(currentSeries);
   const rollupPendingEvents24h = Math.max(0, sampleCount - totalEvents24h);
   const comparisonReliable =
-    aggregatePage.complete && rollupPendingEvents24h === 0 && !coverageGapIn24h && !coverageGapInPrior24h;
+    aggregatePage.complete && !coverageGapIn24h && !coverageGapInPrior24h;
   const patternRows = currentRows.map((row) => ({
     protocol: row.protocol,
     attack_category: row.attack_category,

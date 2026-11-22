@@ -101,6 +101,17 @@ describe("aggregate totals", () => {
       comparisonReliable: true,
     });
     assert.equal(smallPrior[0]?.showPercent, false);
+    assert.equal(smallPrior[0]?.kind, "change");
+
+    const droppedToZero = selectNoteworthyObservations({
+      current: [],
+      prior: [{ protocol: "telnet", attack_category: "auth_attempt", eventCount: 25 }],
+      comparisonReliable: true,
+    });
+    assert.equal(droppedToZero.length, 1);
+    assert.equal(droppedToZero[0]?.delta, -25);
+    assert.equal(droppedToZero[0]?.showPercent, true);
+    assert.match(droppedToZero[0]?.title ?? "", /decreased/);
   });
 
   it("refuses USE_MOCK in production", async () => {

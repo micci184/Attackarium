@@ -311,26 +311,33 @@ export function selectNoteworthyObservations(input: {
 }): NoteworthyObservation[] {
   const current = addCounts(input.current);
   const prior = addCounts(input.prior);
+  const allKeys = new Set([...current.keys(), ...prior.keys()]);
   const notes: NoteworthyObservation[] = [];
 
-  for (const [key, row] of current) {
-    const previous = prior.get(key)?.eventCount ?? 0;
-    const delta = row.eventCount - previous;
-    const larger = Math.max(row.eventCount, previous);
+  for (const key of allKeys) {
+    const currRow = current.get(key);
+    const priorRow = prior.get(key);
+    const protocol = currRow?.protocol ?? priorRow!.protocol;
+    const category = currRow?.attack_category ?? priorRow!.attack_category;
+    const currentCount = currRow?.eventCount ?? 0;
+    const previous = priorRow?.eventCount ?? 0;
+    const delta = currentCount - previous;
+    const larger = Math.max(currentCount, previous);
     if (larger < MIN_NOTEWORTHY_COUNT || Math.abs(delta) < MIN_NOTEWORTHY_COUNT) continue;
     if (previous > 0 && Math.abs(delta) / previous < 0.5) continue;
     const direction = delta > 0 ? "increased" : "decreased";
     notes.push({
       id: `category:${key}`,
-      title: `${CATEGORY_LABELS[row.attack_category]} ${direction}`,
-      detail: `${row.protocol.toUpperCase()} · ${formatWindowDelta(row.eventCount, previous)}`,
-      protocol: row.protocol,
-      currentCount: row.eventCount,
+      kind: "change",
+      title: `${CATEGORY_LABELS[category]} ${direction}`,
+      detail: `${protocol.toUpperCase()} · ${formatWindowDelta(currentCount, previous)}`,
+      protocol,
+      currentCount,
       priorCount: previous,
       delta,
       showPercent: previous >= MIN_PRIOR_FOR_PERCENT,
       comparisonReliable: input.comparisonReliable,
-      href: eventsFilterHref(row.protocol, row.attack_category),
+      href: eventsFilterHref(protocol, category),
     });
   }
 
@@ -339,6 +346,7 @@ export function selectNoteworthyObservations(input: {
     if (pattern.patternType === "attack_category") continue;
     notes.push({
       id: `first:${pattern.patternType}:${pattern.protocol}:${pattern.patternKey}`,
+      kind: "first_seen",
       title: "First stored observation in this window",
       detail: `${pattern.protocol.toUpperCase()} · ${pattern.patternKey} · ${pattern.totalCount} stored events`,
       protocol: pattern.protocol,

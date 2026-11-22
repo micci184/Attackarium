@@ -142,6 +142,7 @@ export interface PatternTotal {
 
 export interface NoteworthyObservation {
   id: string;
+  kind: "change" | "first_seen";
   title: string;
   detail: string;
   protocol: Protocol;

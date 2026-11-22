@@ -67,9 +67,33 @@ export default async function OverviewPage() {
       <MethodologyBanner sourceMode={data.sourceMode} />
 
       <section
-        aria-label="24 hour activity"
+        aria-label="Observation status and 24 hour activity"
         className="grid gap-px overflow-hidden rounded border border-gray-200 bg-gray-200 sm:grid-cols-2"
       >
+        <div className="bg-white p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+            Observation status
+          </p>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900">
+              {formatCount(data.healthySensorCount)}
+            </p>
+            <span
+              className={`inline-flex items-center gap-1 text-xs font-medium ${sensorBadge.textClass}`}
+            >
+              <span
+                aria-hidden="true"
+                className={`h-1.5 w-1.5 rounded-full ${sensorBadge.dotClass}`}
+              />
+              {sensorBadge.label}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-gray-400">
+            {formatCount(data.activeSensorCount)} active / {formatCount(data.sensors.length)} registered
+            {data.activeOutages.length > 0 ? ` · ${formatCount(data.activeOutages.length)} open coverage gap` : ""}
+          </p>
+        </div>
+
         <div className="bg-white p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
             Events (24 UTC hours)
@@ -100,30 +124,6 @@ export default async function OverviewPage() {
             </p>
           ) : null}
         </div>
-
-        <div className="bg-white p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Observation status
-          </p>
-          <div className="mt-1.5 flex items-baseline gap-2">
-            <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900">
-              {formatCount(data.healthySensorCount)}
-            </p>
-            <span
-              className={`inline-flex items-center gap-1 text-xs font-medium ${sensorBadge.textClass}`}
-            >
-              <span
-                aria-hidden="true"
-                className={`h-1.5 w-1.5 rounded-full ${sensorBadge.dotClass}`}
-              />
-              {sensorBadge.label}
-            </span>
-          </div>
-          <p className="mt-1 text-[11px] text-gray-400">
-            {formatCount(data.activeSensorCount)} active / {formatCount(data.sensors.length)} registered
-            {data.activeOutages.length > 0 ? ` · ${formatCount(data.activeOutages.length)} open coverage gap` : ""}
-          </p>
-        </div>
       </section>
 
       <section aria-label="Noteworthy observations" className="rounded border border-gray-200 bg-white">
@@ -145,16 +145,21 @@ export default async function OverviewPage() {
                     href={note.href}
                     className="rounded text-sm font-medium text-gray-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                   >
-                    {note.title}
+                    {safeDisplayText(note.title)}
                   </Link>
                   <ProtocolBadge protocol={note.protocol} />
                 </div>
-                <p className="mt-1 text-xs text-gray-600">{note.detail}</p>
-                {note.showPercent ? (
+                <p translate="no" className="mt-1 break-all text-xs text-gray-600">
+                  {safeDisplayText(note.detail)}
+                </p>
+                {note.kind === "first_seen" ? (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    First observed in stored history during this 24 UTC hour window.
+                  </p>
+                ) : note.showPercent && note.priorCount > 0 ? (
                   <p className="mt-1 font-mono text-[11px] tabular-nums text-gray-500">
-                    {note.priorCount > 0
-                      ? `${(((note.delta / note.priorCount) * 100).toFixed(0))}% vs the previous 24 UTC hours`
-                      : null}
+                    {note.delta > 0 ? "+" : ""}
+                    {((note.delta / note.priorCount) * 100).toFixed(0)}% vs the previous 24 UTC hours
                   </p>
                 ) : (
                   <p className="mt-1 text-[11px] text-gray-500">
@@ -163,7 +168,7 @@ export default async function OverviewPage() {
                 )}
                 {note.comparisonReliable ? null : (
                   <p className="mt-1 text-[11px] text-amber-800">
-                    A coverage gap, incomplete rollup, or pending events makes this comparison less reliable.
+                    A coverage gap or incomplete rollup makes this comparison less reliable.
                   </p>
                 )}
               </li>
