@@ -2,13 +2,13 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ProtocolBadge } from "@/components/protocol-badge";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { PageHeader, Panel } from "@/components/ui";
 import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
   formatCount,
   formatEventTypeLabel,
   formatFingerprintLabel,
-  formatJstDateTime,
   resolveDisplayCategory,
   safeDisplayHttpPath,
   safeDisplayText,
@@ -157,7 +157,9 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
-                <th className="px-4 py-2.5 font-medium">Observed (JST)</th>
+                <th className="px-4 py-2.5 font-medium">
+                  Observed (<TimezoneLabel />)
+                </th>
                 <th className="px-3 py-2.5 font-medium">Protocol</th>
                 <th className="px-3 py-2.5 font-medium">Event</th>
                 <th className="px-3 py-2.5 font-medium">Category</th>
@@ -184,7 +186,7 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
                   return (
                     <tr key={ev.id} className="transition-colors hover:bg-slate-50/80">
                       <td className="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-600">
-                        {formatJstDateTime(ev.observed_at)}
+                        <FormattedTime iso={ev.observed_at} />
                       </td>
                       <td className="px-3 py-2.5">
                         <ProtocolBadge protocol={ev.protocol} />

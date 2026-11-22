@@ -24,6 +24,20 @@ export function formatCount(value: number): string {
   return NUMBER_FORMATTER.format(value);
 }
 
+export function formatUtcDateTime(isoString: string | null | undefined): string {
+  if (!isoString) return "—";
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+export function formatUtcShort(isoString: string | null | undefined): string {
+  if (!isoString) return "—";
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${date.toISOString().slice(5, 16).replace("T", " ")} UTC`;
+}
+
 export function formatJstDateTime(isoString: string | null | undefined): string {
   if (!isoString) return "—";
   const date = new Date(isoString);

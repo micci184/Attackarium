@@ -2,8 +2,9 @@ import Link from "next/link";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ProtocolBadge } from "@/components/protocol-badge";
 import { Callout, PageHeader, Panel, PanelHeader } from "@/components/ui";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { formatOutageDuration, isCoverageGapStatus } from "@/lib/dashboard-metrics";
-import { formatCount, formatJstDateTime, safeDisplayText } from "@/lib/format";
+import { formatCount, safeDisplayText } from "@/lib/format";
 import { getSensorsData } from "@/lib/observatory";
 import type { SensorHealthStatus, SensorStatusEventType } from "@/lib/types";
 
@@ -71,7 +72,7 @@ export default async function SensorsPage() {
         description="Sensor health, heartbeat freshness, monitored services, and collection outage intervals"
         actions={
           <span className="font-mono text-xs tabular-nums text-slate-500">
-            Evaluated: {formatJstDateTime(data.evaluatedAt)}
+            Evaluated: <FormattedTime iso={data.evaluatedAt} />
           </span>
         }
       />
@@ -176,19 +177,23 @@ export default async function SensorsPage() {
                     <div>
                       <dt className="text-slate-500">Last heartbeat</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        {formatJstDateTime(sensor.last_heartbeat_at)}
+                        <FormattedTime iso={sensor.last_heartbeat_at} />
                       </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">Last observed event</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        {formatJstDateTime(sensor.last_event_at)}
+                        <FormattedTime iso={sensor.last_event_at} />
                       </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">Last recorded error</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        {sensor.last_error_at ? formatJstDateTime(sensor.last_error_at) : "None"}
+                        {sensor.last_error_at ? (
+                          <FormattedTime iso={sensor.last_error_at} />
+                        ) : (
+                          "None"
+                        )}
                       </dd>
                     </div>
                   </dl>
@@ -226,8 +231,12 @@ export default async function SensorsPage() {
               <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
                 <th className="px-4 py-2.5 font-medium">Status</th>
                 <th className="px-3 py-2.5 font-medium">Sensor</th>
-                <th className="px-3 py-2.5 font-medium">Started (JST)</th>
-                <th className="px-3 py-2.5 font-medium">Ended (JST)</th>
+                <th className="px-3 py-2.5 font-medium">
+                  Started (<TimezoneLabel />)
+                </th>
+                <th className="px-3 py-2.5 font-medium">
+                  Ended (<TimezoneLabel />)
+                </th>
                 <th className="px-4 py-2.5 font-medium">Duration</th>
               </tr>
             </thead>
@@ -261,11 +270,11 @@ export default async function SensorsPage() {
                         {safeDisplayText(ev.sensor_id)}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2.5 font-mono tabular-nums text-slate-600">
-                        {formatJstDateTime(ev.started_at)}
+                        <FormattedTime iso={ev.started_at} />
                       </td>
                       <td className="whitespace-nowrap px-3 py-2.5 font-mono tabular-nums text-slate-600">
                         {ev.ended_at ? (
-                          formatJstDateTime(ev.ended_at)
+                          <FormattedTime iso={ev.ended_at} />
                         ) : isCoverageGapStatus(ev.status) ? (
                           <span className="font-semibold text-red-700">Ongoing</span>
                         ) : (

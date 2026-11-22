@@ -4,6 +4,7 @@ import { MethodologyBanner } from "@/components/methodology-banner";
 import { ObservationMeta } from "@/components/observation-meta";
 import { PatternLists } from "@/components/pattern-lists";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { PageHeader, Panel, PanelHeader } from "@/components/ui";
 import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
@@ -11,8 +12,7 @@ import {
   formatCount,
   formatEventTypeLabel,
   formatFingerprintLabel,
-  formatJstDateTime,
-  formatJstShort,
+  formatUtcDateTime,
   safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
@@ -72,7 +72,7 @@ export default async function ActivityPage() {
         meta={
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <ObservationMeta
-              windowLabel="Last 24 UTC hours (timestamps in JST)"
+              windowLabel="Last 24 UTC hours"
               updatedAt={data.dataUpdatedAt}
               sensorCount={data.sensors.length}
             />
@@ -133,7 +133,7 @@ export default async function ActivityPage() {
             <p className="mt-2 text-xs text-slate-600">
               24h comparison starts after 48h of history
               {data.historyStartedAt
-                ? ` (first stored: ${formatJstDateTime(data.historyStartedAt)})`
+                ? ` (first stored: ${formatUtcDateTime(data.historyStartedAt)})`
                 : ""}
             </p>
           )}
@@ -256,7 +256,7 @@ export default async function ActivityPage() {
         series={data.hourlySeries}
         heading="Hourly Activity (Last 24 UTC Hours)"
         emptyLabel="No stored observations in this window."
-        footnote="Buckets are grouped in UTC hours; pre-observation hours are shaded separately from measured zero-event hours. Event timestamps are displayed in JST."
+        footnote="Buckets are grouped in UTC hours; pre-observation hours are shaded separately from measured zero-event hours. Use the sidebar toggle to switch timestamps between UTC and local time."
       />
 
       {/* 5. Protocol Distribution */}
@@ -352,7 +352,9 @@ export default async function ActivityPage() {
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
-                <th className="px-4 py-2.5 font-medium">Observed (JST)</th>
+                <th className="px-4 py-2.5 font-medium">
+                  Observed (<TimezoneLabel />)
+                </th>
                 <th className="px-3 py-2.5 font-medium">Protocol</th>
                 <th className="px-3 py-2.5 font-medium">Port</th>
                 <th className="px-3 py-2.5 font-medium">Event</th>
@@ -376,7 +378,7 @@ export default async function ActivityPage() {
                 data.recentEvents.map((ev) => (
                   <tr key={ev.id} className="transition-colors hover:bg-slate-50/80">
                     <td className="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-600">
-                      {formatJstShort(ev.observed_at)}
+                      <FormattedTime iso={ev.observed_at} variant="short" />
                     </td>
                     <td className="px-3 py-2.5">
                       <ProtocolBadge protocol={ev.protocol} />
@@ -488,15 +490,19 @@ export default async function ActivityPage() {
 
                 <dl className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px]">
                   <div>
-                    <dt className="text-slate-500">Heartbeat (JST)</dt>
+                    <dt className="text-slate-500">
+                      Heartbeat (<TimezoneLabel />)
+                    </dt>
                     <dd className="font-mono tabular-nums text-slate-800">
-                      {formatJstShort(sensor.last_heartbeat_at)}
+                      <FormattedTime iso={sensor.last_heartbeat_at} variant="short" />
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-slate-500">Last Event (JST)</dt>
+                    <dt className="text-slate-500">
+                      Last Event (<TimezoneLabel />)
+                    </dt>
                     <dd className="font-mono tabular-nums text-slate-800">
-                      {formatJstShort(sensor.last_event_at)}
+                      <FormattedTime iso={sensor.last_event_at} variant="short" />
                     </dd>
                   </div>
                 </dl>

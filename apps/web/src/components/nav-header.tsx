@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandMark } from "@/components/brand-mark";
+import { TimezoneToggle } from "@/components/timezone-provider";
 
 interface NavItem {
   href: string;
@@ -94,12 +95,9 @@ export function NavHeader() {
             <BrandMark />
           </Link>
 
-          <span
-            translate="no"
-            className="font-mono text-[11px] text-slate-500 lg:hidden dark:text-slate-400"
-          >
-            us-east-1
-          </span>
+          <div className="flex items-center gap-2 lg:hidden">
+            <TimezoneToggle compact />
+          </div>
         </div>
 
         {/* Mobile navigation */}
@@ -169,14 +167,22 @@ export function NavHeader() {
           })}
         </ul>
 
-        <div className="border-t border-slate-200 pt-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
-          <div className="flex items-center justify-between gap-2 px-1">
-            <span className="font-medium text-slate-700 dark:text-slate-200">Public dataset</span>
-            <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Sanitized</span>
+        <div className="space-y-3 border-t border-slate-200 pt-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+          <div className="px-1">
+            <p className="mb-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300">
+              Timezone
+            </p>
+            <TimezoneToggle />
           </div>
-          <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-            Source IPs, query values, credentials, and raw payloads are excluded.
-          </p>
+          <div className="border-t border-slate-200/80 pt-3 dark:border-slate-800">
+            <div className="flex items-center justify-between gap-2 px-1">
+              <span className="font-medium text-slate-700 dark:text-slate-200">Public dataset</span>
+              <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Sanitized</span>
+            </div>
+            <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+              Source IPs, query values, credentials, and raw payloads are excluded.
+            </p>
+          </div>
         </div>
       </nav>
     </aside>
