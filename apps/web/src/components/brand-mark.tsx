@@ -1,7 +1,7 @@
 import Image from "next/image";
 
-const LOGO_WIDTH = 520;
-const LOGO_HEIGHT = 96;
+const LOGO_WIDTH = 266;
+const LOGO_HEIGHT = 64;
 
 /**
  * Wordmark lockup. The light asset is dark ink for the default light chrome.
@@ -16,8 +16,7 @@ export function BrandMark() {
         width={LOGO_WIDTH}
         height={LOGO_HEIGHT}
         priority
-        className="h-8 w-auto dark:hidden"
-        style={{ width: "auto", height: "2rem" }}
+        className="h-9 w-auto lg:h-10 dark:hidden"
       />
       <Image
         src="/brand/attackarium-logo-dark.png"
@@ -25,8 +24,7 @@ export function BrandMark() {
         width={LOGO_WIDTH}
         height={LOGO_HEIGHT}
         priority
-        className="hidden h-8 w-auto dark:block"
-        style={{ width: "auto", height: "2rem" }}
+        className="hidden h-9 w-auto lg:h-10 dark:block"
       />
     </>
   );
