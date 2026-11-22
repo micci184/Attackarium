@@ -30,7 +30,7 @@ from signatures import (
     InspectionInput,
     derive_signature_attack_category,
     inspect_http_request,
-    redact_jndi_references,
+    redact_attacker_references,
 )
 
 TEMP_LOG_MAX_AGE = dt.timedelta(hours=24)
@@ -112,10 +112,10 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
     if not cleaned:
         return "/"
     if "?" not in cleaned:
-        return redact_jndi_references(cleaned)[:max_length]
+        return redact_attacker_references(cleaned)[:max_length]
 
     base, query = cleaned.split("?", 1)
-    safe_base = redact_jndi_references(base)
+    safe_base = redact_attacker_references(base)
     safe_pairs: list[str] = []
     for part in query.split("&"):
         if not part:
@@ -124,14 +124,14 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
             safe_pairs.append(
                 "[REDACTED]"
                 if SENSITIVE_QUERY_KEYS.search(part)
-                else redact_jndi_references(part)
+                else redact_attacker_references(part)
             )
             continue
         k, v = part.split("=", 1)
         if SENSITIVE_QUERY_KEYS.search(k) or len(v) > 128:
             safe_pairs.append(f"{k}=[REDACTED]")
         else:
-            safe_pairs.append(f"{k}={redact_jndi_references(v)}")
+            safe_pairs.append(f"{k}={redact_attacker_references(v)}")
     return f"{safe_base}?{'&'.join(safe_pairs)}"[:max_length]
 
 
@@ -144,7 +144,7 @@ def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:
             if lk == "referer":
                 raw_val = redact_path(raw_val, max_len)
             else:
-                raw_val = redact_jndi_references(raw_val)
+                raw_val = redact_attacker_references(raw_val)
             selected[lk] = raw_val[:max_len]
     return selected
 

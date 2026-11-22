@@ -45,16 +45,65 @@ _LOG4J_CASE_LOOKUP_RE = re.compile(r"\$\{(?:lower|upper):([^${}]{1,32})\}", re.I
 _LOG4J_DEFAULT_LOOKUP_RE = re.compile(r"\$\{[^${}]{0,64}:-([^${}]{1,32})\}")
 _LOG4J_DATE_LOOKUP_RE = re.compile(r"\$\{date:'([^'${}]{1,16})'\}", re.IGNORECASE)
 
-# Linear-time JNDI lookup patterns applied after normalization + lowercasing.
+# 1. Log4Shell (CVE-2021-44228)
 _JNDI_WITH_SCHEME_RE = re.compile(
     r"\$\{\s*jndi\s*:\s*(?:ldap|ldaps|rmi|dns|iiop|corba|nds|http|https)\s*:"
 )
 _JNDI_GENERIC_RE = re.compile(r"\$\{\s*jndi\s*:")
 
-# Used to strip attacker-controlled JNDI expressions/URLs from stored paths/headers.
+# 2. SQL Injection (generic technique, no CVE)
+_SQL_COMMENT_RE = re.compile(r"/\*[^*]{0,32}\*/")
+_SQLI_UNION_SELECT_RE = re.compile(r"\bunion(?:\s+all)?\s+select\b")
+_SQLI_TIME_BASED_RE = re.compile(
+    r"(?:\b(?:sleep|benchmark)\s*\(\s*\d{1,4}|\bwaitfor\s+delay\s+['\"])"
+)
+_SQLI_INFO_SCHEMA_RE = re.compile(r"\binformation_schema\.(?:tables|columns|schemata)\b")
+_SQLI_TAUTOLOGY_RE = re.compile(
+    r"(?:'|\"|\))\s*or\s+(?:'1'\s*=\s*'1'|\"1\"\s*=\s*\"1\"|1\s*=\s*1)\s*(?:--|#|$)"
+)
+
+# 3. Path Traversal (generic technique, no CVE)
+# Use fixed repetition counts ({2} / {3}) to avoid catastrophic backtracking on
+# adversarial repeated "../" sequences.
+_TRAVERSAL_SENSITIVE_TARGET_RE = re.compile(
+    r"(?:\.\.[/\\]){2}[^\s]{0,64}(?:etc/(?:passwd|shadow|hosts)|win\.ini|boot\.ini|proc/self/)"
+)
+_TRAVERSAL_DEEP_RE = re.compile(r"(?:\.\.[/\\]){3}")
+
+# 4. Command Injection (generic technique, no CVE)
+_CMD_INJECTION_RE = re.compile(
+    r"(?:;|\|\||&&|\||`|\$\()\s{0,16}"
+    r"(?:id|uname|whoami|wget|curl|nc|bash|sh|/bin/sh|/bin/bash|cat\s+/etc/passwd|powershell|cmd\.exe)"
+    r"(?=\s|$|[;|&)`'\"/])"
+)
+
+# 5. Apache HTTP Server Path Traversal (CVE-2021-41773 / CVE-2021-42013)
+_APACHE_PREFIX_RE = re.compile(r"/(?:cgi-bin|icons)/")
+_APACHE_ENCODED_DOT_RE = re.compile(r"(?:\.%2e|%2e\.|%2e%2e|%%32%65|%252e)")
+_APACHE_DECODED_TRAVERSAL_RE = re.compile(r"(?:\.\./|/bin/sh|/etc/passwd)")
+
+# 6. Spring4Shell (CVE-2022-22965)
+_SPRING4SHELL_PIPELINE_RE = re.compile(
+    r"class\.module\.classloader\.resources\.context\.parent\.pipeline\.first\."
+)
+_SPRING4SHELL_CLASSLOADER_RE = re.compile(
+    r"class\.module\.classloader[^\r\n]{0,128}(?:pattern|suffix|directory|prefix|filedateformat)"
+)
+
+# 7. PHP-CGI Argument Injection (CVE-2024-4577)
+_PHP_CGI_SOFT_HYPHEN_RE = re.compile(r"%ad\s*d\b")
+_PHP_CGI_DANGEROUS_DIRECTIVE_RE = re.compile(
+    r"(?:allow_url_include|auto_prepend_file)"
+)
+
+# Redaction helpers to strip attacker-controlled expressions/URLs from stored metadata.
 _JNDI_EXPRESSION_RE = re.compile(r"\$\{[^\r\n]{0,512}\}")
 _JNDI_PROTOCOL_URI_RE = re.compile(
     r"(?:ldap|ldaps|rmi|iiop|corba|nds)://[^\s'\"}\])<>,;]+",
+    re.IGNORECASE,
+)
+_CALLBACK_URL_RE = re.compile(
+    r"(?:https?|ftp|tftp)://[^\s'\"}\])<>,;|`&]+",
     re.IGNORECASE,
 )
 
@@ -63,6 +112,7 @@ _JNDI_PROTOCOL_URI_RE = re.compile(
 class NormalizedText:
     text: str
     obfuscation_detected: bool
+    raw_lower: str = ""
 
 
 @dataclass(frozen=True)
@@ -171,7 +221,8 @@ def _decode_unicode_ascii_escapes(text: str) -> str:
 
 def normalize_for_inspection_detailed(raw: str, max_chars: int) -> NormalizedText:
     """Bounded URL-decoding and Log4j lookup simplification for signature matching."""
-    text = CONTROL_CHARS_RE.sub("", raw[:max_chars])
+    raw_clean = CONTROL_CHARS_RE.sub("", raw[:max_chars])
+    text = raw_clean
     obfuscated = False
 
     for _ in range(MAX_URL_DECODE_PASSES):
@@ -195,7 +246,11 @@ def normalize_for_inspection_detailed(raw: str, max_chars: int) -> NormalizedTex
         obfuscated = True
         text = reduced[:max_chars]
 
-    return NormalizedText(text=text.lower(), obfuscation_detected=obfuscated)
+    return NormalizedText(
+        text=text.lower(),
+        obfuscation_detected=obfuscated,
+        raw_lower=raw_clean.lower(),
+    )
 
 
 def normalize_for_inspection(raw: str, max_chars: int) -> str:
@@ -225,6 +280,19 @@ def redact_jndi_references(value: str) -> str:
     return redacted
 
 
+def redact_attacker_references(value: str) -> str:
+    """Strip attacker JNDI references and command-injection callback URLs."""
+    redacted = redact_jndi_references(value)
+    normalized = normalize_for_inspection(redacted, max_chars=MAX_INSPECT_HEADER_VALUE_BYTES)
+    if _CMD_INJECTION_RE.search(normalized) is not None:
+        replaced = _CALLBACK_URL_RE.sub("[REDACTED_URL]", redacted)
+        recheck = normalize_for_inspection(replaced, max_chars=MAX_INSPECT_HEADER_VALUE_BYTES)
+        if _CALLBACK_URL_RE.search(recheck) is not None:
+            return "[REDACTED_CMD_PAYLOAD]"
+        return replaced
+    return redacted
+
+
 def _match_log4shell(normalized: NormalizedText) -> RuleHit | None:
     if _JNDI_WITH_SCHEME_RE.search(normalized.text):
         return RuleHit(
@@ -249,6 +317,152 @@ def _match_log4shell(normalized: NormalizedText) -> RuleHit | None:
     return None
 
 
+def _match_sqli(normalized: NormalizedText) -> RuleHit | None:
+    # Strip inline SQL comments (e.g. UN/**/ION -> UNION) without touching other rules.
+    collapsed = _SQL_COMMENT_RE.sub("", normalized.text)
+    spaced = _SQL_COMMENT_RE.sub(" ", normalized.text)
+    candidates = (normalized.text, collapsed, spaced)
+
+    for text in candidates:
+        if _SQLI_UNION_SELECT_RE.search(text):
+            return RuleHit(
+                match_strength="high",
+                confidence=0.85,
+                indicator="sqli_union_select",
+                summary=(
+                    "Observed SQL injection indicator (UNION SELECT syntax); "
+                    "no specific CVE inferred and exploitation outcome is unknown."
+                ),
+            )
+        if _SQLI_TIME_BASED_RE.search(text):
+            return RuleHit(
+                match_strength="high",
+                confidence=0.85,
+                indicator="sqli_time_delay_function",
+                summary=(
+                    "Observed SQL injection indicator (time-delay function syntax); "
+                    "no specific CVE inferred and exploitation outcome is unknown."
+                ),
+            )
+        if _SQLI_INFO_SCHEMA_RE.search(text):
+            return RuleHit(
+                match_strength="high",
+                confidence=0.8,
+                indicator="sqli_information_schema",
+                summary=(
+                    "Observed SQL injection indicator (information_schema reference); "
+                    "no specific CVE inferred and exploitation outcome is unknown."
+                ),
+            )
+        if _SQLI_TAUTOLOGY_RE.search(text):
+            return RuleHit(
+                match_strength="medium",
+                confidence=0.7,
+                indicator="sqli_boolean_tautology",
+                summary=(
+                    "Observed SQL injection indicator (boolean tautology syntax); "
+                    "no specific CVE inferred and exploitation outcome is unknown."
+                ),
+            )
+    return None
+
+
+def _match_path_traversal(normalized: NormalizedText) -> RuleHit | None:
+    if _TRAVERSAL_SENSITIVE_TARGET_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.85,
+            indicator="path_traversal_sensitive_file",
+            summary=(
+                "Observed path traversal indicator targeting a common system file; "
+                "no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    if _TRAVERSAL_DEEP_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="medium",
+            confidence=0.7,
+            indicator="path_traversal_repeated_parent_segments",
+            summary=(
+                "Observed repeated parent-directory traversal sequence; "
+                "no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    return None
+
+
+def _match_command_injection(normalized: NormalizedText) -> RuleHit | None:
+    if _CMD_INJECTION_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.85,
+            indicator="shell_metacharacter_with_command",
+            summary=(
+                "Observed OS command injection indicator (shell metacharacter and command token); "
+                "no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    return None
+
+
+def _match_apache_path_traversal(normalized: NormalizedText) -> RuleHit | None:
+    if (
+        _APACHE_PREFIX_RE.search(normalized.raw_lower)
+        and _APACHE_ENCODED_DOT_RE.search(normalized.raw_lower)
+        and _APACHE_DECODED_TRAVERSAL_RE.search(normalized.text)
+    ):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.85,
+            indicator="apache_cgi_encoded_dot_traversal",
+            summary=(
+                "Suspected Apache HTTP Server path traversal probe (CVE-2021-41773 / CVE-2021-42013); "
+                "candidate CVEs only, not confirmed exploitation."
+            ),
+        )
+    return None
+
+
+def _match_spring4shell(normalized: NormalizedText) -> RuleHit | None:
+    if _SPRING4SHELL_PIPELINE_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.9,
+            indicator="spring_classloader_pipeline_binding",
+            summary=(
+                "Suspected CVE-2022-22965 (Spring4Shell) ClassLoader property-binding probe; "
+                "candidate hypothesis only, not confirmed exploitation."
+            ),
+        )
+    if _SPRING4SHELL_CLASSLOADER_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="medium",
+            confidence=0.75,
+            indicator="spring_classloader_accesslog_binding",
+            summary=(
+                "Suspected CVE-2022-22965 (Spring4Shell) ClassLoader probe; "
+                "candidate hypothesis only, not confirmed exploitation."
+            ),
+        )
+    return None
+
+
+def _match_php_cgi_arg_injection(normalized: NormalizedText) -> RuleHit | None:
+    if _PHP_CGI_SOFT_HYPHEN_RE.search(
+        normalized.raw_lower
+    ) and _PHP_CGI_DANGEROUS_DIRECTIVE_RE.search(normalized.text):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.9,
+            indicator="php_cgi_soft_hyphen_directive_injection",
+            summary=(
+                "Suspected CVE-2024-4577 (PHP-CGI argument injection) probe via soft-hyphen directive; "
+                "candidate hypothesis only, not confirmed exploitation."
+            ),
+        )
+    return None
+
+
 # Registry of versioned HTTP signature rules.
 # Add future attack-technique or CVE rules here without modifying collector.py.
 SIGNATURE_RULES: tuple[SignatureRule, ...] = (
@@ -260,6 +474,63 @@ SIGNATURE_RULES: tuple[SignatureRule, ...] = (
         candidate_cves=("CVE-2021-44228",),
         references=("https://nvd.nist.gov/vuln/detail/CVE-2021-44228",),
         match_text=_match_log4shell,
+    ),
+    SignatureRule(
+        signature_id="http-apache-path-traversal-cve-2021-41773",
+        rule_version="1.0.0",
+        attack_technique="path_traversal",
+        classification="candidate_cve",
+        candidate_cves=("CVE-2021-41773", "CVE-2021-42013"),
+        references=(
+            "https://nvd.nist.gov/vuln/detail/CVE-2021-41773",
+            "https://nvd.nist.gov/vuln/detail/CVE-2021-42013",
+        ),
+        match_text=_match_apache_path_traversal,
+    ),
+    SignatureRule(
+        signature_id="http-spring4shell-cve-2022-22965",
+        rule_version="1.0.0",
+        attack_technique="rce",
+        classification="candidate_cve",
+        candidate_cves=("CVE-2022-22965",),
+        references=("https://nvd.nist.gov/vuln/detail/CVE-2022-22965",),
+        match_text=_match_spring4shell,
+    ),
+    SignatureRule(
+        signature_id="http-php-cgi-arg-injection-cve-2024-4577",
+        rule_version="1.0.0",
+        attack_technique="rce",
+        classification="candidate_cve",
+        candidate_cves=("CVE-2024-4577",),
+        references=("https://nvd.nist.gov/vuln/detail/CVE-2024-4577",),
+        match_text=_match_php_cgi_arg_injection,
+    ),
+    SignatureRule(
+        signature_id="http-sqli-attempt",
+        rule_version="1.0.0",
+        attack_technique="sql_injection",
+        classification="indicator_match",
+        candidate_cves=(),
+        references=("https://owasp.org/www-community/attacks/SQL_Injection",),
+        match_text=_match_sqli,
+    ),
+    SignatureRule(
+        signature_id="http-path-traversal-attempt",
+        rule_version="1.0.0",
+        attack_technique="path_traversal",
+        classification="indicator_match",
+        candidate_cves=(),
+        references=("https://owasp.org/www-community/attacks/Path_Traversal",),
+        match_text=_match_path_traversal,
+    ),
+    SignatureRule(
+        signature_id="http-cmd-injection-attempt",
+        rule_version="1.0.0",
+        attack_technique="command_injection",
+        classification="indicator_match",
+        candidate_cves=(),
+        references=("https://owasp.org/www-community/attacks/Command_Injection",),
+        match_text=_match_command_injection,
     ),
 )
 

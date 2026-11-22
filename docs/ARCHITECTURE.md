@@ -83,6 +83,8 @@ are never confused with confirmed exploitation:
    - `indicator_match`: explicit versioned signature matched with recorded evidence.
    - `candidate_cve`: documented hypothesis with rule ID/version, evidence, confidence, and source metadata — **never proof of exploitation**.
 
+See [`docs/HTTP_SIGNATURES.md`](HTTP_SIGNATURES.md) for the versioned HTTP Collector signature rules, evidence definitions, and known blind spots.
+
 | Feed | Usage | Update cadence |
 | --- | --- | --- |
 | CISA KEV | Whether a CVE is catalogued as known exploited in the wild | Daily |
