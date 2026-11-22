@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import {
   getAdminServiceClient,
   requireOperatorAdmin,
@@ -17,6 +18,9 @@ export default async function AdminMcpUsagePage({
 }) {
   const auth = await requireOperatorAdmin();
   if (!auth.ok) {
+    if (auth.reason === "mfa_required") {
+      redirect("/admin/mfa");
+    }
     return (
       <section className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-6 shadow-xs">
         <p className="text-xs font-medium uppercase tracking-wide text-red-700">

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import {
   getAdminServiceClient,
   requireOperatorAdmin,
@@ -33,6 +34,9 @@ function AdminDeniedView() {
 export default async function AdminConsolePage() {
   const auth = await requireOperatorAdmin();
   if (!auth.ok) {
+    if (auth.reason === "mfa_required") {
+      redirect("/admin/mfa");
+    }
     return <AdminDeniedView />;
   }
 
