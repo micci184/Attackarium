@@ -26,8 +26,9 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | Table | Core fields | Constraints / notes |
 | --- | --- | --- |
 | `detections` | `id`, `event_id`, `rule_id`, `rule_version`, `classification`, `confidence`, `evidence_redacted`, `created_at` | Evidence must point to actual observed redacted field |
-| `vulnerabilities` | `cve_id`, `description`, `vendor`, `product`, `kev_present`, `kev_updated_at`, `epss_score`, `epss_percentile`, `epss_date`, `source_updated_at` | EPSS is a vulnerability-level dated forecast, not per-event exploit proof |
-| `event_cve_matches` | `event_id`, `cve_id`, `detection_id`, `match_type`, `confidence`, `reason` | Unique `(event_id, cve_id, detection_id)`; candidate hypothesis only |
+| `vulnerabilities` | `cve_id`, `description`, `vendor`, `product`, `published_at`, `cvss_score`, `cvss_vector`, `kev_present`, `kev_added_at`, `kev_updated_at`, `epss_score`, `epss_percentile`, `epss_date`, `source_updated_at` | Current EPSS is a vulnerability-level dated forecast, not per-event exploit proof. `kev_added_at` is when CISA added the CVE; `kev_updated_at` is the last catalog sync |
+| `epss_daily_scores` | `cve_id`, `score_date`, `epss_score`, `epss_percentile` | Primary key `(cve_id, score_date)`. One FIRST EPSS score per CVE per date. Public view includes a row only when that CVE has an observation match |
+| `event_cve_matches` | `event_id`, `cve_id`, `detection_id`, `match_type`, `confidence`, `reason`, `evaluated_at` | Unique `(event_id, cve_id, detection_id)`; candidate hypothesis only. `evaluated_at` is the last evaluation time; `created_at` stays the insert time |
 | `daily_reports` | `id`, `date_utc`, `status`, `summary_md`, `x_post_draft`, `model_id`, `prompt_version`, `source_window_start`, `source_window_end`, `reviewed_at` | `draft` / `reviewed` / `rejected` / `published`; only `published` exposed via public view |
 | `user_mcp_entitlements` (Phase 2) | `user_id`, `terms_accepted_at`, `terms_version`, `mcp_enabled`, `is_suspended`, `updated_at` | Minimal authz state ONLY; never duplicate Supabase Auth emails/profiles or store PII |
 | `mcp_usage_buckets` (Phase 2) | `bucket_start`, `granularity`, `request_kind`, `tool_name`, `call_count`, `success_count`, `error_count`, `auth_failure_count`, `rate_limited_count`, `avg_latency_ms`, `active_user_count` | Admin-only aggregates; distinguish `initialize` vs `tool_call`; **never store prompts or tokens** |
@@ -71,6 +72,7 @@ switch.
 - `attack_events(observed_at DESC)`, `(sensor_id, observed_at DESC)`, `(protocol, observed_at DESC)`, `(dst_port, observed_at DESC)`.
 - Unique `attack_events(id)` to support idempotent upsert.
 - `detections(event_id)`, `(rule_id, created_at DESC)`, and `event_cve_matches(cve_id)`, `(event_id)`, `(detection_id)`.
+- `epss_daily_scores` primary key `(cve_id, score_date)` also indexes the foreign key to `vulnerabilities`; `epss_daily_scores(score_date DESC)` supports date-range and retention queries.
 - `daily_stats(date_utc DESC)`, `(sensor_id, date_utc DESC)`.
 - `ingest_receipts(expires_at)`, `(sensor_id, received_at DESC)`.
 - Phase 1 extension indexes: `attack_events(attack_category, observed_at DESC) WHERE attack_category IS NOT NULL`, `event_aggregates(granularity, bucket_start DESC)` plus `sensor_id`, `observed_patterns(pattern_type, last_seen_at DESC)`, `sensor_status_events(sensor_id, started_at DESC)`.
