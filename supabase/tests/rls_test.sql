@@ -106,8 +106,16 @@ values
   ('CVE-2024-0001', 'Synthetic matched CVE', 'ExampleVendor', 'ExampleCMS', true, 0.42000, 0.91000, date '2026-11-21'),
   ('CVE-2024-9999', 'Unmatched catalog CVE must not appear in public_vulnerabilities', 'Other', 'Other', false, 0.01000, 0.10000, date '2026-11-21');
 
+update public.vulnerabilities
+set
+  published_at = timestamptz '2024-01-15 00:00:00+00',
+  cvss_score = 9.8,
+  cvss_vector = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',
+  kev_added_at = timestamptz '2024-02-01 00:00:00+00'
+where cve_id = 'CVE-2024-0001';
+
 insert into public.event_cve_matches (
-  event_id, cve_id, detection_id, match_type, confidence, reason
+  event_id, cve_id, detection_id, match_type, confidence, reason, evaluated_at
 )
 values (
   '11111111-1111-4111-8111-111111111111',
@@ -115,8 +123,45 @@ values (
   '22222222-2222-4222-8222-222222222222',
   'candidate_cve',
   0.650,
-  'Synthetic test rule matched probe path; candidate only, not exploit proof.'
+  'Synthetic test rule matched probe path; candidate only, not exploit proof.',
+  timestamptz '2026-11-21 03:00:00+00'
 );
+
+insert into public.epss_daily_scores (cve_id, score_date, epss_score, epss_percentile)
+values
+  ('CVE-2024-0001', date '2026-11-21', 0.42000, 0.91000),
+  ('CVE-2024-9999', date '2026-11-21', 0.01000, 0.10000);
+
+do $$
+begin
+  insert into public.vulnerabilities (cve_id, cvss_score)
+  values ('CVE-2024-0002', 10.1);
+  raise exception 'Expected cvss_score above 10 to fail';
+exception
+  when check_violation then
+    null;
+end $$;
+
+do $$
+begin
+  update public.vulnerabilities
+  set cvss_vector = repeat('A', 201)
+  where cve_id = 'CVE-2024-0001';
+  raise exception 'Expected cvss_vector longer than 200 characters to fail';
+exception
+  when check_violation then
+    null;
+end $$;
+
+do $$
+begin
+  insert into public.epss_daily_scores (cve_id, score_date, epss_score, epss_percentile)
+  values ('CVE-2024-0001', date '2026-11-20', 1.1, 0.50000);
+  raise exception 'Expected epss_score above 1 to fail';
+exception
+  when check_violation then
+    null;
+end $$;
 
 insert into public.daily_stats (
   date_utc, sensor_id, protocol, event_type, event_count, unique_source_count
@@ -344,7 +389,8 @@ declare
     'ingest_receipts',
     'event_aggregates',
     'observed_patterns',
-    'sensor_status_events'
+    'sensor_status_events',
+    'epss_daily_scores'
   ];
   v_cnt integer;
 begin
@@ -420,6 +466,35 @@ begin
     raise exception 'Expected only 1 matched CVE in public_vulnerabilities, got %', v_vuln_count;
   end if;
 
+  if not exists (
+    select 1
+    from public.public_vulnerabilities
+    where cve_id = 'CVE-2024-0001'
+      and cvss_score = 9.8
+      and cvss_vector = 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H'
+      and published_at = timestamptz '2024-01-15 00:00:00+00'
+      and kev_added_at = timestamptz '2024-02-01 00:00:00+00'
+  ) then
+    raise exception 'Matched CVE context columns were not exposed on public_vulnerabilities';
+  end if;
+
+  if (select count(*) from public.public_epss_daily_scores) <> 1
+    or exists (
+      select 1 from public.public_epss_daily_scores where cve_id = 'CVE-2024-9999'
+    )
+  then
+    raise exception 'public_epss_daily_scores exposed an unmatched CVE or the wrong row count';
+  end if;
+
+  if not exists (
+    select 1
+    from public.public_event_cve_matches
+    where cve_id = 'CVE-2024-0001'
+      and evaluated_at = timestamptz '2026-11-21 03:00:00+00'
+  ) then
+    raise exception 'public_event_cve_matches did not expose evaluated_at';
+  end if;
+
   select count(*) into v_reports_count from public.public_daily_reports;
   if v_reports_count <> 1 then
     raise exception 'Expected only 1 published report in public_daily_reports, got %', v_reports_count;
@@ -482,7 +557,8 @@ declare
     'ingest_receipts',
     'event_aggregates',
     'observed_patterns',
-    'sensor_status_events'
+    'sensor_status_events',
+    'epss_daily_scores'
   ];
   v_cnt integer;
 begin
@@ -537,6 +613,8 @@ begin
     or (select count(*) from public.public_observed_patterns) <> 1
     or (select count(*) from public.public_sensor_status_events) <> 1
     or (select count(*) from public.public_events where attack_category = 'auth_attempt') <> 1
+    or (select count(*) from public.public_epss_daily_scores) <> 1
+    or (select count(*) from public.public_vulnerabilities where cvss_score = 9.8) <> 1
   then
     raise exception 'authenticated could not read the sanitized observation views';
   end if;
