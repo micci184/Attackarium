@@ -93,6 +93,69 @@ export function earliestTimestamp(values: Iterable<string | null | undefined>): 
   return earliest;
 }
 
+export const AGGREGATE_PAGE_SIZE = 1000;
+export const AGGREGATE_MAX_ROWS = 100_000;
+
+/** Read every page. `complete` is false when the safety cap stops the read early. */
+export async function collectPages<T>(
+  fetchPage: (from: number, to: number) => Promise<T[]>,
+  pageSize = AGGREGATE_PAGE_SIZE,
+  maxRows = AGGREGATE_MAX_ROWS,
+): Promise<{ rows: T[]; complete: boolean }> {
+  const rows: T[] = [];
+  let from = 0;
+  while (from < maxRows) {
+    const to = Math.min(from + pageSize - 1, maxRows - 1);
+    const expected = to - from + 1;
+    const page = await fetchPage(from, to);
+    rows.push(...page);
+    if (page.length < expected) return { rows, complete: true };
+    from += expected;
+  }
+  return { rows, complete: false };
+}
+
+export function utcHourBucketStart(ms: number): number {
+  const date = new Date(ms);
+  return Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+  );
+}
+
+/**
+ * 24 UTC hour buckets ending at the hour that contains `nowMs`.
+ * The period total is the sum of these buckets, not a rolling minute window.
+ */
+export function buildUtcHourlySeries(
+  rows: Iterable<{ bucketStart: string; eventCount: number }>,
+  nowMs: number,
+): TrendBucket[] {
+  const end = utcHourBucketStart(nowMs);
+  const start = end - 23 * HOUR_MS;
+  const counts = new Map<number, number>();
+  for (const row of rows) {
+    const ms = Date.parse(row.bucketStart);
+    if (Number.isNaN(ms)) continue;
+    const bucket = utcHourBucketStart(ms);
+    if (bucket < start || bucket > end) continue;
+    counts.set(bucket, (counts.get(bucket) ?? 0) + row.eventCount);
+  }
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketMs = start + index * HOUR_MS;
+    const iso = new Date(bucketMs).toISOString();
+    return { bucketStart: iso, label: iso.slice(11, 16), totalEvents: counts.get(bucketMs) ?? 0 };
+  });
+}
+
+export function sumTrendBuckets(series: Iterable<{ totalEvents: number }>): number {
+  let total = 0;
+  for (const bucket of series) total += bucket.totalEvents;
+  return total;
+}
+
 export function buildHourlySeries(
   observedAt: Iterable<string>,
   nowMs: number,
@@ -169,6 +232,30 @@ export function topPatterns(events: PatternInput[], limit = 8): PatternTotal[] {
       label: category ? CATEGORY_LABELS[category] : event.event_type,
       protocol: event.protocol,
       count: 1,
+    });
+  }
+  return Array.from(totals.values())
+    .toSorted((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, limit);
+}
+
+export function topPatternsFromCounts(
+  rows: Iterable<{ protocol: Protocol; attack_category: AttackCategory; eventCount: number }>,
+  limit = 8,
+): PatternTotal[] {
+  const totals = new Map<string, PatternTotal>();
+  for (const row of rows) {
+    const key = `${row.protocol}:${row.attack_category}`;
+    const current = totals.get(key);
+    if (current) {
+      current.count += row.eventCount;
+      continue;
+    }
+    totals.set(key, {
+      key,
+      label: CATEGORY_LABELS[row.attack_category],
+      protocol: row.protocol,
+      count: row.eventCount,
     });
   }
   return Array.from(totals.values())

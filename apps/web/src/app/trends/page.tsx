@@ -77,13 +77,23 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         series={data.series}
         heading={period === "24h" ? "Hourly Event Volume (UTC)" : "Daily Event Volume (UTC)"}
         emptyLabel="No stored observations in this window."
-        footnote={
+        footnote={[
           seriesHasLeadingGap(data.series, data.historyStartedAt)
             ? `Early zero buckets precede the first stored observation (${formatJstDateTime(data.historyStartedAt)}). They indicate missing history, not a measured quiet period.`
-            : data.seriesSource === "daily_stats"
-              ? "Daily totals come from rollup rows. A zero day has no stored rollup."
-              : "Totals are counted from stored events. A zero bucket has no stored observation."
-        }
+            : null,
+          data.aggregateComplete
+            ? data.seriesSource === "event_aggregates"
+              ? "Hourly totals are complete UTC-hour rollups. The bucket sum is the period total. The current hour is still open until the next rollup."
+              : data.seriesSource === "daily_stats"
+                ? "Daily totals come from every rollup row in the UTC window. The bucket sum is the period total. A zero day has no stored rollup."
+                : "Totals are counted from stored events. A zero bucket has no stored observation."
+            : "The aggregate read stopped early. Bucket totals are partial and are not an exact period count.",
+          data.rollupPendingEvents > 0
+            ? `${formatCount(data.rollupPendingEvents)} recent or unclassified events in this window are pending the next 15m rollup.`
+            : null,
+        ]
+          .filter((line) => line !== null)
+          .join(" ")}
       />
 
       <PatternLists
@@ -91,7 +101,9 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         httpPaths={data.httpPaths}
         sampledNote={
           data.isEventSampled
-            ? "Path and pattern lists use the newest stored events in this window, not every row."
+            ? data.seriesSource === "event_aggregates"
+              ? "Ports, regions, and HTTP paths use the newest stored events in this window. Pattern totals use the full UTC-hour rollup."
+              : "Path and pattern lists use the newest stored events in this window, not every row."
             : null
         }
       />
