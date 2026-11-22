@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { headers } from "next/headers";
 import { OAuthLoginButtons } from "@/components/oauth-login-buttons";
+import { parseAdminAllowedUserIds } from "@/lib/admin-auth-core";
 import {
   createSupabaseAuthServerClient,
   getRequiredTermsVersion,
@@ -124,6 +126,12 @@ export default async function McpPage({
     entitlement?.terms_accepted_at != null &&
     entitlement.terms_version === requiredTermsVersion;
 
+  const isAllowlistedOperator =
+    user !== null &&
+    parseAdminAllowedUserIds(process.env.ADMIN_ALLOWED_USER_IDS).has(
+      user.id.toLowerCase(),
+    );
+
   return (
     <div className="space-y-6">
       <header className="border-b border-slate-200 pb-4">
@@ -241,14 +249,24 @@ export default async function McpPage({
                   {user.provider ?? "unknown provider"}
                 </span>
               </div>
-              <form action="/auth/logout" method="POST">
-                <button
-                  type="submit"
-                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
-                >
-                  Sign out
-                </button>
-              </form>
+              <div className="flex flex-wrap items-center gap-2">
+                {isAllowlistedOperator ? (
+                  <Link
+                    href="/admin"
+                    className="rounded-md bg-[#632ca6] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#53238d]"
+                  >
+                    Admin Console
+                  </Link>
+                ) : null}
+                <form action="/auth/logout" method="POST">
+                  <button
+                    type="submit"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </div>
             </div>
 
             <dl className="grid gap-4 sm:grid-cols-2">

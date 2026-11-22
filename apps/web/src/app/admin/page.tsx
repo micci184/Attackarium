@@ -56,7 +56,15 @@ export default async function AdminConsolePage() {
     );
   }
 
-  const [entitlementsRes, reportsRes, auditRes] = await Promise.all([
+  const [
+    entitlementsRes,
+    reportsRes,
+    auditRes,
+    authUsersRes,
+    termsAcceptedCountRes,
+    mcpEnabledCountRes,
+    suspendedCountRes,
+  ] = await Promise.all([
     client
       .from("user_mcp_entitlements")
       .select(
@@ -76,11 +84,37 @@ export default async function AdminConsolePage() {
       )
       .order("created_at", { ascending: false })
       .limit(50),
+    client.auth.admin
+      .listUsers({ page: 1, perPage: 1 })
+      .catch(() => ({ data: null, error: new Error("list_users_failed") })),
+    client
+      .from("user_mcp_entitlements")
+      .select("user_id", { count: "exact", head: true })
+      .not("terms_accepted_at", "is", null),
+    client
+      .from("user_mcp_entitlements")
+      .select("user_id", { count: "exact", head: true })
+      .eq("mcp_enabled", true)
+      .eq("is_suspended", false),
+    client
+      .from("user_mcp_entitlements")
+      .select("user_id", { count: "exact", head: true })
+      .eq("is_suspended", true),
   ]);
 
   const entitlements = entitlementsRes.data ?? [];
   const reports = reportsRes.data ?? [];
   const auditLogs = auditRes.data ?? [];
+  const registeredUsersCount =
+    !authUsersRes.error &&
+    authUsersRes.data &&
+    "total" in authUsersRes.data &&
+    typeof authUsersRes.data.total === "number"
+      ? authUsersRes.data.total
+      : null;
+  const termsAcceptedCount = termsAcceptedCountRes.count ?? 0;
+  const mcpEnabledCount = mcpEnabledCountRes.count ?? 0;
+  const suspendedCount = suspendedCountRes.count ?? 0;
 
   return (
     <div className="space-y-6">
@@ -100,6 +134,54 @@ export default async function AdminConsolePage() {
           View MCP Usage
         </Link>
       </header>
+
+      {/* Summary KPIs (aggregate counts only, no PII) */}
+      <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+          <dt className="text-xs font-medium text-slate-500">
+            Registered users
+          </dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
+            {registeredUsersCount !== null
+              ? registeredUsersCount.toLocaleString()
+              : "—"}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
+            Total Supabase Auth accounts
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+          <dt className="text-xs font-medium text-slate-500">
+            Terms accepted
+          </dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
+            {termsAcceptedCount.toLocaleString()}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
+            Recorded in entitlements
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+          <dt className="text-xs font-medium text-slate-500">
+            MCP enabled (active)
+          </dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-emerald-700">
+            {mcpEnabledCount.toLocaleString()}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
+            Approved and not suspended
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+          <dt className="text-xs font-medium text-slate-500">Suspended</dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-red-700">
+            {suspendedCount.toLocaleString()}
+          </dd>
+          <p className="mt-1 text-xs text-slate-500">
+            Blocked from Remote MCP
+          </p>
+        </div>
+      </dl>
 
       {/* 1. MCP Entitlements */}
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs">
