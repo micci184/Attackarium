@@ -28,6 +28,7 @@ from typing import Any
 
 from signatures import (
     InspectionInput,
+    derive_signature_attack_category,
     inspect_http_request,
     redact_jndi_references,
 )
@@ -354,8 +355,9 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
             "fingerprint": fingerprint,
             "metadata": metadata,
         }
-        if any(match.classification == "candidate_cve" for match in detections):
-            record["attack_category"] = "suspected_cve_probe"
+        attack_category = derive_signature_attack_category(detections)
+        if attack_category is not None:
+            record["attack_category"] = attack_category
         self.server.write_record(record)
 
         body = b"Not Found\n"

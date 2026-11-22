@@ -10,7 +10,13 @@ import unittest
 from pathlib import Path
 
 from collector import CollectorConfig, create_server, prune_temp_jsonl
-from signatures import InspectionInput, SignatureRule, inspect_http_request
+from signatures import (
+    InspectionInput,
+    RuleHit,
+    SignatureRule,
+    derive_signature_attack_category,
+    inspect_http_request,
+)
 
 
 class HttpCollectorSecurityTests(unittest.TestCase):
@@ -227,11 +233,20 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(len(detections), 1)
         det = detections[0]
         self.assertEqual(det["signature_id"], "http-log4shell-jndi-lookup")
-        self.assertEqual(det["rule_version"], "1.0.0")
+        self.assertEqual(det["rule_version"], "1.1.0")
+        self.assertEqual(det["attack_technique"], "jndi_injection")
         self.assertEqual(det["candidate_cve"], "CVE-2021-44228")
+        self.assertEqual(det["candidate_cves"], ["CVE-2021-44228"])
         self.assertEqual(det["matched_location"], "header:user-agent")
+        self.assertEqual(det["match_strength"], "high")
         self.assertEqual(det["classification"], "candidate_cve")
         self.assertGreaterEqual(det["confidence"], 0.8)
+        self.assertEqual(det["evidence"]["indicator"], "jndi_lookup_with_scheme")
+        self.assertFalse(det["evidence"]["obfuscation_detected"])
+        self.assertEqual(
+            det["references"],
+            ["https://nvd.nist.gov/vuln/detail/CVE-2021-44228"],
+        )
         self.assertIn("Suspected CVE-2021-44228", det["summary"])
         self.assertIn("not confirmed exploitation", det["summary"])
 
@@ -320,7 +335,9 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             detections = rec["metadata"]["signature_detections"]
             self.assertEqual(len(detections), 1)
             self.assertEqual(detections[0]["candidate_cve"], "CVE-2021-44228")
+            self.assertEqual(detections[0]["candidate_cves"], ["CVE-2021-44228"])
             self.assertEqual(detections[0]["matched_location"], expected_loc)
+            self.assertTrue(detections[0]["evidence"]["obfuscation_detected"])
 
     def test_normal_http_request_produces_no_signature_detections(self) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
@@ -405,40 +422,89 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(detections[0]["matched_location"], "header:redacted")
         self.assertEqual(detections[0]["candidate_cve"], "CVE-2021-44228")
 
-    def test_supports_multiple_rules_and_multiple_cves_without_collector_changes(self) -> None:
+    def test_supports_technique_only_and_multi_cve_rules_without_collector_changes(self) -> None:
         extra_rules = (
             SignatureRule(
-                signature_id="http-example-cve-a",
+                signature_id="http-generic-sqli-test",
                 rule_version="1.0.0",
-                candidate_cve="CVE-2024-0001",
-                classification="candidate_cve",
-                match_text=lambda text: (0.8, "Suspected CVE-2024-0001 probe")
-                if "marker-a" in text
+                attack_technique="sql_injection",
+                classification="indicator_match",
+                candidate_cves=(),
+                references=("https://owasp.org/www-community/attacks/SQL_Injection",),
+                match_text=lambda norm: RuleHit(
+                    match_strength="medium",
+                    confidence=0.7,
+                    indicator="union_select_pattern",
+                    summary="Observed SQL injection indicator; no specific CVE inferred.",
+                )
+                if "marker-sqli" in norm.text
                 else None,
             ),
             SignatureRule(
-                signature_id="http-example-cve-b",
+                signature_id="http-multi-cve-traversal-test",
                 rule_version="1.0.0",
-                candidate_cve="CVE-2024-0002",
+                attack_technique="path_traversal",
                 classification="candidate_cve",
-                match_text=lambda text: (0.7, "Suspected CVE-2024-0002 probe")
-                if "marker-a" in text
+                candidate_cves=("CVE-2021-41773", "CVE-2021-42013"),
+                references=(
+                    "https://nvd.nist.gov/vuln/detail/CVE-2021-41773",
+                    "https://nvd.nist.gov/vuln/detail/CVE-2021-42013",
+                ),
+                match_text=lambda norm: RuleHit(
+                    match_strength="high",
+                    confidence=0.85,
+                    indicator="apache_encoded_traversal",
+                    summary="Suspected Apache HTTP Server path traversal probe; candidate CVEs only.",
+                )
+                if "marker-apache" in norm.text
                 else None,
             ),
         )
-        matches = inspect_http_request(
+
+        # 1. Technique-only detection (no CVE) maps to web_attack_attempt
+        sqli_matches = inspect_http_request(
             InspectionInput(
                 method="GET",
-                raw_path="/test?x=marker-a",
+                raw_path="/items?q=marker-sqli",
                 headers=(),
                 body_bytes=b"",
             ),
             rules=extra_rules,
         )
-        self.assertEqual(
-            [m.candidate_cve for m in matches],
-            ["CVE-2024-0001", "CVE-2024-0002"],
+        self.assertEqual(len(sqli_matches), 1)
+        sqli_dict = sqli_matches[0].to_dict()
+        self.assertEqual(sqli_dict["classification"], "indicator_match")
+        self.assertEqual(sqli_dict["attack_technique"], "sql_injection")
+        self.assertEqual(sqli_dict["candidate_cves"], [])
+        self.assertIsNone(sqli_dict["candidate_cve"])
+        self.assertEqual(derive_signature_attack_category(sqli_matches), "web_attack_attempt")
+
+        # 2. Multi-CVE detection preserves all candidates and leaves singular candidate_cve as None
+        multi_matches = inspect_http_request(
+            InspectionInput(
+                method="GET",
+                raw_path="/cgi-bin/marker-apache",
+                headers=(),
+                body_bytes=b"",
+            ),
+            rules=extra_rules,
         )
+        self.assertEqual(len(multi_matches), 1)
+        multi_dict = multi_matches[0].to_dict()
+        self.assertEqual(multi_dict["candidate_cves"], ["CVE-2021-41773", "CVE-2021-42013"])
+        self.assertIsNone(multi_dict["candidate_cve"])
+        self.assertEqual(derive_signature_attack_category(multi_matches), "suspected_cve_probe")
+
+        # 3. Invalid candidate_cve rule without candidate_cves is rejected
+        with self.assertRaises(ValueError):
+            SignatureRule(
+                signature_id="invalid-rule",
+                rule_version="1.0.0",
+                attack_technique="rce",
+                classification="candidate_cve",
+                candidate_cves=(),
+                match_text=lambda _: None,
+            )
 
 
 if __name__ == "__main__":
