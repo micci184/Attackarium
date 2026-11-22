@@ -12,6 +12,7 @@ import {
 } from "./mock-data.ts";
 import {
   annotateSeriesCoverage,
+  annotateSeriesPreHistory,
   buildDailySeries,
   buildHourlySeries,
   buildUtcHourlySeries,
@@ -337,6 +338,12 @@ export async function getOverviewData(): Promise<OverviewData> {
     const activeOutages = MOCK_SENSOR_STATUS_EVENTS.filter(
       (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
     );
+    const mockHistoryStartedAt = earliestTimestamp([
+      ...MOCK_EVENTS.map((event) => event.observed_at),
+      ...MOCK_DAILY_STATS.map((row) => `${row.date_utc}T00:00:00.000Z`),
+    ]);
+    const mockHasPriorBaseline =
+      mockHistoryStartedAt !== null && Date.parse(mockHistoryStartedAt) <= priorStart;
     return {
       sourceMode: "mock",
       totalEvents24h: MOCK_EVENTS.length,
@@ -345,6 +352,8 @@ export async function getOverviewData(): Promise<OverviewData> {
         priorStart,
         windowStart,
       ),
+      historyStartedAt: mockHistoryStartedAt,
+      hasPriorWindowBaseline: mockHasPriorBaseline,
       coverageGapIn24h,
       coverageGapInPrior24h,
       activeOutages,
@@ -352,13 +361,16 @@ export async function getOverviewData(): Promise<OverviewData> {
       is24hBreakdownSampled: false,
       aggregateComplete: true,
       rollupPendingEvents24h: 0,
-      hourlySeries: annotateSeriesCoverage(
-        buildHourlySeries(
-          MOCK_EVENTS.map((event) => event.observed_at),
+      hourlySeries: annotateSeriesPreHistory(
+        annotateSeriesCoverage(
+          buildHourlySeries(
+            MOCK_EVENTS.map((event) => event.observed_at),
+            MOCK_REFERENCE_NOW_MS,
+          ),
+          MOCK_SENSOR_STATUS_EVENTS,
           MOCK_REFERENCE_NOW_MS,
         ),
-        MOCK_SENSOR_STATUS_EVENTS,
-        MOCK_REFERENCE_NOW_MS,
+        mockHistoryStartedAt,
       ),
       noteworthy: selectNoteworthyObservations({
         current: MOCK_EVENTS.flatMap((event) =>
@@ -368,6 +380,7 @@ export async function getOverviewData(): Promise<OverviewData> {
         ),
         prior: [],
         comparisonReliable: true,
+        hasPriorWindowBaseline: mockHasPriorBaseline,
       }),
       uniqueCountries24h: summary.uniqueCountries,
       activeSensorCount: sensors.filter((s) => s.is_active).length,
@@ -406,6 +419,7 @@ export async function getOverviewData(): Promise<OverviewData> {
     aggregatePage,
     cveMatchesRes,
     vulnsRes,
+    earliestEventRes,
   ] = await Promise.all([
     client.from("public_sensors").select("*").order("created_at", { ascending: true }),
     client
@@ -461,6 +475,11 @@ export async function getOverviewData(): Promise<OverviewData> {
       .select("*")
       .order("matched_event_count", { ascending: false })
       .limit(VULNERABILITY_CONTEXT_LIMIT),
+    client
+      .from("public_events")
+      .select("observed_at")
+      .order("observed_at", { ascending: true })
+      .limit(1),
   ]);
 
   if (sensorsRes.error) throw new Error(`public_sensors query failed: ${sensorsRes.error.message}`);
@@ -470,6 +489,9 @@ export async function getOverviewData(): Promise<OverviewData> {
   if (firstSeenRes.error) throw new Error(`public_observed_patterns query failed: ${firstSeenRes.error.message}`);
   if (cveMatchesRes.error) throw new Error(`public_event_cve_matches query failed: ${cveMatchesRes.error.message}`);
   if (vulnsRes.error) throw new Error(`public_vulnerabilities query failed: ${vulnsRes.error.message}`);
+  if (earliestEventRes.error) {
+    throw new Error(`public_events earliest query failed: ${earliestEventRes.error.message}`);
+  }
 
   const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
   const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
@@ -533,10 +555,19 @@ export async function getOverviewData(): Promise<OverviewData> {
     eventCount: row.event_count,
   }));
 
+  const historyStartedAt = earliestTimestamp([
+    ...(earliestEventRes.data ?? []).map((row) => String(row.observed_at)),
+    ...hourRows.map((row) => row.bucket_start),
+  ]);
+  const hasPriorWindowBaseline =
+    historyStartedAt !== null && Date.parse(historyStartedAt) <= window48hStartMs;
+
   return {
     sourceMode: "supabase",
     totalEvents24h,
     priorEvents24h: priorRows.reduce((sum, row) => sum + row.event_count, 0),
+    historyStartedAt,
+    hasPriorWindowBaseline,
     coverageGapIn24h,
     coverageGapInPrior24h,
     activeOutages,
@@ -544,7 +575,10 @@ export async function getOverviewData(): Promise<OverviewData> {
     is24hBreakdownSampled: sampleCount > sampleRows.length,
     aggregateComplete: aggregatePage.complete,
     rollupPendingEvents24h,
-    hourlySeries: annotateSeriesCoverage(currentSeries, statusEvents, nowMs),
+    hourlySeries: annotateSeriesPreHistory(
+      annotateSeriesCoverage(currentSeries, statusEvents, nowMs),
+      historyStartedAt,
+    ),
     noteworthy: selectNoteworthyObservations({
       current: patternRows,
       prior: priorPatternRows,
@@ -555,6 +589,7 @@ export async function getOverviewData(): Promise<OverviewData> {
         totalCount: row.total_count,
       })),
       comparisonReliable,
+      hasPriorWindowBaseline,
     }),
     uniqueCountries24h: summary.uniqueCountries,
     activeSensorCount: sensors.filter((s) => s.is_active).length,
@@ -581,7 +616,7 @@ export async function getOverviewData(): Promise<OverviewData> {
   };
 }
 
-export async function getTrendsData(period: TrendPeriod = "30d"): Promise<TrendsData> {
+export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsData> {
   const client = getPublicSupabaseClient();
   const nowMs = client ? Date.now() : MOCK_REFERENCE_NOW_MS;
   const windowStartMs = nowMs - periodLengthMs(period);
@@ -796,7 +831,10 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   }
 
   const coverageGaps = filterCoverageGapsInWindow(statusEvents, seriesStartMs, nowMs, nowMs);
-  const annotatedSeries = annotateSeriesCoverage(series, coverageGaps, nowMs);
+  const annotatedSeries = annotateSeriesPreHistory(
+    annotateSeriesCoverage(series, coverageGaps, nowMs),
+    historyStartedAt,
+  );
 
   return {
     sourceMode,

@@ -198,9 +198,11 @@ export interface PatternTotal {
 
 export interface NoteworthyObservation {
   id: string;
-  kind: "change" | "first_seen";
+  kind: "change" | "first_seen" | "summary";
   title: string;
   detail: string;
+  rationale?: string;
+  severity?: "primary" | "secondary";
   protocol: Protocol;
   currentCount: number;
   priorCount: number;
@@ -222,12 +224,16 @@ export interface TrendBucket {
   totalEvents: number;
   hasCoverageGap?: boolean;
   gapStatuses?: SensorStatusEventType[];
+  isPreHistory?: boolean;
+  isObservationStart?: boolean;
 }
 
 export interface OverviewData {
   sourceMode: "mock" | "supabase";
   totalEvents24h: number;
   priorEvents24h: number;
+  historyStartedAt: string | null;
+  hasPriorWindowBaseline: boolean;
   coverageGapIn24h: boolean;
   coverageGapInPrior24h: boolean;
   activeOutages: PublicSensorStatusEvent[];

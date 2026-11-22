@@ -154,3 +154,81 @@ export function safeDisplayHttpPath(value: string | null | undefined, fallback =
   const joined = maskedPairs.filter(Boolean).join("&");
   return joined ? `${base}?${joined}` : base;
 }
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  ssh_new_connection: "SSH connection",
+  ssh_remote_version: "SSH client banner",
+  ssh_login_attempt: "SSH login attempt",
+  telnet_login_attempt: "Telnet login attempt",
+  ftp_login_attempt: "FTP login attempt",
+  mysql_login_attempt: "MySQL login attempt",
+  redis_command_probe: "Redis command probe",
+  http_probe: "HTTP request probe",
+  http_secret_file_probe: "Sensitive file probe",
+  http_cms_probe: "CMS login probe",
+  http_router_probe: "Router / CGI probe",
+  http_payload_probe: "HTTP payload probe",
+  port_scan: "Port scan",
+};
+
+const FINGERPRINT_LABELS: Record<string, string> = {
+  "oc-2000": "FTP login attempt",
+  "oc-4000": "SSH connection",
+  "oc-4001": "SSH client banner",
+  "oc-4002": "SSH login attempt",
+  "oc-6001": "Telnet login attempt",
+  "oc-8001": "MySQL login attempt",
+  "oc-17001": "Redis command",
+};
+
+/**
+ * Converts internal snake_case event identifiers into readable labels
+ * while never inventing claims beyond what the sensor recorded.
+ */
+export function formatEventTypeLabel(eventType: string | null | undefined): string {
+  const cleaned = safeDisplayText(eventType, "");
+  if (!cleaned) return "Unknown event";
+  const mapped = EVENT_TYPE_LABELS[cleaned];
+  if (mapped) return mapped;
+  const words = cleaned.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Adds a concise factual description for known OpenCanary logtype fingerprints
+ * (e.g. oc-6001 -> "Telnet login attempt (oc-6001)").
+ */
+export function formatFingerprintLabel(fingerprint: string | null | undefined): string {
+  const cleaned = safeDisplayText(fingerprint, "");
+  if (!cleaned) return "Inspect";
+  const desc = FINGERPRINT_LABELS[cleaned];
+  return desc ? `${desc} (${cleaned})` : cleaned;
+}
+
+import type { AttackCategory } from "./types.ts";
+
+/**
+ * Reconciles legacy stored categories for display so plain connections and
+ * Redis command probes are not presented as confirmed authentication attempts.
+ */
+export function resolveDisplayCategory(
+  eventType: string | null | undefined,
+  storedCategory: AttackCategory | null | undefined,
+): AttackCategory | null {
+  if (storedCategory === "suspected_cve_probe" || storedCategory === "web_attack_attempt") {
+    return storedCategory;
+  }
+  const normalized = (eventType ?? "").toLowerCase();
+  if (
+    normalized === "ssh_new_connection" ||
+    normalized === "ssh_remote_version" ||
+    normalized.endsWith("_connection") ||
+    normalized === "port_scan"
+  ) {
+    return "port_scan";
+  }
+  if (normalized === "redis_command_probe" || normalized.endsWith("_command_probe")) {
+    return null;
+  }
+  return storedCategory ?? null;
+}

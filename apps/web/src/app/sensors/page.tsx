@@ -67,7 +67,7 @@ export default async function SensorsPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Sensors & Coverage"
+        title="Coverage"
         description="Sensor health, heartbeat freshness, monitored services, and collection outage intervals"
         actions={
           <span className="font-mono text-xs tabular-nums text-slate-500">
@@ -76,7 +76,7 @@ export default async function SensorsPage() {
         }
       />
 
-      <MethodologyBanner sourceMode={data.sourceMode} />
+      <MethodologyBanner sourceMode={data.sourceMode} sensorCount={data.sensors.length} />
 
       <Callout
         tone="warning"
