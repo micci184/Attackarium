@@ -834,12 +834,97 @@ reset role;
 set local role service_role;
 
 do $$
+declare
+  v_allowed boolean;
+  v_count integer;
+  v_retry integer;
 begin
   insert into public.admin_audit_logs (actor_user_id, action)
   values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'entitlement.note');
   if (select count(*) from public.admin_audit_logs) <> 2 then
     raise exception 'service_role could not append an audit log';
   end if;
+
+  select allowed, current_count, retry_after_seconds
+  into v_allowed, v_count, v_retry
+  from public.consume_mcp_rate_limit('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1, 60);
+  if not v_allowed or v_count <> 1 or v_retry < 1 then
+    raise exception 'First rate-limit check should be allowed';
+  end if;
+
+  select allowed, current_count, retry_after_seconds
+  into v_allowed, v_count, v_retry
+  from public.consume_mcp_rate_limit('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1, 60);
+  if v_allowed or v_count <> 2 then
+    raise exception 'Second rate-limit check should be denied when limit is 1';
+  end if;
+
+  perform public.record_mcp_usage_bucket(
+    timestamptz '2026-11-22 00:15:00+00',
+    'tool_call',
+    'get_observation_summary',
+    1,
+    1,
+    0,
+    0,
+    0,
+    42
+  );
+  if not exists (
+    select 1
+    from public.mcp_usage_buckets
+    where granularity = 'hour'
+      and bucket_start = timestamptz '2026-11-22 00:00:00+00'
+      and request_kind = 'tool_call'
+      and tool_name = 'get_observation_summary'
+      and call_count = 2
+      and success_count = 2
+      and total_latency_ms = 42
+  ) then
+    raise exception 'record_mcp_usage_bucket did not accumulate hourly counts';
+  end if;
+end $$;
+
+reset role;
+set local role authenticated;
+
+do $$
+begin
+  perform * from public.consume_mcp_rate_limit('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 10, 60);
+  raise exception 'SECURITY FAILURE: authenticated executed consume_mcp_rate_limit';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  perform public.record_mcp_usage_bucket(now(), 'initialize', '', 1, 1, 0, 0, 0, 1);
+  raise exception 'SECURITY FAILURE: authenticated executed record_mcp_usage_bucket';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+reset role;
+set local role anon;
+
+do $$
+begin
+  perform * from public.consume_mcp_rate_limit('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 10, 60);
+  raise exception 'SECURITY FAILURE: anon executed consume_mcp_rate_limit';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  perform public.record_mcp_usage_bucket(now(), 'initialize', '', 1, 1, 0, 0, 0, 1);
+  raise exception 'SECURITY FAILURE: anon executed record_mcp_usage_bucket';
+exception
+  when insufficient_privilege then
+    null;
 end $$;
 
 rollback;
