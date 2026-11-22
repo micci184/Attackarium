@@ -450,4 +450,45 @@ describe("ingest Edge Function core security & idempotency", () => {
     });
     assert.equal((await handleIngestRequest(textReq, makeConfig(), repo, BASE_NOW_MS)).status, 415);
   });
+
+  it("preserves sanitized signature_detections and suspected_cve_probe category", async () => {
+    const repo = new InMemoryIngestRepo();
+    const detection = {
+      signature_id: "http-log4shell-jndi-lookup",
+      rule_version: "1.0.0",
+      candidate_cve: "CVE-2021-44228",
+      matched_location: "header:redacted",
+      confidence: 0.9,
+      classification: "candidate_cve",
+      summary:
+        "Suspected CVE-2021-44228 (Log4Shell) JNDI lookup probe; candidate hypothesis only, not confirmed exploitation.",
+    };
+    const req = await makeSignedRequest({
+      body: JSON.stringify({
+        events: [
+          {
+            id: "77777777-7777-4777-8777-777777777777",
+            observed_at: new Date(BASE_NOW_MS - 1_000).toISOString(),
+            protocol: "http",
+            dst_port: 80,
+            event_type: "http_probe",
+            attack_category: "suspected_cve_probe",
+            src_ip: "198.51.100.42",
+            http_method: "GET",
+            http_path: "/",
+            metadata: {
+              signature_detections: [detection],
+            },
+          },
+        ],
+      }),
+      requestId: "req-cve-sig-001",
+    });
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    const saved = repo.events.get("77777777-7777-4777-8777-777777777777");
+    assert.ok(saved);
+    assert.equal(saved.attack_category, "suspected_cve_probe");
+    assert.deepEqual(saved.metadata.signature_detections, [detection]);
+  });
 });

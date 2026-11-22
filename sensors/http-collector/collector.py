@@ -26,6 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from signatures import (
+    InspectionInput,
+    inspect_http_request,
+    redact_jndi_references,
+)
+
 TEMP_LOG_MAX_AGE = dt.timedelta(hours=24)
 
 
@@ -105,22 +111,27 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
     if not cleaned:
         return "/"
     if "?" not in cleaned:
-        return cleaned[:max_length]
+        return redact_jndi_references(cleaned)[:max_length]
 
     base, query = cleaned.split("?", 1)
+    safe_base = redact_jndi_references(base)
     safe_pairs: list[str] = []
     for part in query.split("&"):
         if not part:
             continue
         if "=" not in part:
-            safe_pairs.append("[REDACTED]" if SENSITIVE_QUERY_KEYS.search(part) else part)
+            safe_pairs.append(
+                "[REDACTED]"
+                if SENSITIVE_QUERY_KEYS.search(part)
+                else redact_jndi_references(part)
+            )
             continue
         k, v = part.split("=", 1)
         if SENSITIVE_QUERY_KEYS.search(k) or len(v) > 128:
             safe_pairs.append(f"{k}=[REDACTED]")
         else:
-            safe_pairs.append(f"{k}={v}")
-    return f"{base}?{'&'.join(safe_pairs)}"[:max_length]
+            safe_pairs.append(f"{k}={redact_jndi_references(v)}")
+    return f"{safe_base}?{'&'.join(safe_pairs)}"[:max_length]
 
 
 def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:
@@ -131,6 +142,8 @@ def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:
             raw_val = strip_control(str(value))
             if lk == "referer":
                 raw_val = redact_path(raw_val, max_len)
+            else:
+                raw_val = redact_jndi_references(raw_val)
             selected[lk] = raw_val[:max_len]
     return selected
 
@@ -301,9 +314,32 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
                 body_bytes = body_bytes[: cfg.max_body_bytes]
                 body_truncated = True
 
+        # Inspect bounded raw path, all headers, and bounded body before discarding body bytes.
+        raw_headers = tuple((str(k), str(v)) for k, v in self.headers.items())
+        detections = inspect_http_request(
+            InspectionInput(
+                method=method,
+                raw_path=self.path or "/",
+                headers=raw_headers,
+                body_bytes=body_bytes,
+                body_truncated=body_truncated,
+                max_body_bytes=cfg.max_body_bytes,
+            )
+        )
+
         body_sha256 = hashlib.sha256(body_bytes).hexdigest() if body_bytes else None
         fp_seed = f"{method}:{redacted_path.split('?', 1)[0]}:{safe_headers.get('user-agent', '')}"
         fingerprint = "http-" + hashlib.sha256(fp_seed.encode("utf-8")).hexdigest()[:16]
+
+        metadata: dict[str, Any] = {
+            "headers": safe_headers,
+            "declared_content_length": declared_len,
+            "sampled_body_bytes": len(body_bytes),
+            "body_truncated": body_truncated,
+            "body_sha256": body_sha256,
+        }
+        if detections:
+            metadata["signature_detections"] = [match.to_dict() for match in detections]
 
         record: dict[str, Any] = {
             "source": "http_collector",
@@ -316,14 +352,10 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
             "http_method": method,
             "http_path": redacted_path,
             "fingerprint": fingerprint,
-            "metadata": {
-                "headers": safe_headers,
-                "declared_content_length": declared_len,
-                "sampled_body_bytes": len(body_bytes),
-                "body_truncated": body_truncated,
-                "body_sha256": body_sha256,
-            },
+            "metadata": metadata,
         }
+        if any(match.classification == "candidate_cve" for match in detections):
+            record["attack_category"] = "suspected_cve_probe"
         self.server.write_record(record)
 
         body = b"Not Found\n"
