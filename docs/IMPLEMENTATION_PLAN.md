@@ -1,6 +1,6 @@
 # Implementation plan (MVP)
 
-Last reviewed: 2026-11-21 (JST). Status: **Phase 1 foundation is on `main` (PR #31). No cloud resources or public honeypot are deployed yet. Initial AWS region is `us-east-1` (N. Virginia).**
+Last reviewed: 2026-11-22 (JST). Status: **One `us-east-1` sensor, Supabase, and the public Vercel dashboard are collecting. Further cloud changes still need explicit approval. Dashboard totals must not be treated as exact until aggregate queries replace capped event samples.**
 
 ## 1. Product definition and primary goal
 
@@ -48,10 +48,11 @@ Implementation scope:
 5. Isolated AWS EC2 sensor provisioning via IaC with layered egress allowlisting (EC2 Security Group + host OS `nftables`/`iptables`).
 6. Supabase PostgreSQL historical storage with default-deny RLS, `security_barrier` public views, hourly/daily rollups, observed patterns, sensor outage tracking, and configurable detailed-event retention.
 7. Login-free public Next.js dashboard showing:
-   - Last 24h event count, recent/day-over-day changes, and 30-day time-series trends
-   - Protocol breakdown, observed attack patterns, and representative sanitized HTTP paths
-   - Observation window, last updated timestamp, sensor health/freshness, observation caveats, and **explicit distinction between zero observed events and collection outages**
-   - Minimal event explorer filtering (advanced search deferred to Post-MVP) and core accessibility/responsive/loading/error/empty states.
+   - Observation status (sensor health, freshness, window, and **explicit distinction between zero observed events, connection errors, and collection outages**)
+   - Accurate aggregate-backed 24h / 7d / 30d totals and time series (distinguishing complete aggregates from capped latest-N samples, with no implicit mock fallback in production)
+   - Up to 3 evidence-backed noteworthy changes on Overview (or an explicit "no notable change"), using simple explainable comparisons
+   - Observed attack patterns, representative sanitized HTTP paths, and links into minimal Event Explorer filtering (advanced search deferred to Post-MVP; map and secondary KPIs deprioritized)
+   - Core accessibility, responsive layout, and loading/error/empty states.
 
 **Done when:**
 - External events arriving at the sensor are durably stored in Supabase.
@@ -66,7 +67,7 @@ Implementation scope:
 
 Implementation scope:
 
-1. **Basic CVE / CISA KEV / FIRST EPSS context:** Daily KEV and EPSS feeds, versioned deterministic detection rules with recorded evidence/confidence/source metadata, on-demand cached NVD lookup for candidate CVEs only, and clear UI disclaimers avoiding confirmed-exploit claims.
+1. **Basic CVE / CISA KEV / FIRST EPSS context:** Daily KEV and EPSS feeds, versioned deterministic detection rules with recorded evidence/confidence/source metadata, on-demand cached NVD lookup for candidate CVEs only, inline context on event details and observed patterns (standalone `/vulnerabilities` catalog deferred to Post-MVP), and clear UI disclaimers avoiding confirmed-exploit claims.
 2. **Authenticated Read-Only Remote MCP (Vercel Functions + `mcp-handler`, Streamable HTTP):**
    - Supabase Auth OAuth 2.1 Authorization Code + PKCE (Google/GitHub login) + RFC 9728 discovery metadata.
    - Server-side enforcement of all 5 gates on every request (login, current Terms acceptance, active account, explicit MCP entitlement, OAuth consent/scope) with immediate revocation and per-user rate limits.
@@ -92,17 +93,23 @@ Implementation scope:
 
 ### Evaluation — 30-Day Value Validation
 
-After 30 days of continuous Phase 1 collection (and Phase 2 completion), evaluate honestly:
+Evaluate in two stages. Do not wait for Phase 2 before stage 1.
+
+**Stage 1 — after 30 days of continuous Phase 1 collection:**
 
 1. What probe and attack attempts were actually observed?
 2. Were there meaningful day-over-day or week-over-week shifts?
 3. Did specific attack patterns rise or decline?
-4. Could observed events be credibly explained alongside external CVE/KEV/EPSS context?
-5. Did the public web dashboard surface useful findings?
-6. Did Remote MCP improve the analytical workflow?
+4. Did the public dashboard's counts, time series, and coverage gaps support those judgments?
+
+**Stage 2 — after Phase 2 is public:**
+
+5. Did CVE/KEV/EPSS context, attached only where observation evidence exists, improve that explanation?
+6. Did Remote MCP and human-reviewed AI drafts improve the workflow?
 
 If few notable attacks were observed, report that accurately. Do **not** set
-arbitrary event-count or finding-count success targets.
+arbitrary event-count or finding-count success targets. Stage 1 counts are only
+as trustworthy as the aggregate queries behind them.
 
 ## 3. Explicit non-goals (out of MVP scope)
 
@@ -114,7 +121,7 @@ arbitrary event-count or finding-count success targets.
 - Mirroring the full CVE database
 - Fully automated X posting without human approval
 - Commercialization or billing features
-- Post-MVP enhancements tracked separately: advanced explorer search, dark mode toggle, statistical anomaly detection, advanced Threat Intelligence comparisons, multi-sensor campaign analysis, additional MCP tools, and authenticated non-public CSV export.
+- Post-MVP enhancements tracked separately: standalone `/vulnerabilities` catalog page, advanced explorer search, dark mode toggle, statistical anomaly detection, advanced Threat Intelligence comparisons, multi-sensor campaign analysis, additional MCP tools, and authenticated non-public CSV export.
 
 ## 4. Initial cost plan
 

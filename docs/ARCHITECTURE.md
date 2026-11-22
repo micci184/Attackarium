@@ -96,10 +96,15 @@ observed request succeeded.
 
 General users can inspect sanitized observations without logging in:
 
-- **Overview & 30-Day Trends:** Last 24h event count, day-over-day / recent change,
-  30-day time-series volume, protocol breakdown, observed attack patterns,
-  representative HTTP paths/request tendencies, observation window, and last
-  updated timestamp.
+- **Overview:** Lead with observation status (sensor health, last update, window,
+  coverage gaps), then the last 24h count versus the previous 24h, then at most
+  three evidence-backed noteworthy changes (or an explicit "no notable change").
+  The 24h series follows. 7-day and 30-day series stay on Trends. Patterns and
+  recent events link into the existing Event Explorer filters. The map and
+  low-signal KPIs (protocol count, approximate regions) are secondary.
+  Noteworthy changes use explainable comparisons, not an anomaly model or an AI claim.
+- **Trends:** 24h / 7d / 30d volume from complete aggregates. Bucket sums match the
+  period total. Sampled latest-N rows are labeled as samples and are not the total.
 - **Sensor Health & Coverage Gaps:** Active/healthy sensor count, heartbeat
   freshness, observation scope, and explicit visual distinction between
   **zero observed events** and **collection outage / missing data**.
