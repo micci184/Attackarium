@@ -47,6 +47,15 @@ OPENCANARY_LOGTYPE_MAP: dict[int, tuple[str, str]] = {
 ALLOWED_PROTOCOLS = frozenset(
     {"ssh", "telnet", "ftp", "mysql", "redis", "http", "https", "other"}
 )
+ALLOWED_ATTACK_CATEGORIES = frozenset(
+    {
+        "port_scan",
+        "auth_attempt",
+        "http_path_probe",
+        "web_attack_attempt",
+        "suspected_cve_probe",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,8 @@ def normalize_record(raw: dict[str, Any], sensor_id: str) -> dict[str, Any] | No
             event["http_path"] = str(raw["http_path"])[:512]
         if raw.get("fingerprint"):
             event["fingerprint"] = str(raw["fingerprint"])[:128]
+        if raw.get("attack_category") in ALLOWED_ATTACK_CATEGORIES:
+            event["attack_category"] = raw["attack_category"]
         if isinstance(raw.get("metadata"), dict):
             event["metadata"] = raw["metadata"]
         return event

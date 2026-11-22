@@ -486,6 +486,40 @@ class ShipperIntegrationTests(unittest.TestCase):
         finally:
             shipper.close()
 
+    def test_forwards_http_collector_attack_category_and_signature_detections(self) -> None:
+        raw = {
+            "source": "http_collector",
+            "id": "66666666-6666-4666-8666-666666666666",
+            "observed_at": "2026-11-22T02:00:00Z",
+            "protocol": "http",
+            "dst_port": 80,
+            "event_type": "http_probe",
+            "attack_category": "suspected_cve_probe",
+            "http_method": "GET",
+            "http_path": "/",
+            "metadata": {
+                "signature_detections": [
+                    {
+                        "signature_id": "http-log4shell-jndi-lookup",
+                        "rule_version": "1.0.0",
+                        "candidate_cve": "CVE-2021-44228",
+                        "matched_location": "header:user-agent",
+                        "confidence": 0.9,
+                        "classification": "candidate_cve",
+                        "summary": "Suspected CVE-2021-44228 (Log4Shell) JNDI lookup probe; candidate hypothesis only, not confirmed exploitation.",
+                    }
+                ]
+            },
+        }
+        event = normalize_record(raw, "sensor-dev-01")
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["attack_category"], "suspected_cve_probe")
+        self.assertEqual(
+            event["metadata"]["signature_detections"][0]["candidate_cve"],
+            "CVE-2021-44228",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
