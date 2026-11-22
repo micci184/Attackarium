@@ -103,6 +103,15 @@ runs the job at 08:15 UTC when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
 are repository secrets. Without those secrets the workflow skips and does not
 call the feeds.
 
+`jobs/cve-matching` reads `attack_events.metadata.signature_detections` from the
+last 48 hours and persists only detections whose rule ID, version, and indicator
+match the collector catalog. Technique-only matches stay in `detections`.
+Catalog CVEs are written to `event_cve_matches` as candidate hypotheses.
+NVD is requested only for those catalog CVE IDs, and only the description,
+vendor, product, publish time, and CVSS fields are cached. A failed NVD lookup
+does not remove the match or existing KEV/EPSS values. GitHub Actions runs this
+job hourly at minute 20 and skips it when the Supabase secrets are absent.
+
 ## 6. Public web dashboard (no login required)
 
 General users can inspect sanitized observations without logging in:

@@ -3,7 +3,7 @@
 Attackarium inspects bounded HTTP request data inside `sensors/http-collector/signatures.py`
 **before** raw bodies and non-allowlisted headers are discarded. Every detection is stored
 as structured, sanitized metadata under `attack_events.metadata.signature_detections` and
-feeds downstream persistence and on-demand NVD caching (#13).
+feeds downstream persistence and on-demand NVD caching in `jobs/cve-matching`.
 
 ## Design invariants
 
@@ -32,6 +32,15 @@ feeds downstream persistence and on-demand NVD caching (#13).
 | `http-sqli-attempt` | `1.0.0` | `indicator_match` | `sql_injection` | *(none)* | `UNION [ALL] SELECT` (incl. `/**/` comments), `SLEEP`/`BENCHMARK`/`WAITFOR DELAY`, `INFORMATION_SCHEMA` tables/columns, or boolean tautology `' OR '1'='1'--` | [OWASP SQL Injection](https://owasp.org/www-community/attacks/SQL_Injection) |
 | `http-path-traversal-attempt` | `1.0.0` | `indicator_match` | `path_traversal` | *(none)* | 2+ `../`/`..\` segments targeting common system files (`/etc/passwd`, `win.ini`, `/proc/self/`), or 3+ repeated parent-directory segments | [OWASP Path Traversal](https://owasp.org/www-community/attacks/Path_Traversal) |
 | `http-cmd-injection-attempt` | `1.0.0` | `indicator_match` | `command_injection` | *(none)* | Shell metacharacter (`;`, `|`, `&&`, `||`, `` ` ``, `$(`) followed by a delimited OS command token (`id`, `uname`, `whoami`, `wget`, `curl`, `sh`, etc.) | [OWASP Command Injection](https://owasp.org/www-community/attacks/Command_Injection) |
+
+## Persistence
+
+`jobs/cve-matching` does not inspect requests again. It accepts a stored detection
+only when `signature_id`, `rule_version`, and `evidence.indicator` match the catalog
+above. Confidence, summary, technique, and candidate CVEs are copied from that
+catalog, not from the stored object. `indicator_match` rules create a `detections`
+row and no CVE match. `candidate_cve` rules also create one `event_cve_matches` row
+per catalog CVE. NVD metadata is fetched afterwards, one catalog CVE at a time.
 
 ## Known blind spots and limitations
 

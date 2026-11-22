@@ -25,7 +25,7 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 
 | Table | Core fields | Constraints / notes |
 | --- | --- | --- |
-| `detections` | `id`, `event_id`, `rule_id`, `rule_version`, `classification`, `confidence`, `evidence_redacted`, `created_at` | Evidence must point to actual observed redacted field |
+| `detections` | `id`, `event_id`, `rule_id`, `rule_version`, `classification`, `confidence`, `evidence_redacted`, `created_at` | Evidence must point to an observed indicator and location. `jobs/cve-matching` writes these rows from the collector catalog |
 | `vulnerabilities` | `cve_id`, `description`, `vendor`, `product`, `published_at`, `cvss_score`, `cvss_vector`, `kev_present`, `kev_added_at`, `kev_updated_at`, `epss_score`, `epss_percentile`, `epss_date`, `source_updated_at` | Current EPSS is a vulnerability-level dated forecast, not per-event exploit proof. `kev_added_at` is when CISA added the CVE; `kev_updated_at` is the last catalog sync |
 | `epss_daily_scores` | `cve_id`, `score_date`, `epss_score`, `epss_percentile` | Primary key `(cve_id, score_date)`. One FIRST EPSS score per tracked CVE per date. Tracked means the KEV catalog plus CVEs already stored, not the full EPSS universe. Public view includes a row only when that CVE has an observation match |
 | `event_cve_matches` | `event_id`, `cve_id`, `detection_id`, `match_type`, `confidence`, `reason`, `evaluated_at` | Unique `(event_id, cve_id, detection_id)`; candidate hypothesis only. `evaluated_at` is the last evaluation time; `created_at` stays the insert time |
@@ -98,4 +98,4 @@ switch.
 6. **Backups:** MVP does not add S3, a second database, or an archive pipeline. Postgres is the durable store. Deferring an independent backup means a Postgres failure can lose observation history; record that risk in the runbook and revisit before treating the history as irreplaceable.
 7. **Dashboard totals:** 24h / 7d / 30d counts and time series come from `event_aggregates`, `daily_stats`, `pattern_daily_counts`, and `observed_patterns`. A capped `public_events` read is a sample, not the period total. Production must not substitute mock observations when Supabase configuration is missing.
 8. **Quota monitoring:** Alert before the database quota blocks ingest. There is no separate billing product beyond the single AWS Budget. `pattern_daily_counts` grows with the number of distinct redacted paths per day, so watch it first if attackers vary paths heavily.
-9. **CVE evidence:** `detections` and `event_cve_matches` cascade-delete with their event. Decide how to keep CVE evidence past event retention before Phase 2 stores any.
+9. **CVE evidence:** `detections` and `event_cve_matches` cascade-delete with their event. The candidate-matching job accepts that lifetime: sanitized evidence is kept only as long as the event. Keeping a separate CVE-evidence archive past event retention is deferred.
