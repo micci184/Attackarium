@@ -31,11 +31,9 @@ export function VolumeChart({
         action={
           <div className="flex flex-wrap items-center gap-2.5 text-[11px]">
             {hasAnyGap ? (
-              <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 font-medium text-amber-900">
-                <span aria-hidden="true" className="font-mono font-bold">
-                  [GAP]
-                </span>
-                Collection outage / degraded interval
+              <span className="inline-flex items-center gap-1.5 text-amber-800">
+                <span aria-hidden="true" className="h-2 w-2 rounded-xs bg-amber-400" />
+                Collection gap in shaded buckets
               </span>
             ) : null}
             {hasEvents ? (
@@ -99,9 +97,9 @@ export function VolumeChart({
                       {bucket.hasCoverageGap ? (
                         <span
                           aria-hidden="true"
-                          className="rounded border border-amber-400 bg-amber-100 px-1 font-mono text-[9px] font-bold leading-tight text-amber-900"
+                          className="font-mono text-[9px] font-medium text-amber-800"
                         >
-                          GAP
+                          Gap
                         </span>
                       ) : showCounts ? (
                         <span className="font-mono text-[11px] font-medium tabular-nums text-slate-700">

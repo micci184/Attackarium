@@ -15,16 +15,16 @@ import type { EventCategoryFilter, EventPeriodFilter, Protocol } from "@/lib/typ
 
 export const dynamic = "force-dynamic";
 
-const PROTOCOL_FILTERS: Array<Protocol | "all"> = [
-  "all",
-  "ssh",
-  "http",
-  "https",
-  "telnet",
-  "ftp",
-  "mysql",
-  "redis",
-  "other",
+const PROTOCOL_FILTERS: Array<{ value: Protocol | "all"; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "ssh", label: "SSH" },
+  { value: "http", label: "HTTP" },
+  { value: "https", label: "HTTPS" },
+  { value: "telnet", label: "Telnet" },
+  { value: "ftp", label: "FTP" },
+  { value: "mysql", label: "MySQL" },
+  { value: "redis", label: "Redis" },
+  { value: "other", label: "Other" },
 ];
 
 const PERIOD_FILTERS: Array<{ value: EventPeriodFilter; label: string }> = [
@@ -100,12 +100,11 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
           <FilterRow label="Protocol">
             {PROTOCOL_FILTERS.map((proto) => (
               <FilterLink
-                key={proto}
-                href={buildUrl(1, proto)}
-                active={result.protocolFilter === proto}
-                mono
+                key={proto.value}
+                href={buildUrl(1, proto.value)}
+                active={result.protocolFilter === proto.value}
               >
-                {proto}
+                {proto.label}
               </FilterLink>
             ))}
           </FilterRow>
@@ -115,7 +114,6 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
                 key={item.value}
                 href={buildUrl(1, result.protocolFilter, item.value)}
                 active={result.periodFilter === item.value}
-                mono
               >
                 {item.label}
               </FilterLink>
@@ -151,14 +149,14 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                <th className="px-4 py-2.5">Observed (JST)</th>
-                <th className="px-3 py-2.5">Protocol</th>
-                <th className="px-3 py-2.5">Category</th>
-                <th className="px-3 py-2.5">Port</th>
-                <th className="px-3 py-2.5">Event Type</th>
-                <th className="px-3 py-2.5">Region / ASN</th>
-                <th className="px-4 py-2.5">Sanitized Path / Fingerprint</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
+                <th className="px-4 py-2.5 font-medium">Observed (JST)</th>
+                <th className="px-3 py-2.5 font-medium">Protocol</th>
+                <th className="px-3 py-2.5 font-medium">Category</th>
+                <th className="px-3 py-2.5 font-medium">Port</th>
+                <th className="px-3 py-2.5 font-medium">Event type</th>
+                <th className="px-3 py-2.5 font-medium">Region / ASN</th>
+                <th className="px-4 py-2.5 font-medium">Sanitized path / fingerprint</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -252,7 +250,7 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
 function FilterRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <nav aria-label={`${label} filter`} className="flex flex-wrap items-center gap-1.5">
-      <span className="mr-1 w-16 shrink-0 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+      <span className="mr-1 w-16 shrink-0 text-xs font-medium text-slate-500">
         {label}
       </span>
       {children}
@@ -263,12 +261,10 @@ function FilterRow({ label, children }: { label: string; children: ReactNode }) 
 function FilterLink({
   href,
   active,
-  mono,
   children,
 }: {
   href: string;
   active: boolean;
-  mono?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -276,11 +272,9 @@ function FilterLink({
       href={href}
       translate="no"
       aria-current={active ? "true" : undefined}
-      className={`rounded-md border px-2.5 py-1 text-[11px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
-        mono ? "font-mono uppercase" : ""
-      } ${
+      className={`rounded-md border px-2.5 py-1 text-xs leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
         active
-          ? "border-[#632ca6] bg-[#632ca6] text-white"
+          ? "border-[#632ca6] bg-[#632ca6] font-medium text-white"
           : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900"
       }`}
     >

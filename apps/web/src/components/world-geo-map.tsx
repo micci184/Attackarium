@@ -52,8 +52,8 @@ export function WorldGeoMap({
           title={title}
           subtitle="Country/region enrichment status"
           action={
-            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 font-mono text-[11px] font-medium text-slate-600">
-              GeoIP Not Enabled
+            <span className="text-xs text-slate-500">
+              Not enabled
             </span>
           }
         />
