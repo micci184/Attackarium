@@ -455,13 +455,38 @@ describe("ingest Edge Function core security & idempotency", () => {
     const repo = new InMemoryIngestRepo();
     const detection = {
       signature_id: "http-log4shell-jndi-lookup",
-      rule_version: "1.0.0",
+      rule_version: "1.1.0",
+      classification: "candidate_cve",
+      attack_technique: "jndi_injection",
+      candidate_cves: ["CVE-2021-44228"],
       candidate_cve: "CVE-2021-44228",
       matched_location: "header:redacted",
+      match_strength: "high",
       confidence: 0.9,
-      classification: "candidate_cve",
+      evidence: {
+        indicator: "jndi_lookup_with_scheme",
+        obfuscation_detected: false,
+      },
+      references: ["https://nvd.nist.gov/vuln/detail/CVE-2021-44228"],
       summary:
         "Suspected CVE-2021-44228 (Log4Shell) JNDI lookup probe; candidate hypothesis only, not confirmed exploitation.",
+    };
+    const techniqueOnly = {
+      signature_id: "http-sqli-attempt",
+      rule_version: "1.0.0",
+      classification: "indicator_match",
+      attack_technique: "sql_injection",
+      candidate_cves: [],
+      candidate_cve: null,
+      matched_location: "url",
+      match_strength: "medium",
+      confidence: 0.7,
+      evidence: {
+        indicator: "union_select_pattern",
+        obfuscation_detected: false,
+      },
+      references: ["https://owasp.org/www-community/attacks/SQL_Injection"],
+      summary: "Observed SQL injection indicator; no specific CVE inferred.",
     };
     const req = await makeSignedRequest({
       body: JSON.stringify({
@@ -480,6 +505,20 @@ describe("ingest Edge Function core security & idempotency", () => {
               signature_detections: [detection],
             },
           },
+          {
+            id: "88888888-8888-4888-8888-888888888888",
+            observed_at: new Date(BASE_NOW_MS - 500).toISOString(),
+            protocol: "http",
+            dst_port: 80,
+            event_type: "http_probe",
+            attack_category: "web_attack_attempt",
+            src_ip: "198.51.100.43",
+            http_method: "GET",
+            http_path: "/items?id=1",
+            metadata: {
+              signature_detections: [techniqueOnly],
+            },
+          },
         ],
       }),
       requestId: "req-cve-sig-001",
@@ -490,5 +529,10 @@ describe("ingest Edge Function core security & idempotency", () => {
     assert.ok(saved);
     assert.equal(saved.attack_category, "suspected_cve_probe");
     assert.deepEqual(saved.metadata.signature_detections, [detection]);
+
+    const savedTech = repo.events.get("88888888-8888-4888-8888-888888888888");
+    assert.ok(savedTech);
+    assert.equal(savedTech.attack_category, "web_attack_attempt");
+    assert.deepEqual(savedTech.metadata.signature_detections, [techniqueOnly]);
   });
 });
