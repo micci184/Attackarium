@@ -1,4 +1,5 @@
-import { formatCount, formatJstDateTime } from "@/lib/format";
+import { FormattedTime } from "@/components/timezone-provider";
+import { formatCount } from "@/lib/format";
 
 export function ObservationMeta({
   windowLabel,
@@ -20,7 +21,9 @@ export function ObservationMeta({
       </span>
       <div className="inline-flex items-center gap-1.5">
         <dt className="text-slate-500">Updated</dt>
-        <dd className="font-mono tabular-nums text-slate-800">{formatJstDateTime(updatedAt)}</dd>
+        <dd className="font-mono tabular-nums text-slate-800">
+          <FormattedTime iso={updatedAt} />
+        </dd>
       </div>
       <span aria-hidden="true" className="hidden text-slate-300 sm:inline">
         ·

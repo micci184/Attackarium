@@ -8,7 +8,7 @@ import { Callout, PageHeader, Panel, PanelHeader } from "@/components/ui";
 import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
 import { seriesHasLeadingGap, parseTrendPeriod, trendPeriodLabel } from "@/lib/dashboard-metrics";
-import { formatCount, formatJstDateTime } from "@/lib/format";
+import { formatCount, formatUtcDateTime } from "@/lib/format";
 import { getTrendsData } from "@/lib/observatory";
 import { buildWorldMapData } from "@/lib/world-map";
 
@@ -41,7 +41,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         description="Event volume over time, protocol distribution, and observed probe patterns"
         meta={
           <ObservationMeta
-            windowLabel={`${trendPeriodLabel(period)} (UTC buckets, timestamps in JST)`}
+            windowLabel={`${trendPeriodLabel(period)} (UTC buckets)`}
             updatedAt={data.dataUpdatedAt}
             sensorCount={data.registeredSensorCount}
           />
@@ -77,7 +77,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         emptyLabel="No stored observations in this window."
         footnote={[
           seriesHasLeadingGap(data.series, data.historyStartedAt)
-            ? `Dashed buckets before ${formatJstDateTime(data.historyStartedAt)} precede the start of observation and represent missing history, not measured zero-event periods.`
+            ? `Dashed buckets before ${formatUtcDateTime(data.historyStartedAt)} precede the start of observation and represent missing history, not measured zero-event periods.`
             : null,
           data.aggregateComplete
             ? data.seriesSource === "event_aggregates"

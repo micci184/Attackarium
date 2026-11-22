@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ProtocolBadge } from "@/components/protocol-badge";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { Panel, PanelHeader } from "@/components/ui";
 import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
@@ -11,7 +12,6 @@ import {
   formatEpssPercentile,
   formatEventTypeLabel,
   formatFingerprintLabel,
-  formatJstDateTime,
   formatUtcDate,
   resolveDisplayCategory,
   safeDisplayHttpPath,
@@ -64,9 +64,11 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
         <PanelHeader title="Sanitized event attributes" />
         <dl className="grid divide-y divide-slate-100 text-xs sm:grid-cols-2 sm:divide-y-0">
           <div className="border-b border-slate-100 px-4 py-3 sm:border-r">
-            <dt className="font-medium text-slate-500">Observed at (JST)</dt>
+            <dt className="font-medium text-slate-500">
+              Observed at (<TimezoneLabel />)
+            </dt>
             <dd className="mt-1 font-mono tabular-nums text-slate-900">
-              {formatJstDateTime(event.observed_at)}
+              <FormattedTime iso={event.observed_at} />
             </dd>
           </div>
           <div className="border-b border-slate-100 px-4 py-3">
@@ -241,7 +243,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                     <div>
                       <dt className="text-slate-500">Evaluated at</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        {formatJstDateTime(m.evaluated_at ?? m.created_at)}
+                        <FormattedTime iso={m.evaluated_at ?? m.created_at} />
                       </dd>
                     </div>
                     <div>

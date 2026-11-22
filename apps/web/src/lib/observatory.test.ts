@@ -8,6 +8,8 @@ import {
   formatEventTypeLabel,
   formatFingerprintLabel,
   formatJstDateTime,
+  formatUtcDateTime,
+  formatUtcShort,
   formatUtcDate,
   resolveDisplayCategory,
   safeDisplayHttpPath,
@@ -255,6 +257,8 @@ describe("observatory data layer (mock mode)", () => {
     );
 
     assert.match(formatJstDateTime("2026-11-21T00:00:00.000Z"), /2026\/11\/21 09:00:00 JST/);
+    assert.equal(formatUtcDateTime("2026-11-21T00:00:00.000Z"), "2026-11-21 00:00:00 UTC");
+    assert.equal(formatUtcShort("2026-11-21T00:05:00.000Z"), "11-21 00:05 UTC");
     assert.equal(safeDisplayText("abc\u0000\u202edef"), "abcdef");
     assert.equal(parseTrendPeriod("7d"), "7d");
     assert.equal(parseTrendPeriod("30d"), "30d");
