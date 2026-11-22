@@ -91,7 +91,7 @@ export function NavHeader() {
 
           <span
             translate="no"
-            className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-medium text-slate-600 lg:hidden"
+            className="font-mono text-[11px] text-slate-500 lg:hidden"
           >
             us-east-1
           </span>
@@ -133,8 +133,8 @@ export function NavHeader() {
       >
         <div className="space-y-4">
           <div>
-            <p className="px-2.5 pb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Observatory
+            <p className="px-2.5 pb-2 text-xs font-medium text-slate-500">
+              Navigation
             </p>
             <ul className="space-y-1">
               {NAV_ITEMS.map((item) => {
@@ -180,14 +180,12 @@ export function NavHeader() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-200/90 bg-slate-50/80 p-3 text-[11px] text-slate-600">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-slate-700">Data Policy</span>
-            <span className="rounded bg-white px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
-              Redacted Only
-            </span>
+        <div className="border-t border-slate-200 pt-3 text-xs text-slate-600">
+          <div className="flex items-center justify-between gap-2 px-1">
+            <span className="font-medium text-slate-700">Data policy</span>
+            <span className="font-mono text-[11px] text-slate-500">Redacted only</span>
           </div>
-          <p className="mt-1.5 leading-relaxed text-slate-500">
+          <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-slate-500">
             Source IPs, query values, credentials, and raw payloads are excluded from public views.
           </p>
         </div>

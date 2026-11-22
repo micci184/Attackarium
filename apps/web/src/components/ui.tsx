@@ -56,11 +56,9 @@ export function PanelHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/90 bg-slate-50/60 px-4 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/90 px-4 py-3">
       <div className="min-w-0">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-700">
-          {title}
-        </h2>
+        <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
         {subtitle ? (
           <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p>
         ) : null}
@@ -85,13 +83,13 @@ export function Callout({
 }) {
   const styles =
     tone === "warning"
-      ? "border-amber-300/90 bg-amber-50/90 text-amber-950"
+      ? "border-amber-300/90 bg-amber-50/80 text-amber-950"
       : "border-slate-200 border-l-2 border-l-[#632ca6] bg-white text-slate-700";
 
   return (
     <section
       aria-label={ariaLabel}
-      className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-xs shadow-[0_1px_2px_rgba(15,23,42,0.03)] ${styles}`}
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-xs ${styles}`}
     >
       <div className="min-w-0 flex-1 leading-relaxed">
         {title ? <p className="font-semibold">{title}</p> : null}

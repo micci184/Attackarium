@@ -36,24 +36,24 @@ export default async function OverviewPage() {
     data.activeSensorCount === 0
       ? {
           label: "Offline",
-          pillClass: "border-slate-200 bg-slate-100 text-slate-700",
+          textClass: "text-slate-600",
           dotClass: "bg-slate-400",
         }
       : data.healthySensorCount === data.activeSensorCount
         ? {
             label: "Healthy",
-            pillClass: "border-emerald-200 bg-emerald-50 text-emerald-800",
+            textClass: "text-emerald-700",
             dotClass: "bg-emerald-600",
           }
         : data.healthySensorCount > 0
           ? {
               label: "Degraded",
-              pillClass: "border-amber-300 bg-amber-50 text-amber-900",
+              textClass: "text-amber-700",
               dotClass: "bg-amber-500",
             }
           : {
-              label: "Heartbeat Stale",
-              pillClass: "border-red-300 bg-red-50 text-red-800",
+              label: "Heartbeat stale",
+              textClass: "text-red-700",
               dotClass: "bg-red-600",
             };
 
@@ -91,15 +91,15 @@ export default async function OverviewPage() {
       >
         <Panel className="p-5">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Observation Status
+            <p className="text-xs font-medium text-slate-500">
+              Observation status
             </p>
             <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${sensorBadge.pillClass}`}
+              className={`inline-flex items-center gap-1.5 text-xs font-medium ${sensorBadge.textClass}`}
             >
               <span
                 aria-hidden="true"
-                className={`h-1.5 w-1.5 rounded-full ${sensorBadge.dotClass}`}
+                className={`h-2 w-2 rounded-full ${sensorBadge.dotClass}`}
               />
               {sensorBadge.label}
             </span>
@@ -123,11 +123,11 @@ export default async function OverviewPage() {
 
         <Panel className="p-5">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-              Events (24 UTC Hours)
+            <p className="text-xs font-medium text-slate-500">
+              Events (24 UTC hours)
             </p>
             {data.sourceMode === "supabase" ? (
-              <span className="font-mono text-[11px] text-slate-500">UTC hourly rollups</span>
+              <span className="text-xs text-slate-500">UTC hourly rollups</span>
             ) : null}
           </div>
           <p className="mt-2 font-mono text-3xl font-semibold tracking-tight tabular-nums text-slate-900">
@@ -137,33 +137,28 @@ export default async function OverviewPage() {
             {formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}
           </p>
           {data.rollupPendingEvents24h > 0 ? (
-            <p className="mt-1.5 text-[11px] text-slate-500">
+            <p className="mt-1.5 text-xs text-slate-500">
               +{formatCount(data.rollupPendingEvents24h)} recent or unclassified events pending next
               15m rollup
             </p>
           ) : null}
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {data.aggregateComplete ? null : (
-              <p className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900">
-                Aggregate read is incomplete. This total is partial, not an exact count.
-              </p>
-            )}
-            {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
-              <p className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900">
-                <span aria-hidden="true" className="font-mono font-bold">
-                  [GAP]
-                </span>
-                Collection gap in window — comparison may undercount
-              </p>
-            ) : null}
-          </div>
+          {data.aggregateComplete ? null : (
+            <p className="mt-2 text-xs font-medium text-amber-800">
+              Aggregate read is incomplete. This total is partial, not an exact count.
+            </p>
+          )}
+          {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
+            <p className="mt-2 text-xs font-medium text-amber-800">
+              Collection gap in window — comparison may undercount.
+            </p>
+          ) : null}
         </Panel>
       </section>
 
       {/* Noteworthy Observations */}
       <Panel ariaLabel="Noteworthy observations">
         <PanelHeader
-          title="Noteworthy Observations"
+          title="Noteworthy observations"
           subtitle="Notable shifts vs. the previous 24 UTC hours (filtered for minimum sample size)"
         />
         {data.noteworthy.length === 0 ? (
@@ -172,57 +167,42 @@ export default async function OverviewPage() {
           </p>
         ) : (
           <ol className="divide-y divide-slate-100">
-            {data.noteworthy.map((note) => {
-              const kindBadge =
-                note.kind === "first_seen"
-                  ? { label: "First seen", classes: "border-purple-200 bg-[#f4effa] text-[#632ca6]" }
-                  : note.delta > 0
-                    ? { label: "Increase", classes: "border-amber-200 bg-amber-50 text-amber-900" }
-                    : { label: "Decrease", classes: "border-slate-200 bg-slate-100 text-slate-700" };
-              return (
-                <li key={note.id} className="px-4 py-3.5 transition-colors hover:bg-slate-50/70">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase ${kindBadge.classes}`}
-                      >
-                        {kindBadge.label}
-                      </span>
-                      <Link
-                        href={note.href}
-                        className="rounded text-sm font-semibold text-slate-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-                      >
-                        {safeDisplayText(note.title)}
-                      </Link>
-                    </div>
-                    <ProtocolBadge protocol={note.protocol} />
-                  </div>
-                  <p translate="no" className="mt-1.5 break-all text-xs text-slate-700">
-                    {safeDisplayText(note.detail)}
+            {data.noteworthy.map((note) => (
+              <li key={note.id} className="px-4 py-3.5 transition-colors hover:bg-slate-50/70">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Link
+                    href={note.href}
+                    className="rounded text-sm font-medium text-slate-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                  >
+                    {safeDisplayText(note.title)}
+                  </Link>
+                  <ProtocolBadge protocol={note.protocol} />
+                </div>
+                <p translate="no" className="mt-1 break-all text-xs text-slate-700">
+                  {safeDisplayText(note.detail)}
+                </p>
+                {note.kind === "first_seen" ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    First observed in stored history during this 24 UTC hour window.
                   </p>
-                  {note.kind === "first_seen" ? (
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      First observed in stored history during this 24 UTC hour window.
-                    </p>
-                  ) : note.showPercent && note.priorCount > 0 ? (
-                    <p className="mt-1 font-mono text-[11px] tabular-nums text-slate-600">
-                      {note.delta > 0 ? "+" : ""}
-                      {((note.delta / note.priorCount) * 100).toFixed(0)}% vs the previous 24 UTC
-                      hours
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Absolute change only. The previous window is too small for a percentage.
-                    </p>
-                  )}
-                  {note.comparisonReliable ? null : (
-                    <p className="mt-1 text-[11px] font-medium text-amber-800">
-                      A coverage gap or incomplete rollup makes this comparison less reliable.
-                    </p>
-                  )}
-                </li>
-              );
-            })}
+                ) : note.showPercent && note.priorCount > 0 ? (
+                  <p className="mt-1 font-mono text-xs tabular-nums text-slate-600">
+                    {note.delta > 0 ? "+" : ""}
+                    {((note.delta / note.priorCount) * 100).toFixed(0)}% vs the previous 24 UTC
+                    hours
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-500">
+                    Absolute change only. The previous window is too small for a percentage.
+                  </p>
+                )}
+                {note.comparisonReliable ? null : (
+                  <p className="mt-1 text-xs font-medium text-amber-800">
+                    A coverage gap or incomplete rollup makes this comparison less reliable.
+                  </p>
+                )}
+              </li>
+            ))}
           </ol>
         )}
       </Panel>
@@ -322,17 +302,17 @@ export default async function OverviewPage() {
                     </div>
                     <span
                       translate="no"
-                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
+                      className={`inline-flex shrink-0 items-center gap-1.5 text-xs font-medium ${
                         sensor.healthStatus === "healthy"
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          ? "text-emerald-700"
                           : sensor.healthStatus === "stale"
-                            ? "border-amber-300 bg-amber-50 text-amber-900"
-                            : "border-slate-200 bg-slate-100 text-slate-700"
+                            ? "text-amber-700"
+                            : "text-slate-600"
                       }`}
                     >
                       <span
                         aria-hidden="true"
-                        className={`h-1.5 w-1.5 rounded-full ${
+                        className={`h-2 w-2 rounded-full ${
                           sensor.healthStatus === "healthy"
                             ? "bg-emerald-600"
                             : sensor.healthStatus === "stale"
@@ -343,7 +323,7 @@ export default async function OverviewPage() {
                       {sensor.healthStatus === "healthy"
                         ? "Healthy"
                         : sensor.healthStatus === "stale"
-                          ? "Stale Heartbeat"
+                          ? "Stale heartbeat"
                           : "Inactive"}
                     </span>
                   </div>
@@ -404,13 +384,13 @@ export default async function OverviewPage() {
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                <th className="px-4 py-2.5">Observed (JST)</th>
-                <th className="px-3 py-2.5">Protocol</th>
-                <th className="px-3 py-2.5">Port</th>
-                <th className="px-3 py-2.5">Event Type</th>
-                <th className="px-3 py-2.5">Region / ASN</th>
-                <th className="px-4 py-2.5">Sanitized Path / Detail</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
+                <th className="px-4 py-2.5 font-medium">Observed (JST)</th>
+                <th className="px-3 py-2.5 font-medium">Protocol</th>
+                <th className="px-3 py-2.5 font-medium">Port</th>
+                <th className="px-3 py-2.5 font-medium">Event type</th>
+                <th className="px-3 py-2.5 font-medium">Region / ASN</th>
+                <th className="px-4 py-2.5 font-medium">Sanitized path / detail</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">

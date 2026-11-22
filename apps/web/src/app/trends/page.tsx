@@ -58,12 +58,9 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
             </Link>
           }
         >
-          <span aria-hidden="true" className="mr-1.5 font-mono font-bold">
-            [GAP]
-          </span>
           <span className="font-semibold">Collection gap detected in this window:</span>{" "}
-          {formatCount(data.coverageGaps.length)} outage/degraded interval(s) overlap the selected
-          range. Marked buckets may undercount traffic and must not be read as zero activity.
+          {formatCount(data.coverageGaps.length)} outage or degraded interval(s) overlap the selected
+          range. Shaded buckets may undercount traffic and must not be read as zero activity.
         </Callout>
       ) : null}
 

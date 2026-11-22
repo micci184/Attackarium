@@ -9,50 +9,50 @@ import type { SensorHealthStatus, SensorStatusEventType } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-const HEALTH_BADGE: Record<
+const HEALTH_STYLE: Record<
   SensorHealthStatus,
-  { label: string; symbol: string; classes: string }
+  { label: string; textClass: string; dotClass: string }
 > = {
   healthy: {
     label: "Healthy",
-    symbol: "OK",
-    classes: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    textClass: "text-emerald-700",
+    dotClass: "bg-emerald-600",
   },
   stale: {
-    label: "Stale Heartbeat",
-    symbol: "STALE",
-    classes: "border-amber-300 bg-amber-50 text-amber-900",
+    label: "Stale heartbeat",
+    textClass: "text-amber-700",
+    dotClass: "bg-amber-500",
   },
   inactive: {
-    label: "Offline (Inactive)",
-    symbol: "OFF",
-    classes: "border-slate-300 bg-slate-100 text-slate-700",
+    label: "Offline (inactive)",
+    textClass: "text-slate-600",
+    dotClass: "bg-slate-400",
   },
 };
 
-const EVENT_STATUS_BADGE: Record<
+const EVENT_STATUS_STYLE: Record<
   SensorStatusEventType,
-  { label: string; symbol: string; classes: string }
+  { label: string; textClass: string; dotClass: string }
 > = {
   healthy: {
-    label: "Recovered / Healthy",
-    symbol: "OK",
-    classes: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    label: "Recovered / healthy",
+    textClass: "text-emerald-700",
+    dotClass: "bg-emerald-600",
   },
   degraded: {
-    label: "Degraded Collection",
-    symbol: "DEG",
-    classes: "border-amber-300 bg-amber-50 text-amber-900",
+    label: "Degraded collection",
+    textClass: "text-amber-800",
+    dotClass: "bg-amber-500",
   },
   offline: {
-    label: "Sensor Offline (Gap)",
-    symbol: "GAP",
-    classes: "border-red-300 bg-red-50 text-red-800",
+    label: "Sensor offline (gap)",
+    textClass: "text-red-700",
+    dotClass: "bg-red-600",
   },
   error: {
-    label: "Collection Error (Gap)",
-    symbol: "ERR",
-    classes: "border-red-300 bg-red-50 text-red-800",
+    label: "Collection error (gap)",
+    textClass: "text-red-700",
+    dotClass: "bg-red-600",
   },
 };
 
@@ -70,7 +70,7 @@ export default async function SensorsPage() {
         title="Sensors & Coverage"
         description="Sensor health, heartbeat freshness, monitored services, and collection outage intervals"
         actions={
-          <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-[11px] tabular-nums text-slate-600 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
+          <span className="font-mono text-xs tabular-nums text-slate-500">
             Evaluated: {formatJstDateTime(data.evaluatedAt)}
           </span>
         }
@@ -81,15 +81,12 @@ export default async function SensorsPage() {
       <Callout
         tone="warning"
         ariaLabel="Zero observation versus outage distinction"
-        title="Distinguishing Zero Observations From Collection Outages"
+        title="Distinguishing zero observations from collection outages"
       >
         A period with <span className="font-mono font-semibold">0</span> recorded events only
-        represents quiet traffic when the sensor heartbeat is{" "}
-        <span className="font-mono font-semibold">OK</span> and no outage interval overlaps that
-        window. Intervals marked <span className="font-mono font-semibold">[GAP]</span>,{" "}
-        <span className="font-mono font-semibold">[DEG]</span>, or{" "}
-        <span className="font-mono font-semibold">[ERR]</span> indicate missing or partial
-        collection and must not be interpreted as a drop in Internet scanning.
+        represents quiet traffic when the sensor heartbeat is healthy and no outage interval
+        overlaps that window. Intervals marked as offline, degraded, or error indicate missing or
+        partial collection and must not be interpreted as a drop in Internet scanning.
       </Callout>
 
       <section
@@ -97,43 +94,35 @@ export default async function SensorsPage() {
         className="grid grid-cols-2 gap-3 sm:grid-cols-4"
       >
         <Panel className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Healthy
-          </p>
+          <p className="text-xs font-medium text-slate-500">Healthy</p>
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-emerald-700">
             {formatCount(healthyCount)}
           </p>
-          <p className="mt-1 text-[11px] text-slate-500">Heartbeat within 15m</p>
+          <p className="mt-1 text-xs text-slate-500">Heartbeat within 15m</p>
         </Panel>
 
         <Panel className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Stale Heartbeat
-          </p>
+          <p className="text-xs font-medium text-slate-500">Stale heartbeat</p>
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-amber-800">
             {formatCount(staleCount)}
           </p>
-          <p className="mt-1 text-[11px] text-slate-500">No recent delivery (&gt;15m)</p>
+          <p className="mt-1 text-xs text-slate-500">No recent delivery (&gt;15m)</p>
         </Panel>
 
         <Panel className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Offline / Inactive
-          </p>
+          <p className="text-xs font-medium text-slate-500">Offline / inactive</p>
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-slate-700">
             {formatCount(offlineCount)}
           </p>
-          <p className="mt-1 text-[11px] text-slate-500">Disabled or paused sensor</p>
+          <p className="mt-1 text-xs text-slate-500">Disabled or paused sensor</p>
         </Panel>
 
         <Panel className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Active Outages
-          </p>
+          <p className="text-xs font-medium text-slate-500">Active outages</p>
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-red-700">
             {formatCount(data.activeOutages.length)}
           </p>
-          <p className="mt-1 text-[11px] text-slate-500">
+          <p className="mt-1 text-xs text-slate-500">
             {formatCount(gapEvents.length)} gap interval(s) in past 30d
           </p>
         </Panel>
@@ -141,7 +130,7 @@ export default async function SensorsPage() {
 
       <Panel>
         <PanelHeader
-          title={`Registered Sensors (${formatCount(data.sensors.length)})`}
+          title={`Registered sensors (${formatCount(data.sensors.length)})`}
           action={
             <Link
               href="/trends"
@@ -159,7 +148,7 @@ export default async function SensorsPage() {
             </p>
           ) : (
             data.sensors.map((sensor) => {
-              const badge = HEALTH_BADGE[sensor.healthStatus];
+              const status = HEALTH_STYLE[sensor.healthStatus];
               return (
                 <article key={sensor.id} className="space-y-3 py-3 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -167,36 +156,37 @@ export default async function SensorsPage() {
                       <h3 className="truncate text-sm font-semibold text-slate-900">
                         {safeDisplayText(sensor.name)}
                       </h3>
-                      <p translate="no" className="mt-0.5 font-mono text-[11px] text-slate-500">
+                      <p translate="no" className="mt-0.5 font-mono text-xs text-slate-500">
                         {safeDisplayText(sensor.id)} · {safeDisplayText(sensor.region)} ·{" "}
                         {sensor.type}
                       </p>
                     </div>
                     <span
-                      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${badge.classes}`}
+                      className={`inline-flex items-center gap-1.5 text-xs font-medium ${status.textClass}`}
                     >
-                      <span aria-hidden="true" className="font-mono text-[10px] font-bold">
-                        [{badge.symbol}]
-                      </span>
-                      {badge.label}
+                      <span
+                        aria-hidden="true"
+                        className={`h-2 w-2 rounded-full ${status.dotClass}`}
+                      />
+                      {status.label}
                     </span>
                   </div>
 
-                  <dl className="grid gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 px-3 py-2.5 text-[11px] sm:grid-cols-3">
+                  <dl className="grid gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 px-3 py-2.5 text-xs sm:grid-cols-3">
                     <div>
-                      <dt className="text-slate-500">Last Heartbeat</dt>
+                      <dt className="text-slate-500">Last heartbeat</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         {formatJstDateTime(sensor.last_heartbeat_at)}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-slate-500">Last Observed Event</dt>
+                      <dt className="text-slate-500">Last observed event</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         {formatJstDateTime(sensor.last_event_at)}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-slate-500">Last Recorded Error</dt>
+                      <dt className="text-slate-500">Last recorded error</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         {sensor.last_error_at ? formatJstDateTime(sensor.last_error_at) : "None"}
                       </dd>
@@ -204,13 +194,13 @@ export default async function SensorsPage() {
                   </dl>
 
                   <div>
-                    <p className="text-[11px] font-medium text-slate-500">Monitored Services</p>
+                    <p className="text-xs font-medium text-slate-500">Monitored services</p>
                     {sensor.monitored_services.length === 0 ? (
                       <p className="mt-1 text-xs text-slate-500">
                         Service list not reported in sensor metadata.
                       </p>
                     ) : (
-                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
                         {sensor.monitored_services.map((service) => (
                           <ProtocolBadge key={service} protocol={service} />
                         ))}
@@ -226,19 +216,19 @@ export default async function SensorsPage() {
 
       <Panel>
         <PanelHeader
-          title="Coverage & Status Intervals (Past 30 Days)"
+          title="Coverage & status intervals (past 30 days)"
           subtitle="Internal host logs are excluded from public status records"
         />
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                <th className="px-4 py-2.5">Status</th>
-                <th className="px-3 py-2.5">Sensor</th>
-                <th className="px-3 py-2.5">Started (JST)</th>
-                <th className="px-3 py-2.5">Ended (JST)</th>
-                <th className="px-4 py-2.5">Duration</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-medium text-slate-500">
+                <th className="px-4 py-2.5 font-medium">Status</th>
+                <th className="px-3 py-2.5 font-medium">Sensor</th>
+                <th className="px-3 py-2.5 font-medium">Started (JST)</th>
+                <th className="px-3 py-2.5 font-medium">Ended (JST)</th>
+                <th className="px-4 py-2.5 font-medium">Duration</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -250,17 +240,18 @@ export default async function SensorsPage() {
                 </tr>
               ) : (
                 data.statusEvents.map((ev) => {
-                  const badge = EVENT_STATUS_BADGE[ev.status];
+                  const status = EVENT_STATUS_STYLE[ev.status];
                   return (
                     <tr key={ev.id} className="transition-colors hover:bg-slate-50/80">
                       <td className="whitespace-nowrap px-4 py-2.5">
                         <span
-                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${badge.classes}`}
+                          className={`inline-flex items-center gap-1.5 font-medium ${status.textClass}`}
                         >
-                          <span aria-hidden="true" className="font-mono text-[10px] font-bold">
-                            [{badge.symbol}]
-                          </span>
-                          {badge.label}
+                          <span
+                            aria-hidden="true"
+                            className={`h-2 w-2 rounded-full ${status.dotClass}`}
+                          />
+                          {status.label}
                         </span>
                       </td>
                       <td
