@@ -53,6 +53,13 @@ describe("aggregate totals", () => {
     assert.equal(collected.rows.length, 2000);
   });
 
+  it("clamps page range to maxRows when maxRows is not a multiple of pageSize", async () => {
+    const stored = Array.from({ length: 1600 }, (_, index) => index);
+    const collected = await collectPages(async (from, to) => stored.slice(from, to + 1), 1000, 1500);
+    assert.equal(collected.complete, false);
+    assert.equal(collected.rows.length, 1500);
+  });
+
   it("refuses synthetic observations when Supabase is not configured", async () => {
     const previousMock = process.env.USE_MOCK;
     const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -61,6 +68,7 @@ describe("aggregate totals", () => {
     delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     await assert.rejects(() => getOverviewData(), /Supabase public configuration is missing/);
+    await assert.rejects(() => getEventDetail("not-a-uuid"), /Supabase public configuration is missing/);
     process.env.USE_MOCK = previousMock;
     if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
     else process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
@@ -74,6 +82,7 @@ describe("aggregate totals", () => {
     process.env.USE_MOCK = "true";
     process.env.VERCEL_ENV = "production";
     await assert.rejects(() => getOverviewData(), /USE_MOCK is set in production/);
+    await assert.rejects(() => getEventDetail("not-a-uuid"), /USE_MOCK is set in production/);
     if (previousMock === undefined) delete process.env.USE_MOCK;
     else process.env.USE_MOCK = previousMock;
     if (previousVercelEnv === undefined) delete process.env.VERCEL_ENV;

@@ -88,6 +88,9 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                 ? "Daily totals come from every rollup row in the UTC window. The bucket sum is the period total. A zero day has no stored rollup."
                 : "Totals are counted from stored events. A zero bucket has no stored observation."
             : "The aggregate read stopped early. Bucket totals are partial and are not an exact period count.",
+          data.rollupPendingEvents > 0
+            ? `${formatCount(data.rollupPendingEvents)} recent or unclassified events in this window are pending the next 15m rollup.`
+            : null,
         ]
           .filter((line) => line !== null)
           .join(" ")}

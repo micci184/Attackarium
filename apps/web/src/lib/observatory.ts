@@ -31,6 +31,7 @@ import {
   topHttpPaths,
   topPatterns,
   topPatternsFromCounts,
+  utcDateString,
   utcHourBucketStart,
 } from "./dashboard-metrics.ts";
 import {
@@ -74,7 +75,7 @@ export function evaluateSensorHealth(
   return "healthy";
 }
 
-const SAMPLE_EVENT_LIMIT = 200;
+const SAMPLE_EVENT_LIMIT = 1000;
 
 function protocolShare(
   rows: Iterable<{ protocol: Protocol; eventCount: number }>,
@@ -224,6 +225,7 @@ export async function getOverviewData(): Promise<OverviewData> {
       sampled24hCount: MOCK_EVENTS.length,
       is24hBreakdownSampled: false,
       aggregateComplete: true,
+      rollupPendingEvents24h: 0,
       uniqueCountries24h: summary.uniqueCountries,
       activeSensorCount: sensors.filter((s) => s.is_active).length,
       healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
@@ -325,9 +327,11 @@ export async function getOverviewData(): Promise<OverviewData> {
     (event) => isCoverageGapStatus(event.status) && event.ended_at === null,
   );
 
+  const totalEvents24h = sumTrendBuckets(currentSeries);
+
   return {
     sourceMode: "supabase",
-    totalEvents24h: sumTrendBuckets(currentSeries),
+    totalEvents24h,
     priorEvents24h: priorRows.reduce((sum, row) => sum + row.event_count, 0),
     coverageGapIn24h,
     coverageGapInPrior24h,
@@ -335,6 +339,7 @@ export async function getOverviewData(): Promise<OverviewData> {
     sampled24hCount: sampleRows.length,
     is24hBreakdownSampled: sampleCount > sampleRows.length,
     aggregateComplete: aggregatePage.complete,
+    rollupPendingEvents24h: Math.max(0, sampleCount - totalEvents24h),
     uniqueCountries24h: summary.uniqueCountries,
     activeSensorCount: sensors.filter((s) => s.is_active).length,
     healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
@@ -366,8 +371,15 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
 
   const days = periodDayCount(period);
   const sinceDate = dailyWindowStartDate(nowMs, days);
+  const endDate = utcDateString(nowMs);
+  const hourWindowStartMs = utcHourBucketStart(nowMs) - 23 * HOUR_MS;
+  const hourWindowEndMs = utcHourBucketStart(nowMs);
   const seriesStartMs =
-    period === "24h" ? windowStartMs : Date.parse(`${sinceDate}T00:00:00.000Z`);
+    period === "24h"
+      ? client
+        ? hourWindowStartMs
+        : windowStartMs
+      : Date.parse(`${sinceDate}T00:00:00.000Z`);
 
   let dailyStats = MOCK_DAILY_STATS;
   let recentEvents = MOCK_EVENTS;
@@ -384,10 +396,10 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
 
   if (client) {
     sourceMode = "supabase";
-    const sinceIso = new Date(windowStartMs).toISOString();
+    const sinceIso = new Date(seriesStartMs).toISOString();
     const statusSinceIso = new Date(seriesStartMs).toISOString();
-    const hourStart = new Date(utcHourBucketStart(nowMs) - 23 * HOUR_MS).toISOString();
-    const hourEnd = new Date(utcHourBucketStart(nowMs)).toISOString();
+    const hourStart = new Date(hourWindowStartMs).toISOString();
+    const hourEnd = new Date(hourWindowEndMs).toISOString();
     const [statsPage, hourPage, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
       period === "24h"
         ? Promise.resolve({ rows: [] as Array<z.infer<typeof PublicDailyStatSchema>>, complete: true })
@@ -397,6 +409,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
                 .from("public_daily_stats")
                 .select("date_utc, sensor_id, protocol, event_type, event_count, unique_source_count")
                 .gte("date_utc", sinceDate)
+                .lte("date_utc", endDate)
                 .order("date_utc", { ascending: true })
                 .order("sensor_id", { ascending: true })
                 .order("protocol", { ascending: true })
@@ -469,7 +482,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
           return ms >= windowStartMs && ms <= nowMs;
         })
       : recentEvents;
-  const windowStats = dailyStats.filter((row) => row.date_utc >= sinceDate);
+  const windowStats = dailyStats.filter((row) => row.date_utc >= sinceDate && row.date_utc <= endDate);
   const useAggregateSeries = sourceMode === "supabase";
   const series = useAggregateSeries
     ? period === "24h"
@@ -552,8 +565,15 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
         ? "events"
         : "daily_stats",
     aggregateComplete,
+    rollupPendingEvents:
+      useAggregateSeries && period === "24h"
+        ? Math.max(0, eventMatchCount - sumTrendBuckets(annotatedSeries))
+        : 0,
     historyStartedAt,
-    dataUpdatedAt: latestTimestamp(windowEvents.map((event) => event.received_at)),
+    dataUpdatedAt: latestTimestamp([
+      ...hourAggregates.map((row) => row.updated_at),
+      ...windowEvents.map((event) => event.received_at),
+    ]),
     registeredSensorCount,
     isEventSampled: eventMatchCount > windowEvents.length,
     coverageGaps,
@@ -669,16 +689,16 @@ export async function getPaginatedEvents(options: {
 const UUID_CHECK = z.uuid();
 
 export async function getEventDetail(id: string): Promise<EventDetailData> {
+  const client = getPublicSupabaseClient();
+
   if (!UUID_CHECK.safeParse(id).success) {
     return {
-      sourceMode: mockModeRequested() ? "mock" : "supabase",
+      sourceMode: client ? "supabase" : "mock",
       event: null,
       detections: [],
       cveMatches: [],
     };
   }
-
-  const client = getPublicSupabaseClient();
 
   if (!client) {
     const event = MOCK_EVENTS.find((e) => e.id === id) ?? null;

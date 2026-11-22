@@ -164,6 +164,8 @@ export interface OverviewData {
   is24hBreakdownSampled: boolean;
   /** False when an aggregate read stopped at the safety cap. Totals are then partial. */
   aggregateComplete: boolean;
+  /** Events in the 24h UTC window not yet reflected in hourly rollups (e.g. recent <15m or unclassified). */
+  rollupPendingEvents24h: number;
   uniqueCountries24h: number;
   activeSensorCount: number;
   healthySensorCount: number;
@@ -182,6 +184,8 @@ export interface TrendsData {
   series: TrendBucket[];
   seriesSource: "events" | "daily_stats" | "event_aggregates";
   aggregateComplete: boolean;
+  /** Events in the active 24h UTC window not yet reflected in hourly rollups. */
+  rollupPendingEvents: number;
   historyStartedAt: string | null;
   dataUpdatedAt: string | null;
   registeredSensorCount: number;

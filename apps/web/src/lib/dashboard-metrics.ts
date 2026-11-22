@@ -105,10 +105,12 @@ export async function collectPages<T>(
   const rows: T[] = [];
   let from = 0;
   while (from < maxRows) {
-    const page = await fetchPage(from, from + pageSize - 1);
+    const to = Math.min(from + pageSize - 1, maxRows - 1);
+    const expected = to - from + 1;
+    const page = await fetchPage(from, to);
     rows.push(...page);
-    if (page.length < pageSize) return { rows, complete: true };
-    from += pageSize;
+    if (page.length < expected) return { rows, complete: true };
+    from += expected;
   }
   return { rows, complete: false };
 }
