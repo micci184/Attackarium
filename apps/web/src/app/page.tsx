@@ -328,6 +328,7 @@ export default async function OverviewPage() {
 
       <PatternLists
         patterns={data.patterns24h}
+        cveContext={data.patternCveContext24h}
         httpPaths={data.httpPaths24h}
         sampledNote={
           data.is24hBreakdownSampled

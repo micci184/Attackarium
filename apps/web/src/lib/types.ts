@@ -111,9 +111,65 @@ export const PublicEventCveMatchSchema = z.object({
   epss_score: z.coerce.number().nullable(),
   epss_percentile: z.coerce.number().nullable(),
   epss_date: z.string().nullable(),
+  evaluated_at: z.string().nullable().optional().default(null),
 });
 
 export type PublicEventCveMatch = z.infer<typeof PublicEventCveMatchSchema>;
+
+export const PublicVulnerabilitySchema = z.object({
+  cve_id: z.string(),
+  description: z.string().nullable(),
+  vendor: z.string().nullable(),
+  product: z.string().nullable(),
+  kev_present: z.boolean(),
+  kev_updated_at: z.string().nullable(),
+  epss_score: z.coerce.number().nullable(),
+  epss_percentile: z.coerce.number().nullable(),
+  epss_date: z.string().nullable(),
+  source_updated_at: z.string().nullable(),
+  matched_event_count: z.coerce.number().int().nonnegative(),
+  max_confidence: z.coerce.number().min(0).max(1).nullable(),
+  last_matched_at: z.string().nullable(),
+  published_at: z.string().nullable().optional().default(null),
+  cvss_score: z.coerce.number().nullable().optional().default(null),
+  cvss_vector: z.string().nullable().optional().default(null),
+  kev_added_at: z.string().nullable().optional().default(null),
+});
+
+export type PublicVulnerability = z.infer<typeof PublicVulnerabilitySchema>;
+
+export interface EnrichedEventCveMatch extends PublicEventCveMatch {
+  description: string | null;
+  vendor: string | null;
+  product: string | null;
+  published_at: string | null;
+  cvss_score: number | null;
+  cvss_vector: string | null;
+  kev_added_at: string | null;
+  kev_updated_at: string | null;
+  source_updated_at: string | null;
+}
+
+export interface PatternCveContext {
+  cveId: string;
+  ruleId: string;
+  ruleVersion: string;
+  maxConfidence: number;
+  matchedEventCount: number;
+  lastMatchedAt: string;
+  kevPresent: boolean;
+  kevAddedAt: string | null;
+  kevUpdatedAt: string | null;
+  epssScore: number | null;
+  epssPercentile: number | null;
+  epssDate: string | null;
+  cvssScore: number | null;
+  vendor: string | null;
+  product: string | null;
+  description: string | null;
+  reason: string;
+  eventsHref: string;
+}
 
 export const PublicDailyStatSchema = z.object({
   date_utc: z.string(),
@@ -190,6 +246,7 @@ export interface OverviewData {
   protocolBreakdown: Array<{ protocol: Protocol; count: number; sharePct: number }>;
   regionTotals24h: Array<{ country: string; count: number }>;
   patterns24h: PatternTotal[];
+  patternCveContext24h: PatternCveContext[];
   httpPaths24h: HttpPathTotal[];
   dataUpdatedAt: string | null;
   recentEvents: PublicEvent[];
@@ -213,6 +270,7 @@ export interface TrendsData {
   regionTotals: Array<{ country: string; count: number }>;
   asnTotals: Array<{ asn: string; count: number }>;
   patterns: PatternTotal[];
+  patternCveContext: PatternCveContext[];
   httpPaths: HttpPathTotal[];
 }
 
@@ -245,5 +303,5 @@ export interface EventDetailData {
   sourceMode: "mock" | "supabase";
   event: PublicEvent | null;
   detections: PublicDetection[];
-  cveMatches: PublicEventCveMatch[];
+  cveMatches: EnrichedEventCveMatch[];
 }

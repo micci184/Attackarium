@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it } from "node:test";
-import { formatJstDateTime, safeDisplayText } from "./format.ts";
+import {
+  formatCvss,
+  formatEpssPercentile,
+  formatJstDateTime,
+  formatUtcDate,
+  safeDisplayText,
+} from "./format.ts";
 import {
   annotateSeriesCoverage,
   buildDailySeries,
@@ -18,6 +26,8 @@ import {
   topPatterns,
 } from "./dashboard-metrics.ts";
 import {
+  buildPatternCveContext,
+  enrichEventCveMatches,
   evaluateSensorHealth,
   getEventDetail,
   getOverviewData,
@@ -25,6 +35,7 @@ import {
   getSensorsData,
   getTrendsData,
 } from "./observatory.ts";
+import { MOCK_CVE_MATCHES, MOCK_VULNERABILITIES } from "./mock-data.ts";
 import { buildWorldMapData } from "./world-map.ts";
 
 describe("aggregate totals", () => {
@@ -393,5 +404,82 @@ describe("observatory data layer (mock mode)", () => {
     assert.equal(weekTrends.coverageGaps.length, 1);
     const nov19 = weekTrends.series.find((b) => b.bucketStart === "2026-11-19");
     assert.equal(nov19?.hasCoverageGap, true);
+  });
+
+  it("gates candidate CVE context on versioned rule evidence and never lists ungrounded CVEs", async () => {
+    const previousMock = process.env.USE_MOCK;
+    process.env.USE_MOCK = "true";
+    try {
+      const overview = await getOverviewData();
+      const trends = await getTrendsData("7d");
+
+      // Only the matched CVE appears; the unmatched catalog row (CVE-2024-99999) is excluded.
+      assert.deepEqual(
+        overview.patternCveContext24h.map((item) => item.cveId),
+        ["CVE-2023-1389"],
+      );
+      assert.deepEqual(
+        trends.patternCveContext.map((item) => item.cveId),
+        ["CVE-2023-1389"],
+      );
+
+      const ctx = overview.patternCveContext24h[0];
+      assert.ok(ctx);
+      assert.equal(ctx.ruleId, "http-cgi-luci-probe");
+      assert.equal(ctx.ruleVersion, "1.0.0");
+      assert.equal(ctx.maxConfidence, 0.62);
+      assert.equal(ctx.kevPresent, true);
+      assert.equal(ctx.epssDate, "2026-11-21");
+      assert.equal(ctx.cvssScore, 8.8);
+      assert.equal(ctx.eventsHref, "/events?category=suspected_cve_probe");
+
+      // Matched event detail includes enriched NVD/KEV/EPSS metadata.
+      const matchedDetail = await getEventDetail("10000000-0000-4000-8000-000000000004");
+      assert.equal(matchedDetail.cveMatches.length, 1);
+      const match = matchedDetail.cveMatches[0];
+      assert.ok(match);
+      assert.equal(match.cve_id, "CVE-2023-1389");
+      assert.equal(match.rule_id, "http-cgi-luci-probe");
+      assert.equal(match.rule_version, "1.0.0");
+      assert.equal(match.cvss_score, 8.8);
+      assert.equal(match.epss_date, "2026-11-21");
+      assert.ok(match.description?.includes("Synthetic NVD summary"));
+      assert.ok(match.reason.includes("not proof of exploitation"));
+
+      // Unmatched event has zero candidate CVEs.
+      const plainDetail = await getEventDetail("10000000-0000-4000-8000-000000000001");
+      assert.equal(plainDetail.cveMatches.length, 0);
+
+      // Pure helpers drop matches lacking a backing detection or rule version.
+      const droppedOrphan = enrichEventCveMatches(
+        MOCK_CVE_MATCHES,
+        [],
+        MOCK_VULNERABILITIES,
+      );
+      assert.equal(droppedOrphan.length, 0);
+
+      const droppedUnversioned = buildPatternCveContext(
+        [{ ...MOCK_CVE_MATCHES[0], rule_version: "" }],
+        MOCK_VULNERABILITIES,
+      );
+      assert.equal(droppedUnversioned.length, 0);
+
+      // Formatters handle valid values and nulls cleanly.
+      assert.equal(formatEpssPercentile(0.996), "99.6th pct");
+      assert.equal(formatEpssPercentile(null), "N/A");
+      assert.equal(formatCvss(8.8), "8.8 / 10");
+      assert.equal(formatCvss(null), "N/A");
+      assert.equal(formatUtcDate("2023-05-01T00:00:00.000Z"), "2023-05-01");
+
+      // MVP non-goal: no standalone /vulnerabilities route exists.
+      const standaloneVulnsPage = resolve(
+        import.meta.dirname,
+        "../app/vulnerabilities/page.tsx",
+      );
+      assert.equal(existsSync(standaloneVulnsPage), false);
+    } finally {
+      if (previousMock === undefined) delete process.env.USE_MOCK;
+      else process.env.USE_MOCK = previousMock;
+    }
   });
 });

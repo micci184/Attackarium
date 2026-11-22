@@ -47,6 +47,24 @@ export function formatEpss(score: number | null | undefined): string {
   return `${(score * 100).toFixed(2)}%`;
 }
 
+export function formatEpssPercentile(percentile: number | null | undefined): string {
+  if (percentile === null || percentile === undefined || Number.isNaN(percentile)) return "N/A";
+  return `${(percentile * 100).toFixed(1)}th pct`;
+}
+
+export function formatCvss(score: number | null | undefined): string {
+  if (score === null || score === undefined || Number.isNaN(score)) return "N/A";
+  return `${score.toFixed(1)} / 10`;
+}
+
+export function formatUtcDate(isoString: string | null | undefined): string {
+  if (!isoString) return "—";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoString)) return isoString;
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toISOString().slice(0, 10);
+}
+
 /**
  * Strips non-printable control chars before rendering untrusted strings as text.
  * React already escapes HTML entities; this additionally guards against

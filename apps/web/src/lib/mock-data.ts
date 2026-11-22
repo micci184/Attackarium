@@ -7,6 +7,7 @@ import type {
   PublicEventCveMatch,
   PublicSensor,
   PublicSensorStatusEvent,
+  PublicVulnerability,
 } from "./types.ts";
 
 // Deterministic synthetic fixtures for local/preview UI verification.
@@ -221,6 +222,50 @@ export const MOCK_CVE_MATCHES: PublicEventCveMatch[] = [
     epss_score: 0.9412,
     epss_percentile: 0.996,
     epss_date: "2026-11-21",
+    evaluated_at: new Date(BASE_MS - 3 * 14 * 60 * 1000 + 8_000).toISOString(),
+  },
+];
+
+export const MOCK_VULNERABILITIES: PublicVulnerability[] = [
+  {
+    cve_id: "CVE-2023-1389",
+    description:
+      "Synthetic NVD summary: command-injection pattern associated with router web management interfaces.",
+    vendor: "tp-link",
+    product: "archer_ax21",
+    kev_present: true,
+    kev_added_at: "2023-05-01T00:00:00.000Z",
+    kev_updated_at: "2026-11-21T08:15:00.000Z",
+    epss_score: 0.9412,
+    epss_percentile: 0.996,
+    epss_date: "2026-11-21",
+    source_updated_at: "2026-11-21T08:20:00.000Z",
+    matched_event_count: 1,
+    max_confidence: 0.62,
+    last_matched_at: new Date(BASE_MS - 3 * 14 * 60 * 1000 + 8_000).toISOString(),
+    published_at: "2023-04-27T17:15:00.000Z",
+    cvss_score: 8.8,
+    cvss_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+  },
+  {
+    // Unmatched catalog entry: must never surface in evidence-gated views.
+    cve_id: "CVE-2024-99999",
+    description: "Unmatched synthetic vulnerability that should never be displayed.",
+    vendor: "example",
+    product: "unmatched",
+    kev_present: true,
+    kev_added_at: "2024-01-01T00:00:00.000Z",
+    kev_updated_at: "2026-11-21T08:15:00.000Z",
+    epss_score: 0.99,
+    epss_percentile: 0.999,
+    epss_date: "2026-11-21",
+    source_updated_at: "2026-11-21T08:20:00.000Z",
+    matched_event_count: 0,
+    max_confidence: null,
+    last_matched_at: null,
+    published_at: "2024-01-01T00:00:00.000Z",
+    cvss_score: 9.8,
+    cvss_vector: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
   },
 ];
 
