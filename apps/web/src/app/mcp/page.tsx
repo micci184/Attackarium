@@ -166,9 +166,10 @@ export default async function McpPage({
         </pre>
 
         <p className="mt-3 text-xs text-slate-500">
-          Read-only scope: <code className="font-mono">mcp:read</code>.
-          Requests require sign-in, current Terms acceptance, an active account,
-          operator-approved MCP entitlement, and OAuth client consent.
+          Minimal OAuth scope: <code className="font-mono">openid</code>{" "}
+          (read-only access is enforced server-side). Requests require sign-in,
+          current Terms acceptance, an active account, operator-approved MCP
+          entitlement, and OAuth client consent.
         </p>
       </section>
 

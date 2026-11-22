@@ -15,7 +15,7 @@ describe("OAuth 2.1 metadata and redirect sanitization", () => {
     assert.deepEqual(metadata, {
       resource: "https://attackarium.vercel.app/api/mcp",
       authorization_servers: ["https://example.supabase.co/auth/v1"],
-      scopes_supported: ["mcp:read"],
+      scopes_supported: ["openid"],
       bearer_methods_supported: ["header"],
       resource_documentation: "https://attackarium.vercel.app/mcp",
     });
