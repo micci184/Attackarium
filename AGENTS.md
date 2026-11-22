@@ -34,18 +34,19 @@ and publishes sanitized observations and trends over time:
 5. `docs/DATA_MODEL.md` — tables, private data, RLS, retention, and indexes.
 6. `docs/DECISIONS.md` — architecture decision log (`ADR-001`–`ADR-024`). Provisioning still needs explicit approval.
 
-**Repository status:** Phase 1 MVP foundation (PostgreSQL migrations/RLS, ingest
-Edge Function, synthetic dashboard, sensor prototypes, CI) is on `main`.
-Initial AWS region is `us-east-1` (N. Virginia).
-**No cloud resources, hosted database, public dashboard, or live honeypot have
-been provisioned or deployed yet.**
+**Repository status:** Phase 1 collection is live on one operator-managed EC2
+sensor in `us-east-1` (N. Virginia), with Supabase storage and a public Vercel
+dashboard. Closing the Phase 0 issue does not authorize further AWS, Supabase,
+or Vercel changes; each new resource or exposure still needs explicit approval.
 
 ## Scope boundaries (MVP vs non-goals)
 
-- **MVP priority:** Phase 1 (Observation Platform MVP — reliably collect and store
-  original observations for at least 30 days) → Phase 2 (Public Service MVP —
-  basic CVE/KEV/EPSS context, read-only Remote MCP, operator-only MCP Usage,
-  draft daily AI analysis) → 30-day value evaluation.
+- **MVP priority:** Phase 1 (Observation Platform MVP — reliably collect, store,
+  and accurately aggregate original observations) → 30-day value evaluation of
+  those observations. Phase 2 (Public Service MVP — basic CVE/KEV/EPSS context,
+  read-only Remote MCP, operator-only MCP Usage, draft daily AI analysis) is a
+  separate later evaluation of whether that context improved understanding.
+  Phase 2 completion is not a prerequisite for the Phase 1 evaluation.
 - **Explicit non-goals (do not implement in MVP):** user-contributed sensors
   (GreyNoise Project Swarm model), general-purpose public REST APIs, T-Pot /
   Elastic / Kibana, full SIEM, multi-region rollout, exploit/malware execution,
@@ -59,8 +60,8 @@ been provisioned or deployed yet.**
 - Put the Next.js/TypeScript app in `apps/web`, Supabase Edge Functions in
   `supabase/functions`, migrations in `supabase/migrations`, sensor components in
   `sensors`, scheduled analysis in `jobs`, and infrastructure in `infra`.
-- Keep repository documentation, source comments, and UI copy in **English**
-  (GitHub Issues remain in Japanese).
+- Keep repository documentation, source comments, UI copy, pull requests, and
+  GitHub Issues in **English**.
 - Use the official provider Skills when installed. Consult
   `supabase-postgres-best-practices` **before** SQL/migration/RLS changes,
   `supabase` for hosted Supabase/Edge Functions, `vercel-react-best-practices`

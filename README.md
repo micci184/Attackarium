@@ -66,8 +66,11 @@ flowchart TD
 - **Phase 2 — Public Service MVP:** Add evidence-backed CVE/KEV/EPSS context,
   OAuth 2.1 Remote MCP (3 read-only tools), operator-only Admin Console & MCP
   Usage, and human-reviewed AI daily analysis + X post drafts.
-- **Evaluation — 30-Day Value Validation:** Assess real findings, temporal shifts,
-  and dashboard/MCP usefulness honestly without arbitrary event-count targets.
+- **Evaluation — 30-Day Value Validation:** After 30 days of Phase 1 collection,
+  assess what was observed and whether the findings were meaningful. After Phase 2
+  is public, separately assess whether CVE context, Remote MCP, and AI drafts
+  improved that understanding. Do not wait for Phase 2 before the first evaluation,
+  and do not set event-count targets.
 
 ## Repository layout
 
