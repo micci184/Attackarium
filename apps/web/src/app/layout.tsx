@@ -3,9 +3,9 @@ import { NavHeader } from "@/components/nav-header";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Attackarium — Honeypot Observatory",
+  title: "Attackarium — Threat Observatory",
   description:
-    "Noncommercial attack observatory publishing sanitized honeypot telemetry and trends.",
+    "Noncommercial threat observatory publishing sanitized honeypot telemetry and trends.",
 };
 
 export const viewport: Viewport = {
@@ -45,7 +45,7 @@ export default function RootLayout({
                   <span translate="no" className="font-semibold text-slate-800">
                     Attackarium
                   </span>{" "}
-                  — Noncommercial Honeypot Observatory
+                  — Noncommercial Threat Observatory
                 </span>
                 <span className="text-slate-500">
                   Observations reflect unsolicited sensor probes only and do not prove
