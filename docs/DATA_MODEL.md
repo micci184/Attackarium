@@ -30,9 +30,10 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | `epss_daily_scores` | `cve_id`, `score_date`, `epss_score`, `epss_percentile` | Primary key `(cve_id, score_date)`. One FIRST EPSS score per tracked CVE per date. Tracked means the KEV catalog plus CVEs already stored, not the full EPSS universe. Public view includes a row only when that CVE has an observation match |
 | `event_cve_matches` | `event_id`, `cve_id`, `detection_id`, `match_type`, `confidence`, `reason`, `evaluated_at` | Unique `(event_id, cve_id, detection_id)`; candidate hypothesis only. `evaluated_at` is the last evaluation time; `created_at` stays the insert time |
 | `daily_reports` | `id`, `date_utc`, `status`, `summary_md`, `x_post_draft`, `model_id`, `prompt_version`, `source_window_start`, `source_window_end`, `reviewed_at` | `draft` / `reviewed` / `rejected` / `published`; only `published` exposed via public view |
-| `user_mcp_entitlements` (Phase 2) | `user_id`, `terms_accepted_at`, `terms_version`, `mcp_enabled`, `is_suspended`, `updated_at` | Minimal authz state ONLY; never duplicate Supabase Auth emails/profiles or store PII |
-| `mcp_usage_buckets` (Phase 2) | `bucket_start`, `granularity`, `request_kind`, `tool_name`, `call_count`, `success_count`, `error_count`, `auth_failure_count`, `rate_limited_count`, `avg_latency_ms`, `active_user_count` | Admin-only aggregates; distinguish `initialize` vs `tool_call`; **never store prompts or tokens** |
-| `admin_audit_logs` (Phase 2) | `id`, `actor_user_id`, `action`, `target_type`, `target_id`, `metadata`, `created_at` | Append-only operator audit log; tamper-resistant, never publicly readable |
+| `user_mcp_entitlements` (Phase 2) | `user_id`, `terms_accepted_at`, `terms_version`, `mcp_enabled`, `is_suspended`, `updated_at` | Minimal authz state ONLY. `accept_mcp_terms` records Terms acceptance and cannot change `mcp_enabled` or `is_suspended`. Never duplicate Supabase Auth emails/profiles or store PII |
+| `mcp_usage_buckets` (Phase 2) | `bucket_start`, `granularity`, `request_kind`, `tool_name`, `call_count`, `success_count`, `error_count`, `auth_failure_count`, `rate_limited_count`, `total_latency_ms`, `active_user_count` | Admin-only aggregates. `request_kind` is `initialize` (empty `tool_name`) or `tool_call` (one of the 3 tools). Average latency is `total_latency_ms / call_count`. **Never store prompts, arguments, tokens, or user ids** |
+| `mcp_rate_limit_windows` (Phase 2) | `user_id`, `window_start`, `request_count`, `expires_at` | Short-lived per-user counters. Invisible to `anon` and `authenticated` |
+| `admin_audit_logs` (Phase 2) | `id`, `actor_user_id`, `action`, `target_type`, `target_id`, `metadata`, `created_at` | Append-only operator audit log. Triggers reject update, delete, and truncate for every role. `metadata` is at most 2 KB. Never publicly readable |
 
 ## Data minimization and breach blast-radius reduction
 
@@ -76,6 +77,7 @@ switch.
 - `daily_stats(date_utc DESC)`, `(sensor_id, date_utc DESC)`.
 - `ingest_receipts(expires_at)`, `(sensor_id, received_at DESC)`.
 - Phase 1 extension indexes: `attack_events(attack_category, observed_at DESC) WHERE attack_category IS NOT NULL`, `event_aggregates(granularity, bucket_start DESC)` plus `sensor_id`, `observed_patterns(pattern_type, last_seen_at DESC)`, `sensor_status_events(sensor_id, started_at DESC)`.
+- Phase 2 indexes: `mcp_usage_buckets(granularity, bucket_start DESC)`, `mcp_rate_limit_windows(expires_at)`, `admin_audit_logs(created_at DESC)`, `admin_audit_logs(actor_user_id, created_at DESC)`. `user_mcp_entitlements(user_id)` is the primary key used by the own-row policy.
 
 ## Access model
 
