@@ -27,12 +27,28 @@ export function MethodologyBanner({ sourceMode, sensorCount = 1 }: MethodologyBa
           Metrics reflect unsolicited Internet probes observed on operator-managed
           low-interaction decoys in US East (N. Virginia), not global Internet attack
           volume. Source IPs, HTTP query values, credentials, and raw payloads are
-          excluded from public views. Candidate CVE, KEV, and EPSS links provide
-          analytical context and are{" "}
+          excluded from public views and are never stored in Supabase. Candidate
+          CVE, KEV, and EPSS links provide analytical context and are{" "}
           <strong className="font-medium text-slate-900">
             not proof of successful exploitation
           </strong>
           .
+        </p>
+        <p className="mt-2 text-slate-500">
+          Retention &amp; abuse notices: Raw sensor logs on EC2 are deleted within
+          24 hours; sanitized events are retained for at least 30 days and daily
+          aggregates for at least 1 year. For security or abuse inquiries, contact
+          the operator via the public{" "}
+          <a
+            href="https://github.com/micci184/Attackarium/security"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#632ca6] underline hover:text-[#53238d]"
+          >
+            Attackarium GitHub Security page
+          </a>{" "}
+          (AWS infrastructure abuse notices are routed to the registered AWS
+          account owner).
         </p>
       </div>
     </details>
