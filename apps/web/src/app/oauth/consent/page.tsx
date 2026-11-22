@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { OAuthConsentActions } from "@/components/oauth-consent-actions";
+import { OAuthLoginButtons } from "@/components/oauth-login-buttons";
 import { createSupabaseAuthServerClient } from "@/lib/supabase-auth";
 
 export const dynamic = "force-dynamic";
@@ -67,27 +69,12 @@ export default async function OAuthConsentPage({
           additional profile PII.
         </p>
 
-        <div className="mt-5 flex flex-wrap gap-3">
-          <form action="/auth/login" method="POST">
-            <input type="hidden" name="provider" value="github" />
-            <input type="hidden" name="next" value={returnTo} />
-            <button
-              type="submit"
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Continue with GitHub
-            </button>
-          </form>
-          <form action="/auth/login" method="POST">
-            <input type="hidden" name="provider" value="google" />
-            <input type="hidden" name="next" value={returnTo} />
-            <button
-              type="submit"
-              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-            >
-              Continue with Google
-            </button>
-          </form>
+        <div className="mt-5">
+          <OAuthLoginButtons
+            nextPath={returnTo}
+            githubLabel="Continue with GitHub"
+            googleLabel="Continue with Google"
+          />
         </div>
       </section>
     );
@@ -179,29 +166,7 @@ export default async function OAuthConsentPage({
         .
       </p>
 
-      <form
-        action="/auth/oauth/decision"
-        method="POST"
-        className="mt-5 flex flex-wrap gap-3"
-      >
-        <input type="hidden" name="authorization_id" value={authorizationId} />
-        <button
-          type="submit"
-          name="decision"
-          value="approve"
-          className="rounded-md bg-[#632ca6] px-4 py-2 text-sm font-medium text-white hover:bg-[#53238d]"
-        >
-          Approve read-only access
-        </button>
-        <button
-          type="submit"
-          name="decision"
-          value="deny"
-          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          Deny
-        </button>
-      </form>
+      <OAuthConsentActions authorizationId={authorizationId} />
     </section>
   );
 }

@@ -1,4 +1,5 @@
 import { headers } from "next/headers";
+import { OAuthLoginButtons } from "@/components/oauth-login-buttons";
 import {
   createSupabaseAuthServerClient,
   getRequiredTermsVersion,
@@ -228,28 +229,7 @@ export default async function McpPage({
               address, or phone number) and does not log MCP prompts or auth
               tokens.
             </p>
-            <div className="flex flex-wrap gap-3">
-              <form action="/auth/login" method="POST">
-                <input type="hidden" name="provider" value="github" />
-                <input type="hidden" name="next" value="/mcp" />
-                <button
-                  type="submit"
-                  className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-                >
-                  Sign in with GitHub
-                </button>
-              </form>
-              <form action="/auth/login" method="POST">
-                <input type="hidden" name="provider" value="google" />
-                <input type="hidden" name="next" value="/mcp" />
-                <button
-                  type="submit"
-                  className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50"
-                >
-                  Sign in with Google
-                </button>
-              </form>
-            </div>
+            <OAuthLoginButtons nextPath="/mcp" />
           </div>
         ) : (
           <div className="mt-4 space-y-5">
