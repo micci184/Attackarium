@@ -53,13 +53,13 @@ _JNDI_GENERIC_RE = re.compile(r"\$\{\s*jndi\s*:")
 
 # 2. SQL Injection (generic technique, no CVE)
 _SQL_COMMENT_RE = re.compile(r"/\*[^*]{0,32}\*/")
-_SQLI_UNION_SELECT_RE = re.compile(r"\bunion(?:\s+all)?\s+select\b")
+_SQLI_UNION_SELECT_RE = re.compile(r"\bunion(?:[\s+]{1,16}all)?[\s+]{1,16}select\b")
 _SQLI_TIME_BASED_RE = re.compile(
-    r"(?:\b(?:sleep|benchmark)\s*\(\s*\d{1,4}|\bwaitfor\s+delay\s+['\"])"
+    r"(?:\b(?:sleep|benchmark)[\s+]{0,16}\([\s+]{0,16}\d{1,4}|\bwaitfor[\s+]{1,16}delay[\s+]{1,16}['\"])"
 )
 _SQLI_INFO_SCHEMA_RE = re.compile(r"\binformation_schema\.(?:tables|columns|schemata)\b")
 _SQLI_TAUTOLOGY_RE = re.compile(
-    r"(?:'|\"|\))\s*or\s+(?:'1'\s*=\s*'1'|\"1\"\s*=\s*\"1\"|1\s*=\s*1)\s*(?:--|#|$)"
+    r"(?:'|\"|\))[\s+]{0,16}or[\s+]{1,16}(?:'1'[\s+]{0,8}=[\s+]{0,8}'1'|\"1\"[\s+]{0,8}=[\s+]{0,8}\"1\"|1[\s+]{0,8}=[\s+]{0,8}1)[\s+]{0,8}(?:--|#|$)"
 )
 
 # 3. Path Traversal (generic technique, no CVE)
@@ -91,7 +91,9 @@ _SPRING4SHELL_CLASSLOADER_RE = re.compile(
 )
 
 # 7. PHP-CGI Argument Injection (CVE-2024-4577)
-_PHP_CGI_SOFT_HYPHEN_RE = re.compile(r"%ad\s*d\b")
+_PHP_CGI_SOFT_HYPHEN_RE = re.compile(
+    r"%ad(?:\s|\+|%20){0,4}d(?:\b|allow_url_include|auto_prepend_file)"
+)
 _PHP_CGI_DANGEROUS_DIRECTIVE_RE = re.compile(
     r"(?:allow_url_include|auto_prepend_file)"
 )
