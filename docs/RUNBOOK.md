@@ -59,6 +59,24 @@ database password.
    (350 MB), shorten detailed-event retention before daily aggregates. Do not
    keep sanitized events for less than 30 days without a new decision.
 
+## Remote MCP OAuth 2.1 setup (Phase 2)
+
+Before enabling live Remote MCP access, configure Supabase Auth and Vercel
+server-side environment variables:
+
+1. **Supabase Auth providers:** Enable Google and/or GitHub OAuth providers and
+   add `<SITE_URL>/auth/callback` to the allowed redirect URLs.
+2. **Supabase Auth OAuth 2.1 Server:** Enable the OAuth 2.1 Server (Authorization
+   Code + PKCE) with authorization path `/oauth/consent`, asymmetric JWT signing
+   (RS256/ES256), and read-only scope `mcp:read`.
+3. **Vercel environment variables:** Set `NEXT_PUBLIC_SITE_URL`,
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AUTH_ISSUER`,
+   `MCP_REQUIRED_TERMS_VERSION`, and `MCP_RATE_LIMIT_PER_MINUTE`. Never place
+   `SUPABASE_SERVICE_ROLE_KEY` in `NEXT_PUBLIC_*`.
+4. **Entitlements:** Signing in does not grant MCP access. Grant or revoke
+   `user_mcp_entitlements.mcp_enabled` (and `is_suspended`) server-side only.
+
 ## What this runbook does not add
 
 - A second AWS account, a dedicated abuse product, or a status page.

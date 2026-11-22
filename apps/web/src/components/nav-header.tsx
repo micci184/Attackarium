@@ -68,6 +68,16 @@ const NAV_ITEMS: readonly NavItem[] = [
       </svg>
     ),
   },
+  {
+    href: "/mcp",
+    label: "MCP",
+    icon: (
+      <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" className="h-4 w-4 shrink-0">
+        <rect x="2.5" y="3.5" width="11" height="9" rx="1.8" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M5.5 7l1.8 1.5L5.5 10M8.8 10h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
 ];
 
 export function NavHeader() {
