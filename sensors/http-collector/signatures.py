@@ -30,6 +30,7 @@ MAX_DETECTIONS_PER_EVENT = 10
 
 VALID_CLASSIFICATIONS = frozenset({"indicator_match", "candidate_cve"})
 VALID_MATCH_STRENGTHS = frozenset({"high", "medium", "low"})
+CVE_ID_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 SENSITIVE_NAME_RE = re.compile(
@@ -141,6 +142,13 @@ class SignatureRule:
             raise ValueError(
                 f"Rule {self.signature_id} has classification='candidate_cve' without candidate_cves"
             )
+        if self.classification == "indicator_match" and self.candidate_cves:
+            raise ValueError(
+                f"Rule {self.signature_id} has classification='indicator_match' with candidate_cves"
+            )
+        for cve in self.candidate_cves:
+            if not CVE_ID_RE.match(cve):
+                raise ValueError(f"Rule {self.signature_id} has invalid CVE ID: {cve}")
 
 
 def safe_header_location(header_name: str) -> str:
@@ -205,13 +213,14 @@ def redact_jndi_references(value: str) -> str:
 
     redacted = _JNDI_PROTOCOL_URI_RE.sub("[REDACTED_JNDI_URI]", value)
     if has_jndi:
-        replaced = _JNDI_EXPRESSION_RE.sub("[REDACTED_JNDI]", redacted)
-        # If encoding or escaping hid literal ${...}, redact the whole value so
-        # attacker callback URLs cannot leak in encoded form.
-        if replaced == redacted:
-            return "[REDACTED_JNDI]"
-        redacted = replaced
-    elif redacted == value:
+        redacted = _JNDI_EXPRESSION_RE.sub("[REDACTED_JNDI]", redacted)
+
+    # Re-verify after literal substitution: if an encoded or obfuscated JNDI
+    # reference remains (e.g. mixed with a literal ${...}), redact the whole value.
+    recheck = normalize_for_inspection(redacted, max_chars=MAX_INSPECT_HEADER_VALUE_BYTES)
+    if _JNDI_GENERIC_RE.search(recheck) is not None:
+        return "[REDACTED_JNDI]"
+    if _JNDI_PROTOCOL_URI_RE.search(recheck) is not None:
         return "[REDACTED_JNDI_URI]"
     return redacted
 
