@@ -269,6 +269,50 @@ describe("syncThreatIntel", () => {
     await assert.rejects(client.getJson(KEV_FEED_URL), /HTTP 404/);
     assert.equal(calls, 1);
   });
+
+  it("deduplicates repeated EPSS CVE rows before upserting", async () => {
+    const repo = new MemoryRepo();
+    const result = await syncThreatIntel({
+      client: {
+        async getJson(url: string): Promise<unknown> {
+          if (url === KEV_FEED_URL) return kevPayload([{ id: "CVE-2024-0001" }]);
+          return {
+            status: "OK",
+            data: [
+              { cve: "CVE-2024-0001", epss: "0.100000000", percentile: "0.200000000", date: "2026-11-21" },
+              { cve: "CVE-2024-0001", epss: "0.500000000", percentile: "0.900000000", date: "2026-11-21" },
+            ],
+          };
+        },
+      },
+      repository: repo,
+      now: NOW,
+    });
+
+    assert.equal(result.epssUpserts, 1);
+    assert.equal(repo.rows.get("CVE-2024-0001")?.epssScore, 0.5);
+  });
+
+  it("rejects oversized feed responses without retrying", async () => {
+    let calls = 0;
+    const client = createResilientFeedClient(
+      async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ padding: "x".repeat(2_000) }), { status: 200 });
+      },
+      { maxRetries: 3, maxBytes: 512, sleep: async () => {} },
+    );
+    await assert.rejects(client.getJson(KEV_FEED_URL), /exceeds the 512 byte cap/);
+    assert.equal(calls, 1);
+  });
+
+  it("reports invalid JSON clearly", async () => {
+    const client = createResilientFeedClient(
+      async () => new Response("<html>gateway error</html>", { status: 200 }),
+      { maxRetries: 0, sleep: async () => {} },
+    );
+    await assert.rejects(client.getJson(KEV_FEED_URL), /not valid JSON/);
+  });
 });
 
 describe("SupabaseThreatIntelRepository", () => {

@@ -4,7 +4,9 @@
 import type { EpssUpsert, KevClear, KevUpsert, ThreatIntelRepository, TrackedCve } from "./core.ts";
 
 const PAGE_SIZE = 1_000;
+const MAX_READ_ROWS = 100_000;
 const WRITE_CHUNK = 500;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 interface RestRow {
   cve_id?: unknown;
@@ -27,16 +29,23 @@ export class SupabaseThreatIntelRepository implements ThreatIntelRepository {
   private readonly supabaseUrl: string;
   private readonly serviceRoleKey: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
-  constructor(supabaseUrl: string, serviceRoleKey: string, fetchImpl: typeof fetch) {
+  constructor(
+    supabaseUrl: string,
+    serviceRoleKey: string,
+    fetchImpl: typeof fetch,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ) {
     this.supabaseUrl = supabaseUrl;
     this.serviceRoleKey = serviceRoleKey;
     this.fetchImpl = fetchImpl;
+    this.timeoutMs = timeoutMs;
   }
 
   async listTrackedCves(): Promise<TrackedCve[]> {
     const tracked: TrackedCve[] = [];
-    for (let offset = 0; offset < 100_000; offset += PAGE_SIZE) {
+    for (let offset = 0; offset < MAX_READ_ROWS; offset += PAGE_SIZE) {
       const response = await this.request(
         `vulnerabilities?select=cve_id,kev_present&order=cve_id.asc&limit=${PAGE_SIZE}&offset=${offset}`,
         { method: "GET" },
@@ -51,9 +60,9 @@ export class SupabaseThreatIntelRepository implements ThreatIntelRepository {
         }
         tracked.push({ cveId: row.cve_id, kevPresent: row.kev_present });
       }
-      if (page.length < PAGE_SIZE) break;
+      if (page.length < PAGE_SIZE) return tracked;
     }
-    return tracked;
+    throw new Error(`Supabase vulnerabilities read exceeded the ${MAX_READ_ROWS} row cap.`);
   }
 
   async upsertKev(rows: KevUpsert[]): Promise<void> {
@@ -136,6 +145,7 @@ export class SupabaseThreatIntelRepository implements ThreatIntelRepository {
       method: init.method,
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) {
       const table = pathAndQuery.split("?")[0];

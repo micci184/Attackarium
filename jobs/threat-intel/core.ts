@@ -16,6 +16,7 @@ export const KEV_FEED_URL =
 export const EPSS_API_URL = "https://api.first.org/data/v1/epss";
 export const MAX_TRACKED_CVES = 20_000;
 export const DEFAULT_EPSS_BATCH_SIZE = 100;
+export const MAX_FEED_BYTES = 20 * 1024 * 1024;
 
 export interface TrackedCve {
   cveId: string;
@@ -152,8 +153,16 @@ export async function syncThreatIntel(input: {
   const clearedIds = tracked
     .filter((row) => row.kevPresent && !kevIds.has(row.cveId))
     .map((row) => row.cveId);
-  const acceptedEpss = epss.rows.filter((row) => allowed.has(row.cveId));
-  const epssRows: EpssUpsert[] = acceptedEpss.map((row) => ({
+  const epssByCve = new Map<string, EpssRecord>();
+  let droppedEpss = 0;
+  for (const row of epss.rows) {
+    if (!allowed.has(row.cveId)) {
+      droppedEpss += 1;
+      continue;
+    }
+    epssByCve.set(row.cveId, row);
+  }
+  const epssRows: EpssUpsert[] = [...epssByCve.values()].map((row) => ({
     ...row,
     sourceUpdatedAt,
   }));
@@ -175,7 +184,7 @@ export async function syncThreatIntel(input: {
     kevCleared: clearedIds.length,
     epssUpserts: epssRows.length,
     skippedKevRows: catalog.skipped,
-    skippedEpssRows: epss.skipped + (epss.rows.length - acceptedEpss.length),
+    skippedEpssRows: epss.skipped + droppedEpss,
   };
 }
 
@@ -187,16 +196,55 @@ function retryDelayMs(attempt: number, retryAfter: string | null): number {
   return 500 * 2 ** attempt;
 }
 
+async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new FeedSyncError(`Feed response exceeds the ${maxBytes} byte cap.`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) {
+      throw new FeedSyncError(`Feed response exceeds the ${maxBytes} byte cap.`);
+    }
+    return JSON.parse(text);
+  }
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new FeedSyncError(`Feed response exceeds the ${maxBytes} byte cap.`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const merged = Buffer.concat(chunks, totalBytes);
+  return JSON.parse(merged.toString("utf8"));
+}
+
 export function createResilientFeedClient(
   fetchImpl: typeof fetch,
   options: {
     timeoutMs?: number;
     maxRetries?: number;
+    maxBytes?: number;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): FeedClient {
   const timeoutMs = options.timeoutMs ?? 20_000;
   const maxRetries = options.maxRetries ?? 3;
+  const maxBytes = options.maxBytes ?? MAX_FEED_BYTES;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   return {
@@ -206,18 +254,23 @@ export function createResilientFeedClient(
         try {
           const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
           if (response.status === 429 || response.status >= 500) {
+            await response.body?.cancel().catch(() => {});
             lastError = new Error(`Feed request failed with HTTP ${response.status}.`);
             if (attempt === maxRetries) break;
             await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
             continue;
           }
           if (!response.ok) {
+            await response.body?.cancel().catch(() => {});
             throw new FeedSyncError(`Feed request failed with HTTP ${response.status}.`);
           }
-          return await response.json();
+          return await readBoundedJson(response, maxBytes);
         } catch (error) {
           if (error instanceof FeedSyncError) throw error;
-          lastError = new Error("Feed request failed before a response arrived.");
+          lastError =
+            error instanceof SyntaxError
+              ? new Error("Feed response was not valid JSON.")
+              : new Error("Feed request failed before a complete response arrived.");
           if (attempt === maxRetries) break;
           await sleep(retryDelayMs(attempt, null));
         }
