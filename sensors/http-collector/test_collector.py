@@ -69,7 +69,7 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(rec["event_type"], "http_cms_probe")
         self.assertEqual(
             rec["http_path"],
-            "/wp-login.php?user=admin&password=[REDACTED]&token=[REDACTED]",
+            "/wp-login.php?user=[REDACTED]&password=[REDACTED]&token=[REDACTED]",
         )
         headers = rec["metadata"]["headers"]
         self.assertEqual(headers.get("user-agent"), "SyntheticScanner/1.0")
@@ -126,7 +126,7 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(
             records[0]["metadata"]["headers"].get("referer"),
-            "https://example.invalid/auth?session=[REDACTED]&next=/home",
+            "https://example.invalid/auth?session=[REDACTED]&next=[REDACTED]",
         )
 
     def test_prunes_jsonl_records_older_than_24h(self) -> None:
@@ -714,6 +714,41 @@ class HttpCollectorSecurityTests(unittest.TestCase):
                     for d in rec["metadata"]["signature_detections"]
                 )
             )
+
+    def test_masks_all_query_values_encoded_keys_tokens_and_path_secrets(self) -> None:
+        jwt = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signaturepart123"])
+        aws_key = "AKIA" + "IOSFODNN7EXAMPLE"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request(
+            "GET",
+            f"/cgi-bin/luci/;stok=deadbeef99/admin?%74%6f%6b%65%6e={jwt}&email=victim@example.invalid&key={aws_key}&flag",
+            headers={
+                "Referer": "https://alice:s3cr3t@example.invalid/reset/victim@example.invalid?code=999111",
+            },
+        )
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 404)
+        conn.close()
+
+        raw_jsonl = self.output_path.read_text(encoding="utf-8")
+        self.assertNotIn("deadbeef99", raw_jsonl)
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", raw_jsonl)
+        self.assertNotIn("victim@example.invalid", raw_jsonl)
+        self.assertNotIn(aws_key, raw_jsonl)
+        self.assertNotIn("alice:s3cr3t", raw_jsonl)
+        self.assertNotIn("999111", raw_jsonl)
+
+        records = self._read_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            records[0]["http_path"],
+            "/cgi-bin/luci/;stok=[REDACTED]/admin?%74%6f%6b%65%6e=[REDACTED]&email=[REDACTED]&key=[REDACTED]&flag",
+        )
+        self.assertEqual(
+            records[0]["metadata"]["headers"].get("referer"),
+            "https://[REDACTED]@example.invalid/reset/[REDACTED]?code=[REDACTED]",
+        )
 
     def test_signature_inspection_stays_fast_on_adversarial_inputs(self) -> None:
         adversarial = InspectionInput(

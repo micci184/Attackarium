@@ -11,6 +11,7 @@ import type {
   TrendBucket,
   TrendPeriod,
 } from "./types.ts";
+import { safeDisplayHttpPath } from "./format.ts";
 import { TREND_PERIODS } from "./types.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -380,15 +381,16 @@ export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[
   const totals = new Map<string, HttpPathTotal>();
   for (const event of events) {
     if (event.protocol !== "http" && event.protocol !== "https") continue;
-    if (!event.http_path_redacted) continue;
+    const maskedPath = safeDisplayHttpPath(event.http_path_redacted, "");
+    if (!maskedPath) continue;
     const method = event.http_method ?? "GET";
-    const key = `${method} ${event.http_path_redacted}`;
+    const key = `${method} ${maskedPath}`;
     const current = totals.get(key);
     if (current) {
       current.count += 1;
       continue;
     }
-    totals.set(key, { method, path: event.http_path_redacted, count: 1 });
+    totals.set(key, { method, path: maskedPath, count: 1 });
   }
   return Array.from(totals.values())
     .toSorted((a, b) => b.count - a.count || a.path.localeCompare(b.path))

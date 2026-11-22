@@ -10,18 +10,24 @@ export function ObservationMeta({
   sensorCount: number;
 }) {
   return (
-    <dl className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
-      <div className="flex gap-1">
-        <dt>Window</dt>
-        <dd className="font-medium text-gray-700">{windowLabel}</dd>
+    <dl className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500">
+      <div className="inline-flex items-center gap-1.5">
+        <dt className="text-slate-500">Window</dt>
+        <dd className="font-medium text-slate-800">{windowLabel}</dd>
       </div>
-      <div className="flex gap-1">
-        <dt>Updated</dt>
-        <dd className="font-mono tabular-nums text-gray-700">{formatJstDateTime(updatedAt)}</dd>
+      <span aria-hidden="true" className="hidden text-slate-300 sm:inline">
+        ·
+      </span>
+      <div className="inline-flex items-center gap-1.5">
+        <dt className="text-slate-500">Updated</dt>
+        <dd className="font-mono tabular-nums text-slate-800">{formatJstDateTime(updatedAt)}</dd>
       </div>
-      <div className="flex gap-1">
-        <dt>Sensors</dt>
-        <dd className="font-mono tabular-nums text-gray-700">
+      <span aria-hidden="true" className="hidden text-slate-300 sm:inline">
+        ·
+      </span>
+      <div className="inline-flex items-center gap-1.5">
+        <dt className="text-slate-500">Sensors</dt>
+        <dd className="font-mono tabular-nums text-slate-800">
           {formatCount(sensorCount)} registered
         </dd>
       </div>

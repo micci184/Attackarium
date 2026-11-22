@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+:root {
+  --surface-canvas: #f5f7fa;
+  --surface-card: #ffffff;
+  --surface-subtle: #f8fafc;
+  --border-default: #e2e8f0;
+  --border-subtle: #eef2f6;
+  --ink-primary: #0f172a;
+  --ink-secondary: #475569;
+  --ink-muted: #64748b;
+  --accent: #632ca6;
+  --accent-hover: #4e2185;
+  --accent-soft: #f4effa;
+  --accent-border: #d8c4f0;
+}
+
 @layer base {
   html {
     color-scheme: light;
@@ -13,8 +28,8 @@
   }
 
   body {
-    background-color: #f7f8fa;
-    color: #111827;
+    background-color: var(--surface-canvas);
+    color: var(--ink-primary);
     font-family:
       "Inter",
       -apple-system,
@@ -29,7 +44,7 @@
   h2,
   h3 {
     text-wrap: balance;
-    scroll-margin-top: 4rem;
+    scroll-margin-top: 4.5rem;
   }
 
   a,

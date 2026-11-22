@@ -141,7 +141,7 @@ describe("ingest Edge Function core security & idempotency", () => {
     assert.ok(httpEv);
     assert.equal(
       httpEv.http_path_redacted,
-      "/wp-login.php?user=admin&password=[REDACTED]&redirect=/",
+      "/wp-login.php?user=[REDACTED]&password=[REDACTED]&redirect=[REDACTED]",
     );
     assert.equal(httpEv.metadata.authorization, "[REDACTED]");
     assert.equal(httpEv.metadata.cookie, "[REDACTED]");
@@ -533,6 +533,62 @@ describe("ingest Edge Function core security & idempotency", () => {
     const savedTech = repo.events.get("88888888-8888-4888-8888-888888888888");
     assert.ok(savedTech);
     assert.equal(savedTech.attack_category, "web_attack_attempt");
+    assert.equal(savedTech.http_path_redacted, "/items?id=[REDACTED]");
     assert.deepEqual(savedTech.metadata.signature_detections, [techniqueOnly]);
+  });
+
+  it("masks all query values, percent-encoded keys, JWTs, API keys, emails, and path secrets", async () => {
+    const repo = new InMemoryIngestRepo();
+    const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signaturepart123"].join(".");
+    const awsKey = `${"AKIA"}${"IOSFODNN7EXAMPLE"}`;
+    const ghToken = `${"ghp"}_1234567890abcdef`;
+    const req = await makeSignedRequest({
+      body: JSON.stringify({
+        events: [
+          {
+            id: "99999999-9999-4999-8999-999999999991",
+            observed_at: new Date(BASE_NOW_MS - 1000).toISOString(),
+            protocol: "http",
+            dst_port: 80,
+            event_type: "http_probe",
+            attack_category: "http_path_probe",
+            src_ip: "198.51.100.55",
+            http_method: "GET",
+            http_path: `/cgi-bin/luci/;stok=deadbeef99/users/victim@example.invalid?%74%6f%6b%65%6e=${jwt}&aws=${awsKey}&gh=${ghToken}&wsdl&%70%61%73%73`,
+            metadata: {},
+          },
+          {
+            id: "99999999-9999-4999-8999-999999999992",
+            observed_at: new Date(BASE_NOW_MS - 500).toISOString(),
+            protocol: "http",
+            dst_port: 80,
+            event_type: "http_probe",
+            attack_category: "http_path_probe",
+            src_ip: "198.51.100.56",
+            http_method: "GET",
+            http_path: "/proxy/https://alice:s3cr3t@example.invalid/cb?code=999111",
+            metadata: {},
+          },
+        ],
+      }),
+      requestId: "req-masking-p0-001",
+    });
+
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+
+    const ev1 = repo.events.get("99999999-9999-4999-8999-999999999991");
+    assert.ok(ev1);
+    assert.equal(
+      ev1.http_path_redacted,
+      "/cgi-bin/luci/;stok=[REDACTED]/users/[REDACTED]?%74%6f%6b%65%6e=[REDACTED]&aws=[REDACTED]&gh=[REDACTED]&wsdl&[REDACTED]",
+    );
+
+    const ev2 = repo.events.get("99999999-9999-4999-8999-999999999992");
+    assert.ok(ev2);
+    assert.equal(
+      ev2.http_path_redacted,
+      "/proxy/https://[REDACTED]@example.invalid/cb?code=[REDACTED]",
+    );
   });
 });

@@ -4,9 +4,15 @@ import { MethodologyBanner } from "@/components/methodology-banner";
 import { ObservationMeta } from "@/components/observation-meta";
 import { PatternLists } from "@/components/pattern-lists";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
+import { PageHeader, Panel, PanelHeader } from "@/components/ui";
 import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
-import { formatCount, formatJstShort, safeDisplayText } from "@/lib/format";
+import {
+  formatCount,
+  formatJstShort,
+  safeDisplayHttpPath,
+  safeDisplayText,
+} from "@/lib/format";
 import { getOverviewData } from "@/lib/observatory";
 import { buildWorldMapData } from "@/lib/world-map";
 
@@ -28,58 +34,68 @@ export default async function OverviewPage() {
 
   const sensorBadge =
     data.activeSensorCount === 0
-      ? { label: "Offline", textClass: "text-gray-600", dotClass: "bg-gray-400" }
+      ? {
+          label: "Offline",
+          pillClass: "border-slate-200 bg-slate-100 text-slate-700",
+          dotClass: "bg-slate-400",
+        }
       : data.healthySensorCount === data.activeSensorCount
-        ? { label: "Healthy", textClass: "text-emerald-700", dotClass: "bg-emerald-600" }
+        ? {
+            label: "Healthy",
+            pillClass: "border-emerald-200 bg-emerald-50 text-emerald-800",
+            dotClass: "bg-emerald-600",
+          }
         : data.healthySensorCount > 0
-          ? { label: "Degraded", textClass: "text-amber-700", dotClass: "bg-amber-500" }
-          : { label: "Heartbeat Stale", textClass: "text-red-700", dotClass: "bg-red-600" };
+          ? {
+              label: "Degraded",
+              pillClass: "border-amber-300 bg-amber-50 text-amber-900",
+              dotClass: "bg-amber-500",
+            }
+          : {
+              label: "Heartbeat Stale",
+              pillClass: "border-red-300 bg-red-50 text-red-800",
+              dotClass: "bg-red-600",
+            };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight text-gray-900">
-            Overview
-          </h1>
-          <p className="mt-0.5 text-xs text-gray-500">
-            24-hour observation summary, sensor health, and recent sanitized events
-          </p>
-          <div className="mt-2">
-            <ObservationMeta
-              windowLabel="24 UTC hours, timestamps in JST"
-              updatedAt={data.dataUpdatedAt}
-              sensorCount={data.sensors.length}
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span
-            translate="no"
-            className="rounded border border-gray-200 bg-white px-2.5 py-1.5 font-mono text-xs text-gray-600"
-          >
-            Past 24h
-          </span>
-          <AutoRefresh intervalSeconds={30} />
-        </div>
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title="Overview"
+        description="24-hour observation summary, sensor health, and recent sanitized events"
+        meta={
+          <ObservationMeta
+            windowLabel="24 UTC hours, timestamps in JST"
+            updatedAt={data.dataUpdatedAt}
+            sensorCount={data.sensors.length}
+          />
+        }
+        actions={
+          <>
+            <span
+              translate="no"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs font-medium text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+            >
+              Past 24h
+            </span>
+            <AutoRefresh intervalSeconds={30} />
+          </>
+        }
+      />
 
       <MethodologyBanner sourceMode={data.sourceMode} />
 
+      {/* Top KPI Strip */}
       <section
         aria-label="Observation status and 24 hour activity"
-        className="grid gap-px overflow-hidden rounded border border-gray-200 bg-gray-200 sm:grid-cols-2"
+        className="grid gap-4 sm:grid-cols-2"
       >
-        <div className="bg-white p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Observation status
-          </p>
-          <div className="mt-1.5 flex items-baseline gap-2">
-            <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900">
-              {formatCount(data.healthySensorCount)}
+        <Panel className="p-5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Observation Status
             </p>
             <span
-              className={`inline-flex items-center gap-1 text-xs font-medium ${sensorBadge.textClass}`}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${sensorBadge.pillClass}`}
             >
               <span
                 aria-hidden="true"
@@ -88,125 +104,158 @@ export default async function OverviewPage() {
               {sensorBadge.label}
             </span>
           </div>
-          <p className="mt-1 text-[11px] text-gray-400">
-            {formatCount(data.activeSensorCount)} active / {formatCount(data.sensors.length)} registered
-            {data.activeOutages.length > 0 ? ` · ${formatCount(data.activeOutages.length)} open coverage gap` : ""}
+          <div className="mt-2 flex items-baseline gap-2">
+            <p className="font-mono text-3xl font-semibold tracking-tight tabular-nums text-slate-900">
+              {formatCount(data.healthySensorCount)}
+            </p>
+            <span className="text-xs text-slate-500">
+              healthy of {formatCount(data.activeSensorCount)} active
+            </span>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            {formatCount(data.sensors.length)} registered sensor
+            {data.sensors.length === 1 ? "" : "s"}
+            {data.activeOutages.length > 0
+              ? ` · ${formatCount(data.activeOutages.length)} open coverage gap`
+              : " · no open coverage gaps"}
           </p>
-        </div>
+        </Panel>
 
-        <div className="bg-white p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Events (24 UTC hours)
-          </p>
-          <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-gray-900">
+        <Panel className="p-5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Events (24 UTC Hours)
+            </p>
+            {data.sourceMode === "supabase" ? (
+              <span className="font-mono text-[11px] text-slate-500">UTC hourly rollups</span>
+            ) : null}
+          </div>
+          <p className="mt-2 font-mono text-3xl font-semibold tracking-tight tabular-nums text-slate-900">
             {formatCount(data.totalEvents24h)}
           </p>
-          <p className="mt-1 text-[11px] text-gray-500">{formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}</p>
-          {data.sourceMode === "supabase" ? (
-            <p className="mt-1 text-[11px] text-gray-400">UTC hour buckets, including the current hour</p>
-          ) : null}
+          <p className="mt-2 text-xs text-slate-600">
+            {formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}
+          </p>
           {data.rollupPendingEvents24h > 0 ? (
-            <p className="mt-1 text-[11px] text-gray-500">
-              +{formatCount(data.rollupPendingEvents24h)} recent or unclassified events pending next 15m rollup
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              +{formatCount(data.rollupPendingEvents24h)} recent or unclassified events pending next
+              15m rollup
             </p>
           ) : null}
-          {data.aggregateComplete ? null : (
-            <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
-              Aggregate read is incomplete. This total is partial, not an exact count.
-            </p>
-          )}
-          {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
-            <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
-              <span aria-hidden="true" className="font-mono font-bold">
-                [GAP]
-              </span>
-              Collection gap in window — comparison may undercount
-            </p>
-          ) : null}
-        </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {data.aggregateComplete ? null : (
+              <p className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900">
+                Aggregate read is incomplete. This total is partial, not an exact count.
+              </p>
+            )}
+            {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
+              <p className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900">
+                <span aria-hidden="true" className="font-mono font-bold">
+                  [GAP]
+                </span>
+                Collection gap in window — comparison may undercount
+              </p>
+            ) : null}
+          </div>
+        </Panel>
       </section>
 
-      <section aria-label="Noteworthy observations" className="rounded border border-gray-200 bg-white">
-        <div className="border-b border-gray-200 px-4 py-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-            Noteworthy observations
-          </h2>
-        </div>
+      {/* Noteworthy Observations */}
+      <Panel ariaLabel="Noteworthy observations">
+        <PanelHeader
+          title="Noteworthy Observations"
+          subtitle="Notable shifts vs. the previous 24 UTC hours (filtered for minimum sample size)"
+        />
         {data.noteworthy.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-gray-500">
+          <p className="px-4 py-6 text-xs text-slate-500">
             No noteworthy changes in this 24 UTC hour comparison.
           </p>
         ) : (
-          <ol className="divide-y divide-gray-100">
-            {data.noteworthy.map((note) => (
-              <li key={note.id} className="px-4 py-3">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <Link
-                    href={note.href}
-                    className="rounded text-sm font-medium text-gray-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-                  >
-                    {safeDisplayText(note.title)}
-                  </Link>
-                  <ProtocolBadge protocol={note.protocol} />
-                </div>
-                <p translate="no" className="mt-1 break-all text-xs text-gray-600">
-                  {safeDisplayText(note.detail)}
-                </p>
-                {note.kind === "first_seen" ? (
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    First observed in stored history during this 24 UTC hour window.
+          <ol className="divide-y divide-slate-100">
+            {data.noteworthy.map((note) => {
+              const kindBadge =
+                note.kind === "first_seen"
+                  ? { label: "First seen", classes: "border-purple-200 bg-[#f4effa] text-[#632ca6]" }
+                  : note.delta > 0
+                    ? { label: "Increase", classes: "border-amber-200 bg-amber-50 text-amber-900" }
+                    : { label: "Decrease", classes: "border-slate-200 bg-slate-100 text-slate-700" };
+              return (
+                <li key={note.id} className="px-4 py-3.5 transition-colors hover:bg-slate-50/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase ${kindBadge.classes}`}
+                      >
+                        {kindBadge.label}
+                      </span>
+                      <Link
+                        href={note.href}
+                        className="rounded text-sm font-semibold text-slate-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                      >
+                        {safeDisplayText(note.title)}
+                      </Link>
+                    </div>
+                    <ProtocolBadge protocol={note.protocol} />
+                  </div>
+                  <p translate="no" className="mt-1.5 break-all text-xs text-slate-700">
+                    {safeDisplayText(note.detail)}
                   </p>
-                ) : note.showPercent && note.priorCount > 0 ? (
-                  <p className="mt-1 font-mono text-[11px] tabular-nums text-gray-500">
-                    {note.delta > 0 ? "+" : ""}
-                    {((note.delta / note.priorCount) * 100).toFixed(0)}% vs the previous 24 UTC hours
-                  </p>
-                ) : (
-                  <p className="mt-1 text-[11px] text-gray-500">
-                    Absolute change only. The previous window is too small for a percentage.
-                  </p>
-                )}
-                {note.comparisonReliable ? null : (
-                  <p className="mt-1 text-[11px] text-amber-800">
-                    A coverage gap or incomplete rollup makes this comparison less reliable.
-                  </p>
-                )}
-              </li>
-            ))}
+                  {note.kind === "first_seen" ? (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      First observed in stored history during this 24 UTC hour window.
+                    </p>
+                  ) : note.showPercent && note.priorCount > 0 ? (
+                    <p className="mt-1 font-mono text-[11px] tabular-nums text-slate-600">
+                      {note.delta > 0 ? "+" : ""}
+                      {((note.delta / note.priorCount) * 100).toFixed(0)}% vs the previous 24 UTC
+                      hours
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Absolute change only. The previous window is too small for a percentage.
+                    </p>
+                  )}
+                  {note.comparisonReliable ? null : (
+                    <p className="mt-1 text-[11px] font-medium text-amber-800">
+                      A coverage gap or incomplete rollup makes this comparison less reliable.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ol>
         )}
-      </section>
+      </Panel>
 
       <VolumeChart
         series={data.hourlySeries}
-        heading="Activity trend (24 UTC hours)"
+        heading="Activity Trend (24 UTC Hours)"
         emptyLabel="No stored observations in this window."
         footnote="7-day and 30-day series are on Trends. Counts are UTC hour buckets; timestamps elsewhere are JST."
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Protocol Distribution */}
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Protocol Distribution (24h UTC)
-            </h2>
-            <Link
-              href="/trends"
-              className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-            >
-              View Trends →
-            </Link>
-          </div>
+        <Panel>
+          <PanelHeader
+            title="Protocol Distribution (24h UTC)"
+            action={
+              <Link
+                href="/trends"
+                className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+              >
+                View Trends →
+              </Link>
+            }
+          />
           <div className="p-4">
             {data.protocolBreakdown.length === 0 ? (
-              <p className="text-xs text-gray-500">No observations recorded yet.</p>
+              <p className="text-xs text-slate-500">No observations recorded yet.</p>
             ) : (
               <>
-                {/* Stacked horizontal bar */}
                 <div
                   aria-label="Protocol share bar"
-                  className="flex h-2.5 w-full overflow-hidden rounded-sm bg-gray-100"
+                  className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100"
                 >
                   {data.protocolBreakdown.map((item) => (
                     <div
@@ -220,7 +269,7 @@ export default async function OverviewPage() {
                   ))}
                 </div>
 
-                <div className="mt-4 divide-y divide-gray-100">
+                <div className="mt-4 divide-y divide-slate-100">
                   {data.protocolBreakdown.map((item) => (
                     <div
                       key={item.protocol}
@@ -228,10 +277,10 @@ export default async function OverviewPage() {
                     >
                       <ProtocolBadge protocol={item.protocol} />
                       <div className="flex items-center gap-4 font-mono tabular-nums">
-                        <span className="text-gray-900">
+                        <span className="font-medium text-slate-900">
                           {formatCount(item.count)}
                         </span>
-                        <span className="w-12 text-right text-gray-500">
+                        <span className="w-12 text-right text-slate-500">
                           {item.sharePct.toFixed(1)}%
                         </span>
                       </div>
@@ -241,44 +290,44 @@ export default async function OverviewPage() {
               </>
             )}
           </div>
-        </section>
+        </Panel>
 
         {/* Sensor Health */}
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Sensor Health
-            </h2>
-            <Link
-              href="/sensors"
-              className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-            >
-              Open Sensors →
-            </Link>
-          </div>
-          <div className="divide-y divide-gray-100 p-4">
+        <Panel>
+          <PanelHeader
+            title="Sensor Health"
+            action={
+              <Link
+                href="/sensors"
+                className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+              >
+                Open Sensors →
+              </Link>
+            }
+          />
+          <div className="divide-y divide-slate-100 p-4">
             {data.sensors.length === 0 ? (
-              <p className="text-xs text-gray-500">No registered sensors.</p>
+              <p className="text-xs text-slate-500">No registered sensors.</p>
             ) : (
               data.sensors.map((sensor) => (
-                <div key={sensor.id} className="space-y-2 py-1">
+                <div key={sensor.id} className="space-y-2.5 py-1.5 first:pt-0 last:pb-0">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-gray-900">
+                      <p className="truncate text-sm font-semibold text-slate-900">
                         {safeDisplayText(sensor.name)}
                       </p>
-                      <p translate="no" className="font-mono text-[11px] text-gray-500">
+                      <p translate="no" className="font-mono text-[11px] text-slate-500">
                         {safeDisplayText(sensor.id)} · {safeDisplayText(sensor.region)}
                       </p>
                     </div>
                     <span
                       translate="no"
-                      className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 text-[11px] font-medium ${
+                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${
                         sensor.healthStatus === "healthy"
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
                           : sensor.healthStatus === "stale"
-                            ? "border-amber-200 bg-amber-50 text-amber-800"
-                            : "border-gray-200 bg-gray-100 text-gray-600"
+                            ? "border-amber-300 bg-amber-50 text-amber-900"
+                            : "border-slate-200 bg-slate-100 text-slate-700"
                       }`}
                     >
                       <span
@@ -288,7 +337,7 @@ export default async function OverviewPage() {
                             ? "bg-emerald-600"
                             : sensor.healthStatus === "stale"
                               ? "bg-amber-500"
-                              : "bg-gray-400"
+                              : "bg-slate-400"
                         }`}
                       />
                       {sensor.healthStatus === "healthy"
@@ -299,22 +348,22 @@ export default async function OverviewPage() {
                     </span>
                   </div>
 
-                  <dl className="grid grid-cols-3 gap-2 rounded border border-gray-100 bg-gray-50 px-3 py-2 text-[11px]">
+                  <dl className="grid grid-cols-3 gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-[11px]">
                     <div>
-                      <dt className="text-gray-400">Type</dt>
-                      <dd translate="no" className="mt-0.5 font-mono text-gray-700">
+                      <dt className="text-slate-500">Type</dt>
+                      <dd translate="no" className="mt-0.5 font-mono font-medium text-slate-800">
                         {sensor.type}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-gray-400">Heartbeat</dt>
-                      <dd className="mt-0.5 font-mono tabular-nums text-gray-700">
+                      <dt className="text-slate-500">Heartbeat</dt>
+                      <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         {formatJstShort(sensor.last_heartbeat_at)}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-gray-400">Last Event</dt>
-                      <dd className="mt-0.5 font-mono tabular-nums text-gray-700">
+                      <dt className="text-slate-500">Last Event</dt>
+                      <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         {formatJstShort(sensor.last_event_at)}
                       </dd>
                     </div>
@@ -323,7 +372,7 @@ export default async function OverviewPage() {
               ))
             )}
           </div>
-        </section>
+        </Panel>
       </div>
 
       <PatternLists
@@ -338,67 +387,68 @@ export default async function OverviewPage() {
       />
 
       {/* Recent Sanitized Events */}
-      <section className="rounded border border-gray-200 bg-white">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-            Recent Sanitized Events
-          </h2>
-          <Link
-            href="/events"
-            className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-          >
-            Open Event Explorer →
-          </Link>
-        </div>
+      <Panel>
+        <PanelHeader
+          title="Recent Sanitized Events"
+          subtitle="Latest stored probes (query values redacted by default)"
+          action={
+            <Link
+              href="/events"
+              className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+            >
+              Open Event Explorer →
+            </Link>
+          }
+        />
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-gray-200 bg-gray-50 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-                <th className="px-4 py-2">Observed (JST)</th>
-                <th className="px-3 py-2">Protocol</th>
-                <th className="px-3 py-2">Port</th>
-                <th className="px-3 py-2">Event Type</th>
-                <th className="px-3 py-2">Region / ASN</th>
-                <th className="px-4 py-2">Sanitized Path / Detail</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-4 py-2.5">Observed (JST)</th>
+                <th className="px-3 py-2.5">Protocol</th>
+                <th className="px-3 py-2.5">Port</th>
+                <th className="px-3 py-2.5">Event Type</th>
+                <th className="px-3 py-2.5">Region / ASN</th>
+                <th className="px-4 py-2.5">Sanitized Path / Detail</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {data.recentEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                     No observations recorded yet.
                   </td>
                 </tr>
               ) : (
                 data.recentEvents.map((ev) => (
-                  <tr key={ev.id} className="transition-colors hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-4 py-2 font-mono tabular-nums text-gray-600">
+                  <tr key={ev.id} className="transition-colors hover:bg-slate-50/80">
+                    <td className="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-600">
                       {formatJstShort(ev.observed_at)}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       <ProtocolBadge protocol={ev.protocol} />
                     </td>
-                    <td className="px-3 py-2 font-mono tabular-nums text-gray-700">
+                    <td className="px-3 py-2.5 font-mono tabular-nums text-slate-700">
                       {ev.dst_port}
                     </td>
-                    <td translate="no" className="px-3 py-2 font-mono text-gray-800">
+                    <td translate="no" className="px-3 py-2.5 font-mono text-slate-800">
                       {safeDisplayText(ev.event_type)}
                     </td>
                     <td
                       translate="no"
-                      className="whitespace-nowrap px-3 py-2 font-mono text-gray-500"
+                      className="whitespace-nowrap px-3 py-2.5 font-mono text-slate-500"
                     >
                       {safeDisplayText(ev.src_country)} / {safeDisplayText(ev.src_asn)}
                     </td>
-                    <td className="max-w-xs truncate px-4 py-2 font-mono">
+                    <td className="max-w-xs truncate px-4 py-2.5 font-mono">
                       <Link
                         href={`/events/${ev.id}`}
                         translate="no"
                         className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                       >
                         {ev.http_method ? `${ev.http_method} ` : ""}
-                        {safeDisplayText(ev.http_path_redacted, ev.fingerprint ?? "Inspect")}
+                        {safeDisplayHttpPath(ev.http_path_redacted, ev.fingerprint ?? "Inspect")}
                       </Link>
                     </td>
                   </tr>
@@ -407,7 +457,7 @@ export default async function OverviewPage() {
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
       <WorldGeoMap
         data={worldMapData}

@@ -2,8 +2,14 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { MethodologyBanner } from "@/components/methodology-banner";
 import { ProtocolBadge } from "@/components/protocol-badge";
+import { PageHeader, Panel } from "@/components/ui";
 import { attackCategoryLabel } from "@/lib/dashboard-metrics";
-import { formatCount, formatJstDateTime, safeDisplayText } from "@/lib/format";
+import {
+  formatCount,
+  formatJstDateTime,
+  safeDisplayHttpPath,
+  safeDisplayText,
+} from "@/lib/format";
 import { getPaginatedEvents } from "@/lib/observatory";
 import type { EventCategoryFilter, EventPeriodFilter, Protocol } from "@/lib/types";
 
@@ -55,6 +61,11 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
     category: params.category,
   });
 
+  const activeFilterCount =
+    (result.protocolFilter !== "all" ? 1 : 0) +
+    (result.periodFilter !== "all" ? 1 : 0) +
+    (result.categoryFilter !== "all" ? 1 : 0);
+
   const buildUrl = (
     nextPage: number,
     nextProtocol: Protocol | "all" = result.protocolFilter,
@@ -71,25 +82,21 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-gray-900">
-            Event Explorer
-          </h1>
-          <p className="mt-0.5 text-xs text-gray-500">
-            Sanitized observation log explorer (raw IPs, credentials, and payloads excluded)
-          </p>
-        </div>
-        <span className="font-mono text-xs tabular-nums text-gray-500">
-          Total: {formatCount(result.totalCount)} events
-        </span>
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title="Event Explorer"
+        description="Sanitized observation log explorer (raw IPs, query values, credentials, and payloads excluded)"
+        actions={
+          <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs font-medium tabular-nums text-slate-700 shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
+            Total: {formatCount(result.totalCount)} events
+          </span>
+        }
+      />
 
       <MethodologyBanner sourceMode={result.sourceMode} />
 
-      <section className="rounded border border-gray-200 bg-white">
-        <div className="space-y-2 border-b border-gray-200 bg-gray-50/70 px-4 py-2.5">
+      <Panel>
+        <div className="space-y-2.5 border-b border-slate-200 bg-slate-50/70 px-4 py-3">
           <FilterRow label="Protocol">
             {PROTOCOL_FILTERS.map((proto) => (
               <FilterLink
@@ -125,63 +132,74 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
               </FilterLink>
             ))}
           </FilterRow>
-          <p className="font-mono text-[11px] tabular-nums text-gray-500">
-            Page {result.page} / {result.totalPages}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+            <p className="font-mono tabular-nums">
+              Page {result.page} / {result.totalPages}
+              {activeFilterCount > 0 ? ` · ${activeFilterCount} active filter(s)` : ""}
+            </p>
+            {activeFilterCount > 0 ? (
+              <Link
+                href="/events"
+                className="rounded font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+              >
+                Reset filters
+              </Link>
+            ) : null}
+          </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-gray-200 bg-gray-50 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-                <th className="px-4 py-2">Observed (JST)</th>
-                <th className="px-3 py-2">Protocol</th>
-                <th className="px-3 py-2">Category</th>
-                <th className="px-3 py-2">Port</th>
-                <th className="px-3 py-2">Event Type</th>
-                <th className="px-3 py-2">Region / ASN</th>
-                <th className="px-4 py-2">Sanitized Path / Fingerprint</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="px-4 py-2.5">Observed (JST)</th>
+                <th className="px-3 py-2.5">Protocol</th>
+                <th className="px-3 py-2.5">Category</th>
+                <th className="px-3 py-2.5">Port</th>
+                <th className="px-3 py-2.5">Event Type</th>
+                <th className="px-3 py-2.5">Region / ASN</th>
+                <th className="px-4 py-2.5">Sanitized Path / Fingerprint</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {result.items.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-gray-500">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
                     No sanitized events match these filters.
                   </td>
                 </tr>
               ) : (
                 result.items.map((ev) => (
-                  <tr key={ev.id} className="transition-colors hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-4 py-2 font-mono tabular-nums text-gray-600">
+                  <tr key={ev.id} className="transition-colors hover:bg-slate-50/80">
+                    <td className="whitespace-nowrap px-4 py-2.5 font-mono tabular-nums text-slate-600">
                       {formatJstDateTime(ev.observed_at)}
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2.5">
                       <ProtocolBadge protocol={ev.protocol} />
                     </td>
-                    <td className="px-3 py-2 text-gray-700">
+                    <td className="px-3 py-2.5 text-slate-700">
                       {attackCategoryLabel(ev.attack_category)}
                     </td>
-                    <td className="px-3 py-2 font-mono tabular-nums text-gray-700">
+                    <td className="px-3 py-2.5 font-mono tabular-nums text-slate-700">
                       {ev.dst_port}
                     </td>
-                    <td translate="no" className="px-3 py-2 font-mono text-gray-800">
+                    <td translate="no" className="px-3 py-2.5 font-mono text-slate-800">
                       {safeDisplayText(ev.event_type)}
                     </td>
                     <td
                       translate="no"
-                      className="whitespace-nowrap px-3 py-2 font-mono text-gray-500"
+                      className="whitespace-nowrap px-3 py-2.5 font-mono text-slate-500"
                     >
                       {safeDisplayText(ev.src_country)} / {safeDisplayText(ev.src_asn)}
                     </td>
-                    <td className="max-w-md truncate px-4 py-2 font-mono">
+                    <td className="max-w-md truncate px-4 py-2.5 font-mono">
                       <Link
                         href={`/events/${ev.id}`}
                         translate="no"
                         className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                       >
                         {ev.http_method ? `${safeDisplayText(ev.http_method)} ` : ""}
-                        {safeDisplayText(ev.http_path_redacted, ev.fingerprint ?? ev.id)}
+                        {safeDisplayHttpPath(ev.http_path_redacted, ev.fingerprint ?? ev.id)}
                       </Link>
                     </td>
                   </tr>
@@ -191,23 +209,23 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
           </table>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50/50 px-4 py-2.5 text-xs text-gray-600">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-2.5 text-xs text-slate-600">
           <span className="tabular-nums">
             Showing page {result.page} of {result.totalPages} ({formatCount(result.totalCount)}{" "}
             total events)
           </span>
-          <div className="inline-flex items-center rounded border border-gray-200 bg-white">
+          <div className="inline-flex items-center overflow-hidden rounded-md border border-slate-200 bg-white">
             {result.page > 1 ? (
               <Link
                 href={buildUrl(result.page - 1)}
-                className="border-r border-gray-200 px-3 py-1.5 font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6]"
+                className="border-r border-slate-200 px-3 py-1.5 font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6]"
               >
                 ← Prev
               </Link>
             ) : (
               <span
                 aria-disabled="true"
-                className="border-r border-gray-200 px-3 py-1.5 text-gray-300"
+                className="border-r border-slate-200 px-3 py-1.5 text-slate-300"
               >
                 ← Prev
               </span>
@@ -215,27 +233,27 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
             {result.page < result.totalPages ? (
               <Link
                 href={buildUrl(result.page + 1)}
-                className="px-3 py-1.5 font-medium text-gray-700 transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6]"
+                className="px-3 py-1.5 font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6]"
               >
                 Next →
               </Link>
             ) : (
-              <span aria-disabled="true" className="px-3 py-1.5 text-gray-300">
+              <span aria-disabled="true" className="px-3 py-1.5 text-slate-300">
                 Next →
               </span>
             )}
           </div>
         </div>
-      </section>
+      </Panel>
     </div>
   );
 }
 
 function FilterRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <nav aria-label={`${label} filter`} className="flex flex-wrap items-center gap-1">
-      <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-        {label}:
+    <nav aria-label={`${label} filter`} className="flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 w-16 shrink-0 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        {label}
       </span>
       {children}
     </nav>
@@ -258,12 +276,12 @@ function FilterLink({
       href={href}
       translate="no"
       aria-current={active ? "true" : undefined}
-      className={`rounded border px-2 py-1 text-[11px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
+      className={`rounded-md border px-2.5 py-1 text-[11px] font-medium leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
         mono ? "font-mono uppercase" : ""
       } ${
         active
           ? "border-[#632ca6] bg-[#632ca6] text-white"
-          : "border-gray-200 bg-white text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900"
       }`}
     >
       {children}
