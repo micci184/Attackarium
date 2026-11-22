@@ -3,6 +3,7 @@ import type {
   EventCategoryFilter,
   EventPeriodFilter,
   HttpPathTotal,
+  NoteworthyObservation,
   PatternTotal,
   Protocol,
   PublicSensorStatusEvent,
@@ -261,6 +262,104 @@ export function topPatternsFromCounts(
   return Array.from(totals.values())
     .toSorted((a, b) => b.count - a.count || a.label.localeCompare(b.label))
     .slice(0, limit);
+}
+
+const MIN_NOTEWORTHY_COUNT = 5;
+const MIN_PRIOR_FOR_PERCENT = 10;
+
+export function eventsFilterHref(protocol: Protocol, category?: string): string {
+  const params = new URLSearchParams({ protocol, period: "24h" });
+  if (category) params.set("category", category);
+  return `/events?${params.toString()}`;
+}
+
+interface CountRow {
+  protocol: Protocol;
+  attack_category: AttackCategory;
+  eventCount: number;
+}
+
+function addCounts(rows: Iterable<CountRow>): Map<string, CountRow> {
+  const totals = new Map<string, CountRow>();
+  for (const row of rows) {
+    const key = `${row.protocol}:${row.attack_category}`;
+    const current = totals.get(key);
+    if (current) {
+      current.eventCount += row.eventCount;
+      continue;
+    }
+    totals.set(key, { ...row });
+  }
+  return totals;
+}
+
+/**
+ * Explainable 24h comparison. Small samples stay out, and a percentage is shown
+ * only when the previous window is large enough to support it.
+ */
+export function selectNoteworthyObservations(input: {
+  current: Iterable<CountRow>;
+  prior: Iterable<CountRow>;
+  firstSeen?: Iterable<{
+    patternType: string;
+    patternKey: string;
+    protocol: Protocol;
+    totalCount: number;
+  }>;
+  comparisonReliable: boolean;
+  limit?: number;
+}): NoteworthyObservation[] {
+  const current = addCounts(input.current);
+  const prior = addCounts(input.prior);
+  const notes: NoteworthyObservation[] = [];
+
+  for (const [key, row] of current) {
+    const previous = prior.get(key)?.eventCount ?? 0;
+    const delta = row.eventCount - previous;
+    const larger = Math.max(row.eventCount, previous);
+    if (larger < MIN_NOTEWORTHY_COUNT || Math.abs(delta) < MIN_NOTEWORTHY_COUNT) continue;
+    if (previous > 0 && Math.abs(delta) / previous < 0.5) continue;
+    const direction = delta > 0 ? "increased" : "decreased";
+    notes.push({
+      id: `category:${key}`,
+      title: `${CATEGORY_LABELS[row.attack_category]} ${direction}`,
+      detail: `${row.protocol.toUpperCase()} · ${formatWindowDelta(row.eventCount, previous)}`,
+      protocol: row.protocol,
+      currentCount: row.eventCount,
+      priorCount: previous,
+      delta,
+      showPercent: previous >= MIN_PRIOR_FOR_PERCENT,
+      comparisonReliable: input.comparisonReliable,
+      href: eventsFilterHref(row.protocol, row.attack_category),
+    });
+  }
+
+  for (const pattern of input.firstSeen ?? []) {
+    if (pattern.totalCount < MIN_NOTEWORTHY_COUNT) continue;
+    if (pattern.patternType === "attack_category") continue;
+    notes.push({
+      id: `first:${pattern.patternType}:${pattern.protocol}:${pattern.patternKey}`,
+      title: "First stored observation in this window",
+      detail: `${pattern.protocol.toUpperCase()} · ${pattern.patternKey} · ${pattern.totalCount} stored events`,
+      protocol: pattern.protocol,
+      currentCount: pattern.totalCount,
+      priorCount: 0,
+      delta: pattern.totalCount,
+      showPercent: false,
+      comparisonReliable: input.comparisonReliable,
+      href: eventsFilterHref(pattern.protocol),
+    });
+  }
+
+  return notes
+    .toSorted((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.title.localeCompare(b.title))
+    .slice(0, input.limit ?? 3);
+}
+
+function formatWindowDelta(current: number, prior: number): string {
+  const delta = current - prior;
+  const signed = `${delta > 0 ? "+" : ""}${delta}`;
+  return `${current} in the latest 24 UTC hours, ${prior} in the previous 24 (${signed})`;
 }
 
 interface HttpPathInput {

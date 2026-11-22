@@ -137,6 +137,20 @@ export interface PatternTotal {
   label: string;
   protocol: Protocol;
   count: number;
+  eventsHref?: string;
+}
+
+export interface NoteworthyObservation {
+  id: string;
+  title: string;
+  detail: string;
+  protocol: Protocol;
+  currentCount: number;
+  priorCount: number;
+  delta: number;
+  showPercent: boolean;
+  comparisonReliable: boolean;
+  href: string;
 }
 
 export interface HttpPathTotal {
@@ -166,6 +180,8 @@ export interface OverviewData {
   aggregateComplete: boolean;
   /** Events in the 24h UTC window not yet reflected in hourly rollups (e.g. recent <15m or unclassified). */
   rollupPendingEvents24h: number;
+  hourlySeries: TrendBucket[];
+  noteworthy: NoteworthyObservation[];
   uniqueCountries24h: number;
   activeSensorCount: number;
   healthySensorCount: number;

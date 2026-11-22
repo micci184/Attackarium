@@ -4,6 +4,7 @@ import { MethodologyBanner } from "@/components/methodology-banner";
 import { ObservationMeta } from "@/components/observation-meta";
 import { PatternLists } from "@/components/pattern-lists";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
+import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
 import { formatCount, formatJstShort, safeDisplayText } from "@/lib/format";
 import { getOverviewData } from "@/lib/observatory";
@@ -12,11 +13,11 @@ import { buildWorldMapData } from "@/lib/world-map";
 function formatPriorWindow(current: number, prior: number): string {
   const delta = current - prior;
   const signed = `${delta > 0 ? "+" : ""}${formatCount(delta)}`;
-  if (prior <= 0) {
-    return `${formatCount(current)} latest · ${formatCount(prior)} in the previous 24h`;
+  if (prior < 10) {
+    return `${signed} vs the previous 24 UTC hours`;
   }
   const pct = Math.round((delta / prior) * 1000) / 10;
-  return `${signed} (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%) vs the previous 24h`;
+  return `${signed} (${pct > 0 ? "+" : ""}${pct.toFixed(1)}%) vs the previous 24 UTC hours`;
 }
 
 export const dynamic = "force-dynamic";
@@ -46,7 +47,7 @@ export default async function OverviewPage() {
           </p>
           <div className="mt-2">
             <ObservationMeta
-              windowLabel="Past 24 hours"
+              windowLabel="24 UTC hours, timestamps in JST"
               updatedAt={data.dataUpdatedAt}
               sensorCount={data.sensors.length}
             />
@@ -65,14 +66,13 @@ export default async function OverviewPage() {
 
       <MethodologyBanner sourceMode={data.sourceMode} />
 
-      {/* Datadog-style flat KPI strip */}
       <section
-        aria-label="Key metrics"
-        className="grid grid-cols-2 divide-y divide-gray-200 rounded border border-gray-200 bg-white sm:grid-cols-4 sm:divide-x sm:divide-y-0"
+        aria-label="24 hour activity"
+        className="grid gap-px overflow-hidden rounded border border-gray-200 bg-gray-200 sm:grid-cols-2"
       >
-        <div className="p-4">
+        <div className="bg-white p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Events (24h)
+            Events (24 UTC hours)
           </p>
           <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-gray-900">
             {formatCount(data.totalEvents24h)}
@@ -101,9 +101,9 @@ export default async function OverviewPage() {
           ) : null}
         </div>
 
-        <div className="p-4">
+        <div className="bg-white p-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Healthy Sensors
+            Observation status
           </p>
           <div className="mt-1.5 flex items-baseline gap-2">
             <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900">
@@ -121,38 +121,62 @@ export default async function OverviewPage() {
           </div>
           <p className="mt-1 text-[11px] text-gray-400">
             {formatCount(data.activeSensorCount)} active / {formatCount(data.sensors.length)} registered
+            {data.activeOutages.length > 0 ? ` · ${formatCount(data.activeOutages.length)} open coverage gap` : ""}
           </p>
-        </div>
-
-        <div className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Protocols Seen
-          </p>
-          <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-gray-900">
-            {formatCount(data.protocolBreakdown.length)}
-          </p>
-          <p className="mt-1 text-[11px] text-gray-400">OpenCanary + HTTP</p>
-        </div>
-
-        <div className="p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">
-            Approx. Regions
-          </p>
-          <p className="mt-1.5 font-mono text-2xl font-semibold tabular-nums text-gray-900">
-            {formatCount(data.uniqueCountries24h)}
-          </p>
-          <p className="mt-1 text-[11px] text-gray-400">GeoIP estimate only</p>
         </div>
       </section>
 
-      <WorldGeoMap
-        data={worldMapData}
-        title="Observed Source Regions (24h · GeoIP Estimate)"
-        subtitle={
-          data.is24hBreakdownSampled
-            ? `Country/region heatmap based on the latest ${formatCount(data.sampled24hCount)} sampled events (raw IPs excluded)`
-            : "Country/region-level heatmap for the past 24 hours (raw IPs and exact locations are excluded)"
-        }
+      <section aria-label="Noteworthy observations" className="rounded border border-gray-200 bg-white">
+        <div className="border-b border-gray-200 px-4 py-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
+            Noteworthy observations
+          </h2>
+        </div>
+        {data.noteworthy.length === 0 ? (
+          <p className="px-4 py-6 text-xs text-gray-500">
+            No noteworthy changes in this 24 UTC hour comparison.
+          </p>
+        ) : (
+          <ol className="divide-y divide-gray-100">
+            {data.noteworthy.map((note) => (
+              <li key={note.id} className="px-4 py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <Link
+                    href={note.href}
+                    className="rounded text-sm font-medium text-gray-900 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                  >
+                    {note.title}
+                  </Link>
+                  <ProtocolBadge protocol={note.protocol} />
+                </div>
+                <p className="mt-1 text-xs text-gray-600">{note.detail}</p>
+                {note.showPercent ? (
+                  <p className="mt-1 font-mono text-[11px] tabular-nums text-gray-500">
+                    {note.priorCount > 0
+                      ? `${(((note.delta / note.priorCount) * 100).toFixed(0))}% vs the previous 24 UTC hours`
+                      : null}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Absolute change only. The previous window is too small for a percentage.
+                  </p>
+                )}
+                {note.comparisonReliable ? null : (
+                  <p className="mt-1 text-[11px] text-amber-800">
+                    A coverage gap, incomplete rollup, or pending events makes this comparison less reliable.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+
+      <VolumeChart
+        series={data.hourlySeries}
+        heading="Activity trend (24 UTC hours)"
+        emptyLabel="No stored observations in this window."
+        footnote="7-day and 30-day series are on Trends. Counts are UTC hour buckets; timestamps elsewhere are JST."
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -378,6 +402,16 @@ export default async function OverviewPage() {
           </table>
         </div>
       </section>
+
+      <WorldGeoMap
+        data={worldMapData}
+        title="Observed Source Regions (24h · GeoIP Estimate)"
+        subtitle={
+          data.is24hBreakdownSampled
+            ? `Secondary view from the latest ${formatCount(data.sampled24hCount)} sampled events (raw IPs excluded)`
+            : "Secondary country/region view. Raw IPs and exact locations are excluded."
+        }
+      />
     </div>
   );
 }

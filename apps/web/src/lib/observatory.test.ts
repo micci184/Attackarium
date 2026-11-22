@@ -11,6 +11,7 @@ import {
   filterCoverageGapsInWindow,
   formatOutageDuration,
   parseTrendPeriod,
+  selectNoteworthyObservations,
   seriesHasLeadingGap,
   sumTrendBuckets,
   topHttpPaths,
@@ -74,6 +75,32 @@ describe("aggregate totals", () => {
     else process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
     if (previousKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previousKey;
+  });
+
+  it("keeps small samples and unreliable comparisons out of percentage claims", () => {
+    const quiet = selectNoteworthyObservations({
+      current: [{ protocol: "ssh", attack_category: "auth_attempt", eventCount: 4 }],
+      prior: [{ protocol: "ssh", attack_category: "auth_attempt", eventCount: 1 }],
+      comparisonReliable: true,
+    });
+    assert.equal(quiet.length, 0);
+
+    const notable = selectNoteworthyObservations({
+      current: [{ protocol: "http", attack_category: "http_path_probe", eventCount: 40 }],
+      prior: [{ protocol: "http", attack_category: "http_path_probe", eventCount: 10 }],
+      comparisonReliable: false,
+    });
+    assert.equal(notable.length, 1);
+    assert.equal(notable[0]?.showPercent, true);
+    assert.equal(notable[0]?.comparisonReliable, false);
+    assert.equal(notable[0]?.href.includes("category=http_path_probe"), true);
+
+    const smallPrior = selectNoteworthyObservations({
+      current: [{ protocol: "ssh", attack_category: "auth_attempt", eventCount: 20 }],
+      prior: [{ protocol: "ssh", attack_category: "auth_attempt", eventCount: 4 }],
+      comparisonReliable: true,
+    });
+    assert.equal(smallPrior[0]?.showPercent, false);
   });
 
   it("refuses USE_MOCK in production", async () => {

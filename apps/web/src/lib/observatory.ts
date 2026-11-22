@@ -15,6 +15,7 @@ import {
   buildHourlySeries,
   buildUtcHourlySeries,
   collectPages,
+  eventsFilterHref,
   countEventsInWindow,
   dailyWindowStartDate,
   earliestTimestamp,
@@ -27,6 +28,7 @@ import {
   parseEventPeriod,
   periodDayCount,
   periodLengthMs,
+  selectNoteworthyObservations,
   sumTrendBuckets,
   topHttpPaths,
   topPatterns,
@@ -226,6 +228,23 @@ export async function getOverviewData(): Promise<OverviewData> {
       is24hBreakdownSampled: false,
       aggregateComplete: true,
       rollupPendingEvents24h: 0,
+      hourlySeries: annotateSeriesCoverage(
+        buildHourlySeries(
+          MOCK_EVENTS.map((event) => event.observed_at),
+          MOCK_REFERENCE_NOW_MS,
+        ),
+        MOCK_SENSOR_STATUS_EVENTS,
+        MOCK_REFERENCE_NOW_MS,
+      ),
+      noteworthy: selectNoteworthyObservations({
+        current: MOCK_EVENTS.flatMap((event) =>
+          event.attack_category
+            ? [{ protocol: event.protocol, attack_category: event.attack_category, eventCount: 1 }]
+            : [],
+        ),
+        prior: [],
+        comparisonReliable: true,
+      }),
       uniqueCountries24h: summary.uniqueCountries,
       activeSensorCount: sensors.filter((s) => s.is_active).length,
       healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
@@ -246,7 +265,7 @@ export async function getOverviewData(): Promise<OverviewData> {
   const since48h = new Date(window48hStartMs).toISOString();
   const untilHour = new Date(currentHourMs).toISOString();
 
-  const [sensorsRes, recentRes, statusRes, sampleRes, aggregatePage] = await Promise.all([
+  const [sensorsRes, recentRes, statusRes, firstSeenRes, sampleRes, aggregatePage] = await Promise.all([
     client.from("public_sensors").select("*").order("created_at", { ascending: true }),
     client
       .from("public_events")
@@ -259,6 +278,12 @@ export async function getOverviewData(): Promise<OverviewData> {
       .or(`ended_at.is.null,ended_at.gte.${since48h}`)
       .order("started_at", { ascending: false })
       .limit(100),
+    client
+      .from("public_observed_patterns")
+      .select("pattern_type, pattern_key, protocol, first_seen_at, total_count")
+      .gte("first_seen_at", new Date(window24hStartMs).toISOString())
+      .order("total_count", { ascending: false })
+      .limit(20),
     client
       .from("public_events")
       .select(
@@ -290,6 +315,7 @@ export async function getOverviewData(): Promise<OverviewData> {
   if (recentRes.error) throw new Error(`public_events recent query failed: ${recentRes.error.message}`);
   if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
   if (sampleRes.error) throw new Error(`public_events sample query failed: ${sampleRes.error.message}`);
+  if (firstSeenRes.error) throw new Error(`public_observed_patterns query failed: ${firstSeenRes.error.message}`);
 
   const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
   const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
@@ -309,6 +335,17 @@ export async function getOverviewData(): Promise<OverviewData> {
       }),
     )
     .parse(sampleRes.data ?? []);
+  const firstSeen = z
+    .array(
+      z.object({
+        pattern_type: z.string(),
+        pattern_key: z.string(),
+        protocol: ProtocolSchema,
+        first_seen_at: z.string(),
+        total_count: z.coerce.number().int().nonnegative(),
+      }),
+    )
+    .parse(firstSeenRes.data ?? []);
   const hourRows = z.array(HourAggregateSchema).parse(aggregatePage.rows);
   const currentRows = hourRows.filter((row) => Date.parse(row.bucket_start) >= window24hStartMs);
   const priorRows = hourRows.filter((row) => Date.parse(row.bucket_start) < window24hStartMs);
@@ -328,6 +365,19 @@ export async function getOverviewData(): Promise<OverviewData> {
   );
 
   const totalEvents24h = sumTrendBuckets(currentSeries);
+  const rollupPendingEvents24h = Math.max(0, sampleCount - totalEvents24h);
+  const comparisonReliable =
+    aggregatePage.complete && rollupPendingEvents24h === 0 && !coverageGapIn24h && !coverageGapInPrior24h;
+  const patternRows = currentRows.map((row) => ({
+    protocol: row.protocol,
+    attack_category: row.attack_category,
+    eventCount: row.event_count,
+  }));
+  const priorPatternRows = priorRows.map((row) => ({
+    protocol: row.protocol,
+    attack_category: row.attack_category,
+    eventCount: row.event_count,
+  }));
 
   return {
     sourceMode: "supabase",
@@ -339,7 +389,19 @@ export async function getOverviewData(): Promise<OverviewData> {
     sampled24hCount: sampleRows.length,
     is24hBreakdownSampled: sampleCount > sampleRows.length,
     aggregateComplete: aggregatePage.complete,
-    rollupPendingEvents24h: Math.max(0, sampleCount - totalEvents24h),
+    rollupPendingEvents24h,
+    hourlySeries: annotateSeriesCoverage(currentSeries, statusEvents, nowMs),
+    noteworthy: selectNoteworthyObservations({
+      current: patternRows,
+      prior: priorPatternRows,
+      firstSeen: firstSeen.map((row) => ({
+        patternType: row.pattern_type,
+        patternKey: row.pattern_key,
+        protocol: row.protocol,
+        totalCount: row.total_count,
+      })),
+      comparisonReliable,
+    }),
     uniqueCountries24h: summary.uniqueCountries,
     activeSensorCount: sensors.filter((s) => s.is_active).length,
     healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
@@ -348,13 +410,10 @@ export async function getOverviewData(): Promise<OverviewData> {
       currentRows.map((row) => ({ protocol: row.protocol, eventCount: row.event_count })),
     ),
     regionTotals24h: summary.regionTotals,
-    patterns24h: topPatternsFromCounts(
-      currentRows.map((row) => ({
-        protocol: row.protocol,
-        attack_category: row.attack_category,
-        eventCount: row.event_count,
-      })),
-    ),
+    patterns24h: topPatternsFromCounts(patternRows).map((pattern) => ({
+      ...pattern,
+      eventsHref: eventsFilterHref(pattern.protocol, pattern.key.split(":")[1]),
+    })),
     httpPaths24h: topHttpPaths(sampleRows),
     dataUpdatedAt: latestTimestamp([
       ...hourRows.map((row) => row.updated_at),
