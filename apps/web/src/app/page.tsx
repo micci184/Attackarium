@@ -78,6 +78,14 @@ export default async function OverviewPage() {
             {formatCount(data.totalEvents24h)}
           </p>
           <p className="mt-1 text-[11px] text-gray-500">{formatPriorWindow(data.totalEvents24h, data.priorEvents24h)}</p>
+          {data.sourceMode === "supabase" ? (
+            <p className="mt-1 text-[11px] text-gray-400">UTC hour buckets, including the current hour</p>
+          ) : null}
+          {data.aggregateComplete ? null : (
+            <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+              Aggregate read is incomplete. This total is partial, not an exact count.
+            </p>
+          )}
           {data.coverageGapIn24h || data.coverageGapInPrior24h ? (
             <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
               <span aria-hidden="true" className="font-mono font-bold">
@@ -147,12 +155,7 @@ export default async function OverviewPage() {
         <section className="rounded border border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Protocol Distribution (24h)
-              {data.is24hBreakdownSampled ? (
-                <span className="ml-1.5 font-normal normal-case text-gray-400">
-                  (latest {formatCount(data.sampled24hCount)} sampled)
-                </span>
-              ) : null}
+              Protocol Distribution (24h UTC)
             </h2>
             <Link
               href="/trends"
@@ -294,7 +297,7 @@ export default async function OverviewPage() {
         httpPaths={data.httpPaths24h}
         sampledNote={
           data.is24hBreakdownSampled
-            ? `Pattern and path counts use the latest ${formatCount(data.sampled24hCount)} of ${formatCount(data.totalEvents24h)} events.`
+            ? `HTTP paths and the region map use the latest ${formatCount(data.sampled24hCount)} events. Protocol and pattern totals use the full UTC-hour rollup.`
             : null
         }
       />

@@ -162,6 +162,8 @@ export interface OverviewData {
   activeOutages: PublicSensorStatusEvent[];
   sampled24hCount: number;
   is24hBreakdownSampled: boolean;
+  /** False when an aggregate read stopped at the safety cap. Totals are then partial. */
+  aggregateComplete: boolean;
   uniqueCountries24h: number;
   activeSensorCount: number;
   healthySensorCount: number;
@@ -178,7 +180,8 @@ export interface TrendsData {
   sourceMode: "mock" | "supabase";
   period: TrendPeriod;
   series: TrendBucket[];
-  seriesSource: "events" | "daily_stats";
+  seriesSource: "events" | "daily_stats" | "event_aggregates";
+  aggregateComplete: boolean;
   historyStartedAt: string | null;
   dataUpdatedAt: string | null;
   registeredSensorCount: number;

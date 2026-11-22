@@ -13,6 +13,8 @@ import {
   annotateSeriesCoverage,
   buildDailySeries,
   buildHourlySeries,
+  buildUtcHourlySeries,
+  collectPages,
   countEventsInWindow,
   dailyWindowStartDate,
   earliestTimestamp,
@@ -25,8 +27,11 @@ import {
   parseEventPeriod,
   periodDayCount,
   periodLengthMs,
+  sumTrendBuckets,
   topHttpPaths,
   topPatterns,
+  topPatternsFromCounts,
+  utcHourBucketStart,
 } from "./dashboard-metrics.ts";
 import {
   AttackCategorySchema,
@@ -51,8 +56,6 @@ import {
 } from "./types.ts";
 
 export const HEARTBEAT_STALE_THRESHOLD_MS = 15 * 60 * 1000;
-const OVERVIEW_SAMPLE_LIMIT = 5000;
-
 export function evaluateSensorHealth(
   sensor: Pick<PublicSensor, "is_active" | "last_heartbeat_at">,
   nowMs: number,
@@ -71,18 +74,71 @@ export function evaluateSensorHealth(
   return "healthy";
 }
 
-function getPublicSupabaseClient(): SupabaseClient | null {
-  if (process.env.USE_MOCK === "true") {
-    return null;
+const SAMPLE_EVENT_LIMIT = 200;
+
+function protocolShare(
+  rows: Iterable<{ protocol: Protocol; eventCount: number }>,
+): Array<{ protocol: Protocol; count: number; sharePct: number }> {
+  const counts = new Map<Protocol, number>();
+  let total = 0;
+  for (const row of rows) {
+    counts.set(row.protocol, (counts.get(row.protocol) ?? 0) + row.eventCount);
+    total += row.eventCount;
   }
+  return Array.from(counts, ([protocol, count]) => ({
+    protocol,
+    count,
+    sharePct: total === 0 ? 0 : Math.round((count / total) * 1000) / 10,
+  })).toSorted((a, b) => b.count - a.count || a.protocol.localeCompare(b.protocol));
+}
+const HOUR_MS = 60 * 60 * 1000;
+
+const HourAggregateSchema = z.object({
+  bucket_start: z.string(),
+  protocol: ProtocolSchema,
+  attack_category: AttackCategorySchema,
+  event_count: z.coerce.number().int().nonnegative(),
+  updated_at: z.string(),
+});
+
+function mockModeRequested(): boolean {
+  return process.env.USE_MOCK === "true";
+}
+
+function assertMockAllowed(): void {
+  if (!mockModeRequested()) return;
+  if (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production") {
+    throw new Error(
+      "USE_MOCK is set in production. Refusing to show synthetic observations.",
+    );
+  }
+}
+
+function getPublicSupabaseClient(): SupabaseClient | null {
+  assertMockAllowed();
+  if (mockModeRequested()) return null;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anonKey) {
-    return null;
+    throw new Error(
+      "Supabase public configuration is missing. Synthetic observations are shown only when USE_MOCK=true in development or tests.",
+    );
   }
   return createClient(url, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+async function fetchAllRows<T>(
+  fetchPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  label: string,
+): Promise<{ rows: T[]; complete: boolean }> {
+  const collected = await collectPages(async (from, to) => {
+    const { data, error } = await fetchPage(from, to);
+    if (error) throw new Error(`${label} query failed: ${error.message}`);
+    return data ?? [];
+  });
+  return collected;
 }
 
 function summarize24hRows(
@@ -167,6 +223,7 @@ export async function getOverviewData(): Promise<OverviewData> {
       activeOutages,
       sampled24hCount: MOCK_EVENTS.length,
       is24hBreakdownSampled: false,
+      aggregateComplete: true,
       uniqueCountries24h: summary.uniqueCountries,
       activeSensorCount: sensors.filter((s) => s.is_active).length,
       healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
@@ -181,26 +238,14 @@ export async function getOverviewData(): Promise<OverviewData> {
   }
 
   const nowMs = Date.now();
-  const window24hStartMs = nowMs - 24 * 60 * 60 * 1000;
-  const window48hStartMs = nowMs - 48 * 60 * 60 * 1000;
-  const since24h = new Date(window24hStartMs).toISOString();
+  const currentHourMs = utcHourBucketStart(nowMs);
+  const window24hStartMs = currentHourMs - 23 * HOUR_MS;
+  const window48hStartMs = window24hStartMs - 24 * HOUR_MS;
   const since48h = new Date(window48hStartMs).toISOString();
-  const [sensorsRes, events24hRes, priorRes, recentRes, statusRes] = await Promise.all([
+  const untilHour = new Date(currentHourMs).toISOString();
+
+  const [sensorsRes, recentRes, statusRes, sampleRes, aggregatePage] = await Promise.all([
     client.from("public_sensors").select("*").order("created_at", { ascending: true }),
-    client
-      .from("public_events")
-      .select(
-        "protocol, src_country, event_type, attack_category, http_method, http_path_redacted, received_at",
-        { count: "exact" },
-      )
-      .gte("observed_at", since24h)
-      .order("observed_at", { ascending: false })
-      .limit(OVERVIEW_SAMPLE_LIMIT),
-    client
-      .from("public_events")
-      .select("id", { count: "exact", head: true })
-      .gte("observed_at", since48h)
-      .lt("observed_at", since24h),
     client
       .from("public_events")
       .select("*")
@@ -212,13 +257,37 @@ export async function getOverviewData(): Promise<OverviewData> {
       .or(`ended_at.is.null,ended_at.gte.${since48h}`)
       .order("started_at", { ascending: false })
       .limit(100),
+    client
+      .from("public_events")
+      .select(
+        "protocol, src_country, http_method, http_path_redacted, received_at",
+        { count: "exact" },
+      )
+      .gte("observed_at", new Date(window24hStartMs).toISOString())
+      .lte("observed_at", new Date(currentHourMs + HOUR_MS - 1).toISOString())
+      .order("observed_at", { ascending: false })
+      .limit(SAMPLE_EVENT_LIMIT),
+    fetchAllRows(
+      (from, to) =>
+        client
+          .from("public_event_aggregates")
+          .select("bucket_start, protocol, attack_category, event_count, updated_at")
+          .eq("granularity", "hour")
+          .gte("bucket_start", since48h)
+          .lte("bucket_start", untilHour)
+          .order("bucket_start", { ascending: true })
+          .order("sensor_id", { ascending: true })
+          .order("protocol", { ascending: true })
+          .order("attack_category", { ascending: true })
+          .range(from, to),
+      "public_event_aggregates",
+    ),
   ]);
 
   if (sensorsRes.error) throw new Error(`public_sensors query failed: ${sensorsRes.error.message}`);
-  if (events24hRes.error) throw new Error(`public_events 24h query failed: ${events24hRes.error.message}`);
-  if (priorRes.error) throw new Error(`public_events prior 24h query failed: ${priorRes.error.message}`);
   if (recentRes.error) throw new Error(`public_events recent query failed: ${recentRes.error.message}`);
   if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
+  if (sampleRes.error) throw new Error(`public_events sample query failed: ${sampleRes.error.message}`);
 
   const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
   const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
@@ -227,25 +296,29 @@ export async function getOverviewData(): Promise<OverviewData> {
     healthStatus: evaluateSensorHealth(sensor, nowMs),
   }));
   const recentEvents = z.array(PublicEventSchema).parse(recentRes.data ?? []);
-  const rows24h = z
+  const sampleRows = z
     .array(
       z.object({
         protocol: ProtocolSchema,
         src_country: z.string().nullable(),
-        event_type: z.string(),
-        attack_category: AttackCategorySchema.nullable(),
         http_method: z.string().nullable(),
         http_path_redacted: z.string().nullable(),
         received_at: z.string(),
       }),
     )
-    .parse(events24hRes.data ?? []);
-
-  const summary = summarize24hRows(rows24h);
-  const totalEvents24h = events24hRes.count ?? rows24h.length;
+    .parse(sampleRes.data ?? []);
+  const hourRows = z.array(HourAggregateSchema).parse(aggregatePage.rows);
+  const currentRows = hourRows.filter((row) => Date.parse(row.bucket_start) >= window24hStartMs);
+  const priorRows = hourRows.filter((row) => Date.parse(row.bucket_start) < window24hStartMs);
+  const currentSeries = buildUtcHourlySeries(
+    currentRows.map((row) => ({ bucketStart: row.bucket_start, eventCount: row.event_count })),
+    nowMs,
+  );
+  const summary = summarize24hRows(sampleRows);
+  const sampleCount = sampleRes.count ?? sampleRows.length;
 
   const coverageGapIn24h =
-    filterCoverageGapsInWindow(statusEvents, window24hStartMs, nowMs, nowMs).length > 0;
+    filterCoverageGapsInWindow(statusEvents, window24hStartMs, currentHourMs + HOUR_MS, nowMs).length > 0;
   const coverageGapInPrior24h =
     filterCoverageGapsInWindow(statusEvents, window48hStartMs, window24hStartMs, nowMs).length > 0;
   const activeOutages = statusEvents.filter(
@@ -254,22 +327,34 @@ export async function getOverviewData(): Promise<OverviewData> {
 
   return {
     sourceMode: "supabase",
-    totalEvents24h,
-    priorEvents24h: priorRes.count ?? 0,
+    totalEvents24h: sumTrendBuckets(currentSeries),
+    priorEvents24h: priorRows.reduce((sum, row) => sum + row.event_count, 0),
     coverageGapIn24h,
     coverageGapInPrior24h,
     activeOutages,
-    sampled24hCount: rows24h.length,
-    is24hBreakdownSampled: totalEvents24h > rows24h.length,
+    sampled24hCount: sampleRows.length,
+    is24hBreakdownSampled: sampleCount > sampleRows.length,
+    aggregateComplete: aggregatePage.complete,
     uniqueCountries24h: summary.uniqueCountries,
     activeSensorCount: sensors.filter((s) => s.is_active).length,
     healthySensorCount: sensors.filter((s) => s.healthStatus === "healthy").length,
     sensors,
-    protocolBreakdown: summary.protocolBreakdown,
+    protocolBreakdown: protocolShare(
+      currentRows.map((row) => ({ protocol: row.protocol, eventCount: row.event_count })),
+    ),
     regionTotals24h: summary.regionTotals,
-    patterns24h: topPatterns(rows24h),
-    httpPaths24h: topHttpPaths(rows24h),
-    dataUpdatedAt: latestTimestamp(rows24h.map((row) => row.received_at)),
+    patterns24h: topPatternsFromCounts(
+      currentRows.map((row) => ({
+        protocol: row.protocol,
+        attack_category: row.attack_category,
+        eventCount: row.event_count,
+      })),
+    ),
+    httpPaths24h: topHttpPaths(sampleRows),
+    dataUpdatedAt: latestTimestamp([
+      ...hourRows.map((row) => row.updated_at),
+      ...sampleRows.map((row) => row.received_at),
+    ]),
     recentEvents,
   };
 }
@@ -294,24 +379,54 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   ]);
   let eventMatchCount = MOCK_EVENTS.length;
   let sourceMode: "mock" | "supabase" = "mock";
+  let aggregateComplete = true;
+  let hourAggregates: Array<z.infer<typeof HourAggregateSchema>> = [];
 
   if (client) {
     sourceMode = "supabase";
     const sinceIso = new Date(windowStartMs).toISOString();
     const statusSinceIso = new Date(seriesStartMs).toISOString();
-    const [statsRes, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
-      client
-        .from("public_daily_stats")
-        .select("date_utc, sensor_id, protocol, event_type, event_count, unique_source_count")
-        .gte("date_utc", sinceDate)
-        .order("date_utc", { ascending: true })
-        .limit(2000),
+    const hourStart = new Date(utcHourBucketStart(nowMs) - 23 * HOUR_MS).toISOString();
+    const hourEnd = new Date(utcHourBucketStart(nowMs)).toISOString();
+    const [statsPage, hourPage, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
+      period === "24h"
+        ? Promise.resolve({ rows: [] as Array<z.infer<typeof PublicDailyStatSchema>>, complete: true })
+        : fetchAllRows(
+            (from, to) =>
+              client
+                .from("public_daily_stats")
+                .select("date_utc, sensor_id, protocol, event_type, event_count, unique_source_count")
+                .gte("date_utc", sinceDate)
+                .order("date_utc", { ascending: true })
+                .order("sensor_id", { ascending: true })
+                .order("protocol", { ascending: true })
+                .order("event_type", { ascending: true })
+                .range(from, to),
+            "public_daily_stats",
+          ),
+      period === "24h"
+        ? fetchAllRows(
+            (from, to) =>
+              client
+                .from("public_event_aggregates")
+                .select("bucket_start, protocol, attack_category, event_count, updated_at")
+                .eq("granularity", "hour")
+                .gte("bucket_start", hourStart)
+                .lte("bucket_start", hourEnd)
+                .order("bucket_start", { ascending: true })
+                .order("sensor_id", { ascending: true })
+                .order("protocol", { ascending: true })
+                .order("attack_category", { ascending: true })
+                .range(from, to),
+            "public_event_aggregates",
+          )
+        : Promise.resolve({ rows: [] as Array<z.infer<typeof HourAggregateSchema>>, complete: true }),
       client
         .from("public_events")
         .select("*", { count: "exact" })
         .gte("observed_at", sinceIso)
         .order("observed_at", { ascending: false })
-        .limit(OVERVIEW_SAMPLE_LIMIT),
+        .limit(SAMPLE_EVENT_LIMIT),
       client.from("public_sensors").select("id", { count: "exact", head: true }),
       client
         .from("public_events")
@@ -326,13 +441,14 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
         .limit(200),
     ]);
 
-    if (statsRes.error) throw new Error(`public_daily_stats query failed: ${statsRes.error.message}`);
     if (eventsRes.error) throw new Error(`public_events trends query failed: ${eventsRes.error.message}`);
     if (sensorsRes.error) throw new Error(`public_sensors count failed: ${sensorsRes.error.message}`);
     if (oldestRes.error) throw new Error(`public_events history query failed: ${oldestRes.error.message}`);
     if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
 
-    dailyStats = z.array(PublicDailyStatSchema).parse(statsRes.data ?? []);
+    dailyStats = z.array(PublicDailyStatSchema).parse(statsPage.rows);
+    hourAggregates = z.array(HourAggregateSchema).parse(hourPage.rows);
+    aggregateComplete = statsPage.complete && hourPage.complete;
     recentEvents = z.array(PublicEventSchema).parse(eventsRes.data ?? []);
     statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
     registeredSensorCount = sensorsRes.count ?? 0;
@@ -354,30 +470,41 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
         })
       : recentEvents;
   const windowStats = dailyStats.filter((row) => row.date_utc >= sinceDate);
-  const useDailyStats = period !== "24h" && windowStats.length > 0;
-  const series = useDailyStats
-    ? buildDailySeries(
-        windowStats.map((row) => ({ dateUtc: row.date_utc, eventCount: row.event_count })),
-        nowMs,
-        days,
-      )
+  const useAggregateSeries = sourceMode === "supabase";
+  const series = useAggregateSeries
+    ? period === "24h"
+      ? buildUtcHourlySeries(
+          hourAggregates.map((row) => ({ bucketStart: row.bucket_start, eventCount: row.event_count })),
+          nowMs,
+        )
+      : buildDailySeries(
+          windowStats.map((row) => ({ dateUtc: row.date_utc, eventCount: row.event_count })),
+          nowMs,
+          days,
+        )
     : period === "24h"
       ? buildHourlySeries(
           windowEvents.map((event) => event.observed_at),
           nowMs,
         )
       : buildDailySeries(
-          eventsToDailyRows(
-            windowEvents.map((event) => event.observed_at),
-            windowStartMs,
-            nowMs,
-          ),
+          windowStats.length > 0
+            ? windowStats.map((row) => ({ dateUtc: row.date_utc, eventCount: row.event_count }))
+            : eventsToDailyRows(
+                windowEvents.map((event) => event.observed_at),
+                windowStartMs,
+                nowMs,
+              ),
           nowMs,
           days,
         );
 
   const protocolMap = new Map<Protocol, number>();
-  if (useDailyStats) {
+  if (useAggregateSeries && period === "24h") {
+    for (const row of hourAggregates) {
+      protocolMap.set(row.protocol, (protocolMap.get(row.protocol) ?? 0) + row.event_count);
+    }
+  } else if (useAggregateSeries || (period !== "24h" && windowStats.length > 0 && sourceMode === "mock")) {
     for (const row of windowStats) {
       protocolMap.set(row.protocol, (protocolMap.get(row.protocol) ?? 0) + row.event_count);
     }
@@ -417,7 +544,14 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
     sourceMode,
     period,
     series: annotatedSeries,
-    seriesSource: useDailyStats ? "daily_stats" : "events",
+    seriesSource: useAggregateSeries
+      ? period === "24h"
+        ? "event_aggregates"
+        : "daily_stats"
+      : period === "24h" || windowStats.length === 0
+        ? "events"
+        : "daily_stats",
+    aggregateComplete,
     historyStartedAt,
     dataUpdatedAt: latestTimestamp(windowEvents.map((event) => event.received_at)),
     registeredSensorCount,
@@ -437,7 +571,16 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
       .map(([asn, count]) => ({ asn, count }))
       .toSorted((a, b) => b.count - a.count)
       .slice(0, 10),
-    patterns: topPatterns(windowEvents),
+    patterns:
+      useAggregateSeries && period === "24h"
+        ? topPatternsFromCounts(
+            hourAggregates.map((row) => ({
+              protocol: row.protocol,
+              attack_category: row.attack_category,
+              eventCount: row.event_count,
+            })),
+          )
+        : topPatterns(windowEvents),
     httpPaths: topHttpPaths(windowEvents),
   };
 }
@@ -527,7 +670,12 @@ const UUID_CHECK = z.uuid();
 
 export async function getEventDetail(id: string): Promise<EventDetailData> {
   if (!UUID_CHECK.safeParse(id).success) {
-    return { sourceMode: getPublicSupabaseClient() ? "supabase" : "mock", event: null, detections: [], cveMatches: [] };
+    return {
+      sourceMode: mockModeRequested() ? "mock" : "supabase",
+      event: null,
+      detections: [],
+      cveMatches: [],
+    };
   }
 
   const client = getPublicSupabaseClient();

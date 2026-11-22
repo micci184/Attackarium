@@ -5,11 +5,14 @@ import {
   annotateSeriesCoverage,
   buildDailySeries,
   buildHourlySeries,
+  buildUtcHourlySeries,
+  collectPages,
   dailyWindowStartDate,
   filterCoverageGapsInWindow,
   formatOutageDuration,
   parseTrendPeriod,
   seriesHasLeadingGap,
+  sumTrendBuckets,
   topHttpPaths,
   topPatterns,
 } from "./dashboard-metrics.ts";
@@ -22,6 +25,61 @@ import {
   getTrendsData,
 } from "./observatory.ts";
 import { buildWorldMapData } from "./world-map.ts";
+
+describe("aggregate totals", () => {
+  it("sums more than 5000 events in a 24h UTC-hour series without a row cap", () => {
+    const nowMs = Date.parse("2026-11-22T10:20:00.000Z");
+    const hour = Date.parse("2026-11-22T10:00:00.000Z");
+    const rows = Array.from({ length: 5001 }, () => ({
+      bucketStart: new Date(hour).toISOString(),
+      eventCount: 1,
+    }));
+    const series = buildUtcHourlySeries(rows, nowMs);
+    assert.equal(series.length, 24);
+    assert.equal(sumTrendBuckets(series), 5001);
+  });
+
+  it("keeps reading daily aggregate pages past 2000 rows", async () => {
+    const stored = Array.from({ length: 2001 }, (_, index) => index);
+    const collected = await collectPages(async (from, to) => stored.slice(from, to + 1), 1000);
+    assert.equal(collected.complete, true);
+    assert.equal(collected.rows.length, 2001);
+    assert.equal(collected.rows[2000], 2000);
+  });
+
+  it("marks an aggregate read incomplete when the safety cap stops it", async () => {
+    const collected = await collectPages(async () => Array.from({ length: 1000 }, () => 1), 1000, 2000);
+    assert.equal(collected.complete, false);
+    assert.equal(collected.rows.length, 2000);
+  });
+
+  it("refuses synthetic observations when Supabase is not configured", async () => {
+    const previousMock = process.env.USE_MOCK;
+    const previousUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const previousKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    delete process.env.USE_MOCK;
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    await assert.rejects(() => getOverviewData(), /Supabase public configuration is missing/);
+    process.env.USE_MOCK = previousMock;
+    if (previousUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    else process.env.NEXT_PUBLIC_SUPABASE_URL = previousUrl;
+    if (previousKey === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previousKey;
+  });
+
+  it("refuses USE_MOCK in production", async () => {
+    const previousMock = process.env.USE_MOCK;
+    const previousVercelEnv = process.env.VERCEL_ENV;
+    process.env.USE_MOCK = "true";
+    process.env.VERCEL_ENV = "production";
+    await assert.rejects(() => getOverviewData(), /USE_MOCK is set in production/);
+    if (previousMock === undefined) delete process.env.USE_MOCK;
+    else process.env.USE_MOCK = previousMock;
+    if (previousVercelEnv === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = previousVercelEnv;
+  });
+});
 
 describe("observatory data layer (mock mode)", () => {
   it("returns sanitized overview data without sensitive fields", async () => {
