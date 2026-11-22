@@ -68,22 +68,37 @@ export function NavHeader() {
         <div className="flex items-center justify-between gap-3">
           <Link
             href="/"
-            className="flex min-w-0 items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] focus-visible:ring-offset-2"
+            className="flex min-w-0 items-center gap-2.5 rounded-md pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] focus-visible:ring-offset-2"
           >
-            <span
+            <svg
               aria-hidden="true"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#632ca6] text-xs font-bold tracking-tight text-white shadow-xs"
+              viewBox="0 0 32 32"
+              fill="none"
+              className="h-8 w-8 shrink-0"
             >
-              AT
-            </span>
+              <path
+                d="M16 2.5L27.7 9.2V22.8L16 29.5L4.3 22.8V9.2L16 2.5Z"
+                stroke="#0f172a"
+                strokeWidth="2"
+                strokeLinejoin="round"
+              />
+              <circle cx="16" cy="16" r="5.5" stroke="#632ca6" strokeWidth="1.8" />
+              <circle cx="16" cy="16" r="2.2" fill="#632ca6" />
+              <path
+                d="M16 7.5V10.2M16 21.8V24.5M7.5 16H10.2M21.8 16H24.5"
+                stroke="#0f172a"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
             <div className="min-w-0 leading-tight">
               <div
                 translate="no"
-                className="truncate text-sm font-semibold tracking-tight text-slate-900"
+                className="text-[15px] font-semibold tracking-tight text-slate-900"
               >
                 Attackarium
               </div>
-              <div translate="no" className="truncate text-[11px] font-medium text-slate-500">
+              <div translate="no" className="text-[11px] font-medium text-slate-500">
                 Honeypot Observatory
               </div>
             </div>
