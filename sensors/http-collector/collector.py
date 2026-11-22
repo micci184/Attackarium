@@ -21,6 +21,7 @@ import re
 import socketserver
 import threading
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,10 +83,27 @@ SAFE_HEADER_ALLOWLIST = frozenset(
 )
 
 SENSITIVE_QUERY_KEYS = re.compile(
-    r"(pass(word|wd|phrase)?|pwd|secret|token|auth(orization)?|cookie|session|api[_-]?key|jwt|cred)",
+    r"(pass(word|wd|phrase)?|pwd|secret|token|auth(orization)?|cookie|session|jsessionid|stok|api[_-]?key|private[_-]?key|access[_-]?key|jwt|bearer|cred(ential)?s?|sig(nature)?|otp|pin)",
     re.IGNORECASE,
 )
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+EMBEDDED_URL_CREDS = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s@]+)@")
+SENSITIVE_VALUE_PATTERNS = (
+    # JWT tokens
+    re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    # AWS access keys
+    re.compile(r"\b(?:AKIA|ASIA|AIDA|AROA)[0-9A-Z]{16}\b"),
+    # Common API / platform tokens (GitHub, Slack, Stripe/OpenAI-style)
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat|xox[baprs]|sk|pk|rk)_[A-Za-z0-9_-]{12,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    # Email addresses
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+)
+PATH_PARAM_SECRET = re.compile(
+    r"(;[A-Za-z0-9_.-]*(?:stok|jsessionid|session|token|auth|pass|secret|key|sig)[A-Za-z0-9_.-]*=)([^/;?#]+)",
+    re.IGNORECASE,
+)
+MAX_QUERY_KEY_LENGTH = 64
 
 
 @dataclass(frozen=True)
@@ -107,6 +125,27 @@ def strip_control(value: str) -> str:
     return CONTROL_CHARS.sub("", value)
 
 
+def _safe_unquote(value: str) -> str:
+    try:
+        return urllib.parse.unquote(value)
+    except Exception:
+        return value
+
+
+def _contains_sensitive_value(value: str) -> bool:
+    if EMBEDDED_URL_CREDS.search(value):
+        return True
+    return any(pattern.search(value) for pattern in SENSITIVE_VALUE_PATTERNS)
+
+
+def _redact_path_segment(segment: str) -> str:
+    redacted = EMBEDDED_URL_CREDS.sub(r"\1[REDACTED]@", segment)
+    redacted = PATH_PARAM_SECRET.sub(r"\1[REDACTED]", redacted)
+    for pattern in SENSITIVE_VALUE_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
 def redact_path(raw_path: str, max_length: int = 512) -> str:
     cleaned = strip_control(raw_path).strip()
     if not cleaned:
@@ -115,24 +154,38 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
     # command-injection chains like '&&wget http://...' are not broken apart.
     cleaned = redact_attacker_references(cleaned)
     if "?" not in cleaned:
-        return cleaned[:max_length]
+        return _redact_path_segment(cleaned)[:max_length]
 
     base, query = cleaned.split("?", 1)
+    safe_base = _redact_path_segment(base)
     safe_pairs: list[str] = []
     for part in query.split("&"):
         if not part:
             continue
         if "=" not in part:
-            safe_pairs.append(
-                "[REDACTED]" if SENSITIVE_QUERY_KEYS.search(part) else part
-            )
+            decoded_part = _safe_unquote(part)
+            if (
+                len(decoded_part) > MAX_QUERY_KEY_LENGTH
+                or SENSITIVE_QUERY_KEYS.search(decoded_part)
+                or _contains_sensitive_value(decoded_part)
+            ):
+                safe_pairs.append("[REDACTED]")
+            else:
+                safe_pairs.append(part)
             continue
-        k, v = part.split("=", 1)
-        if SENSITIVE_QUERY_KEYS.search(k) or len(v) > 128:
-            safe_pairs.append(f"{k}=[REDACTED]")
+        k, _v = part.split("=", 1)
+        decoded_key = _safe_unquote(k)
+        if (
+            not decoded_key
+            or len(decoded_key) > MAX_QUERY_KEY_LENGTH
+            or _contains_sensitive_value(decoded_key)
+        ):
+            safe_pairs.append("[REDACTED]=[REDACTED]")
         else:
-            safe_pairs.append(f"{k}={v}")
-    return f"{base}?{'&'.join(safe_pairs)}"[:max_length]
+            # Default-deny query parameter values to prevent leaking tokens,
+            # credentials, PII, or arbitrary payloads while retaining parameter keys.
+            safe_pairs.append(f"{k}=[REDACTED]")
+    return f"{safe_base}?{'&'.join(safe_pairs)}"[:max_length]
 
 
 def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:

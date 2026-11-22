@@ -29,21 +29,21 @@ export function AutoRefresh({ intervalSeconds = 30 }: AutoRefreshProps) {
   };
 
   return (
-    <div className="inline-flex items-center rounded border border-gray-200 bg-white text-xs">
+    <div className="inline-flex items-center overflow-hidden rounded-lg border border-slate-200 bg-white text-xs shadow-[0_1px_2px_rgba(15,23,42,0.03)]">
       <button
         type="button"
         aria-pressed={enabled}
         onClick={() => setEnabled((prev) => !prev)}
-        className={`flex items-center gap-1.5 border-r border-gray-200 px-2.5 py-1.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6] ${
+        className={`flex items-center gap-1.5 border-r border-slate-200 px-2.5 py-1.5 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6] ${
           enabled
             ? "bg-[#f4effa] text-[#632ca6]"
-            : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
         }`}
       >
         <span
           aria-hidden="true"
           className={`h-1.5 w-1.5 rounded-full ${
-            enabled ? "bg-[#632ca6]" : "bg-gray-300"
+            enabled ? "bg-[#632ca6]" : "bg-slate-300"
           }`}
         />
         {enabled ? `Live (${intervalSeconds}s)` : "Auto-refresh"}
@@ -52,7 +52,7 @@ export function AutoRefresh({ intervalSeconds = 30 }: AutoRefreshProps) {
         type="button"
         disabled={isPending}
         onClick={handleManualRefresh}
-        className="px-2.5 py-1.5 font-medium text-gray-700 transition-colors hover:bg-gray-50 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6] disabled:opacity-50"
+        className="px-2.5 py-1.5 font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#632ca6] disabled:opacity-50"
       >
         {isPending ? "Updating…" : "Refresh"}
       </button>

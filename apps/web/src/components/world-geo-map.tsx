@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Panel, PanelHeader } from "@/components/ui";
 import type { WorldMapData } from "@/lib/world-map";
 
 interface WorldGeoMapProps {
@@ -15,7 +16,7 @@ const SCALE_COLORS = [
   "#c6a4ea", // medium-low
   "#9e6cd8", // medium-high
   "#7c3fc2", // high
-  "#632ca6", // peak (Datadog-inspired purple)
+  "#632ca6", // peak
 ] as const;
 
 function getFillColor(count: number, maxCount: number): string {
@@ -42,6 +43,33 @@ export function WorldGeoMap({
   const [hovered, setHovered] = useState<InspectedRegion | null>(null);
   const [pinned, setPinned] = useState<InspectedRegion | null>(null);
 
+  // Avoid dedicating large empty visual real estate when GeoIP enrichment is not
+  // populated (e.g., Phase 1 MVP runs without a GeoIP database per DATA_MODEL.md).
+  if (data.totalMapped === 0) {
+    return (
+      <Panel ariaLabel={title}>
+        <PanelHeader
+          title={title}
+          subtitle="Country/region enrichment status"
+          action={
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 font-mono text-[11px] font-medium text-slate-600">
+              GeoIP Not Enabled
+            </span>
+          }
+        />
+        <div className="flex flex-col gap-1.5 px-4 py-4 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+          <p className="leading-relaxed">
+            No country/region GeoIP metadata is populated for events in this window. The Phase 1
+            observatory intentionally minimizes IP enrichment and never exposes raw source IPs.
+          </p>
+          <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500">
+            0 mapped regions
+          </span>
+        </div>
+      </Panel>
+    );
+  }
+
   const activeRegion = hovered ?? pinned;
 
   const togglePinned = (region: InspectedRegion) => {
@@ -67,51 +95,47 @@ export function WorldGeoMap({
       : "0.0";
 
   return (
-    <section className="rounded border border-gray-200 bg-white">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-4 py-3">
-        <div className="min-w-0">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-            {title}
-          </h2>
-          <p className="mt-0.5 text-[11px] text-gray-500">{subtitle}</p>
-        </div>
-
-        {/* Fixed-height inspector strip (no jumping layout on hover/selection) */}
-        <div
-          aria-live="polite"
-          className="flex h-7 items-center gap-2 rounded border border-gray-200 bg-gray-50 px-2.5 font-mono text-[11px] tabular-nums text-gray-700"
-        >
-          {activeRegion ? (
-            <>
-              <span translate="no" className="font-semibold text-[#632ca6]">
-                {activeRegion.code}
+    <Panel ariaLabel={title}>
+      <PanelHeader
+        title={title}
+        subtitle={subtitle}
+        action={
+          <div
+            aria-live="polite"
+            className="flex h-7 items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 font-mono text-[11px] tabular-nums text-slate-700"
+          >
+            {activeRegion ? (
+              <>
+                <span translate="no" className="font-semibold text-[#632ca6]">
+                  {activeRegion.code}
+                </span>
+                <span className="max-w-[140px] truncate font-sans text-slate-600">
+                  {activeRegion.name}
+                </span>
+                <span className="text-slate-300">|</span>
+                <span className="font-semibold text-slate-900">
+                  {activeRegion.count.toLocaleString("en-US")}
+                </span>
+                <span className="text-slate-500">({sharePct}%)</span>
+                {pinned && !hovered ? (
+                  <button
+                    type="button"
+                    onClick={() => setPinned(null)}
+                    aria-label={`Clear selected region ${pinned.name}`}
+                    className="ml-1 rounded px-1 font-sans text-[10px] text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <span className="font-sans text-slate-500">
+                Hover, click, or focus a region to inspect
               </span>
-              <span className="max-w-[140px] truncate font-sans text-gray-600">
-                {activeRegion.name}
-              </span>
-              <span className="text-gray-300">|</span>
-              <span className="font-semibold text-gray-900">
-                {activeRegion.count.toLocaleString("en-US")}
-              </span>
-              <span className="text-gray-500">({sharePct}%)</span>
-              {pinned && !hovered ? (
-                <button
-                  type="button"
-                  onClick={() => setPinned(null)}
-                  aria-label={`Clear selected region ${pinned.name}`}
-                  className="ml-1 rounded px-1 font-sans text-[10px] text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-                >
-                  Clear
-                </button>
-              ) : null}
-            </>
-          ) : (
-            <span className="font-sans text-gray-400">
-              Hover, click, or focus a region to inspect event volume
-            </span>
-          )}
-        </div>
-      </div>
+            )}
+          </div>
+        }
+      />
 
       <div className="bg-[#fafbfd] p-3 sm:p-4">
         <svg
@@ -153,7 +177,6 @@ export function WorldGeoMap({
             })}
           </g>
 
-          {/* Flat dot markers for small territories omitted from 110m polygons (e.g. SG, HK) */}
           {data.markers.length > 0 ? (
             <g>
               {data.markers.map((marker) => {
@@ -193,11 +216,10 @@ export function WorldGeoMap({
         </svg>
       </div>
 
-      {/* Flat Legend Footer */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-4 py-2.5 text-[11px] text-gray-500">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 px-4 py-2.5 text-[11px] text-slate-500">
         <div className="flex items-center gap-2">
           <span>Volume:</span>
-          <span className="font-mono tabular-nums text-gray-600">0</span>
+          <span className="font-mono tabular-nums text-slate-700">0</span>
           <div className="flex items-center gap-0.5" aria-hidden="true">
             {SCALE_COLORS.map((color) => (
               <span
@@ -207,7 +229,7 @@ export function WorldGeoMap({
               />
             ))}
           </div>
-          <span className="font-mono tabular-nums text-gray-600">
+          <span className="font-mono tabular-nums text-slate-700">
             {data.maxCount.toLocaleString("en-US")}
           </span>
         </div>
@@ -215,6 +237,6 @@ export function WorldGeoMap({
           GeoIP approximation only (includes proxies/VPS; does not identify actual attacker origin)
         </span>
       </div>
-    </section>
+    </Panel>
   );
 }

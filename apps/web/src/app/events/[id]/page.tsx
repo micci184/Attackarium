@@ -10,6 +10,7 @@ import {
   formatEpssPercentile,
   formatJstDateTime,
   formatUtcDate,
+  safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
 import { getEventDetail } from "@/lib/observatory";
@@ -126,7 +127,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
               className="mt-1.5 break-all rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-800"
             >
               {event.http_method ? `${safeDisplayText(event.http_method)} ` : ""}
-              {safeDisplayText(event.http_path_redacted)}
+              {safeDisplayHttpPath(event.http_path_redacted)}
             </dd>
           </div>
         </dl>

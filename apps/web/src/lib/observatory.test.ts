@@ -7,6 +7,7 @@ import {
   formatEpssPercentile,
   formatJstDateTime,
   formatUtcDate,
+  safeDisplayHttpPath,
   safeDisplayText,
 } from "./format.ts";
 import {
@@ -470,6 +471,14 @@ describe("observatory data layer (mock mode)", () => {
       assert.equal(formatCvss(8.8), "8.8 / 10");
       assert.equal(formatCvss(null), "N/A");
       assert.equal(formatUtcDate("2023-05-01T00:00:00.000Z"), "2023-05-01");
+      const sampleJwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "sig123456"].join(".");
+      assert.equal(
+        safeDisplayHttpPath(
+          `/cgi-bin/luci/;stok=deadbeef99/admin?%74%6f%6b%65%6e=${sampleJwt}&user=admin&wsdl`,
+        ),
+        "/cgi-bin/luci/;stok=[REDACTED]/admin?%74%6f%6b%65%6e=[REDACTED]&user=[REDACTED]&wsdl",
+      );
+      assert.equal(safeDisplayHttpPath(null, "Inspect"), "Inspect");
 
       // MVP non-goal: no standalone /vulnerabilities route exists.
       const standaloneVulnsPage = resolve(

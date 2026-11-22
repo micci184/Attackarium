@@ -4,6 +4,7 @@ import { ObservationMeta } from "@/components/observation-meta";
 import { PatternLists } from "@/components/pattern-lists";
 import { PeriodNav } from "@/components/period-nav";
 import { PROTOCOL_COLORS, ProtocolBadge } from "@/components/protocol-badge";
+import { Callout, PageHeader, Panel, PanelHeader } from "@/components/ui";
 import { VolumeChart } from "@/components/volume-chart";
 import { WorldGeoMap } from "@/components/world-geo-map";
 import { seriesHasLeadingGap, parseTrendPeriod, trendPeriodLabel } from "@/lib/dashboard-metrics";
@@ -28,49 +29,42 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
   const maxAsn = Math.max(...data.asnTotals.map((a) => a.count), 1);
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-gray-900">
-            Trends
-          </h1>
-          <p className="mt-0.5 text-xs text-gray-500">
-            Event volume for the selected window, plus protocol, pattern, and sanitized HTTP path trends
-          </p>
-          <div className="mt-2">
-            <ObservationMeta
-              windowLabel={trendPeriodLabel(period)}
-              updatedAt={data.dataUpdatedAt}
-              sensorCount={data.registeredSensorCount}
-            />
-          </div>
-        </div>
-        <PeriodNav period={period} />
-      </div>
+    <div className="space-y-5">
+      <PageHeader
+        title="Trends"
+        description="Event volume for the selected window, plus protocol, pattern, and sanitized HTTP path trends"
+        meta={
+          <ObservationMeta
+            windowLabel={trendPeriodLabel(period)}
+            updatedAt={data.dataUpdatedAt}
+            sensorCount={data.registeredSensorCount}
+          />
+        }
+        actions={<PeriodNav period={period} />}
+      />
 
       <MethodologyBanner sourceMode={data.sourceMode} />
 
       {data.coverageGaps.length > 0 ? (
-        <section
-          aria-label="Collection gap notice"
-          className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-950"
+        <Callout
+          tone="warning"
+          ariaLabel="Collection gap notice"
+          action={
+            <Link
+              href="/sensors"
+              className="rounded font-medium text-amber-950 underline hover:text-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+            >
+              Inspect Sensors →
+            </Link>
+          }
         >
-          <p className="min-w-0 flex-1 leading-relaxed">
-            <span aria-hidden="true" className="mr-1.5 font-mono font-bold">
-              [GAP]
-            </span>
-            <span className="font-semibold">Collection gap detected in this window:</span>{" "}
-            {formatCount(data.coverageGaps.length)} outage/degraded interval(s) overlap the
-            selected range. Marked buckets may undercount traffic and must not be read as zero
-            activity.
-          </p>
-          <Link
-            href="/sensors"
-            className="shrink-0 rounded font-medium text-amber-950 underline hover:text-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
-          >
-            Inspect Sensors →
-          </Link>
-        </section>
+          <span aria-hidden="true" className="mr-1.5 font-mono font-bold">
+            [GAP]
+          </span>
+          <span className="font-semibold">Collection gap detected in this window:</span>{" "}
+          {formatCount(data.coverageGaps.length)} outage/degraded interval(s) overlap the selected
+          range. Marked buckets may undercount traffic and must not be read as zero activity.
+        </Callout>
       ) : null}
 
       <VolumeChart
@@ -115,24 +109,20 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         subtitle="Country/region-level heatmap across sampled events (hover or focus to inspect)"
       />
 
-      {/* Datadog-style Top Lists (2x2 flat panels) */}
+      {/* Top Lists (2x2 panels) */}
       <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Protocols In This Window
-            </h2>
-          </div>
+        <Panel>
+          <PanelHeader title="Protocols In This Window" />
           <div className="space-y-1.5 p-4">
             {data.protocolTotals.length === 0 ? (
-              <p className="text-xs text-gray-500">No protocol statistics recorded yet.</p>
+              <p className="text-xs text-slate-500">No protocol statistics recorded yet.</p>
             ) : (
               data.protocolTotals.map((item) => {
                 const widthPct = Math.max(Math.round((item.count / maxProto) * 100), 3);
                 return (
                   <div
                     key={item.protocol}
-                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
                   >
                     <div
                       aria-hidden="true"
@@ -144,7 +134,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                     />
                     <div className="relative flex items-center justify-between text-xs">
                       <ProtocolBadge protocol={item.protocol} />
-                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                      <span className="font-mono font-medium tabular-nums text-slate-900">
                         {formatCount(item.count)}
                       </span>
                     </div>
@@ -153,24 +143,20 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
               })
             )}
           </div>
-        </section>
+        </Panel>
 
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Top Destination Ports
-            </h2>
-          </div>
+        <Panel>
+          <PanelHeader title="Top Destination Ports" />
           <div className="space-y-1.5 p-4">
             {data.portTotals.length === 0 ? (
-              <p className="text-xs text-gray-500">No destination port data available yet.</p>
+              <p className="text-xs text-slate-500">No destination port data available yet.</p>
             ) : (
               data.portTotals.map((item) => {
                 const widthPct = Math.max(Math.round((item.count / maxPort) * 100), 3);
                 return (
                   <div
                     key={`${item.protocol}:${item.dstPort}`}
-                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
                   >
                     <div
                       aria-hidden="true"
@@ -182,12 +168,12 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                         <ProtocolBadge protocol={item.protocol} />
                         <span
                           translate="no"
-                          className="font-mono tabular-nums text-gray-700"
+                          className="font-mono font-medium tabular-nums text-slate-700"
                         >
                           :{item.dstPort}
                         </span>
                       </div>
-                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                      <span className="font-mono font-medium tabular-nums text-slate-900">
                         {formatCount(item.count)}
                       </span>
                     </div>
@@ -196,27 +182,23 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
               })
             )}
           </div>
-        </section>
+        </Panel>
 
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Approx. Source Regions (GeoIP Estimate)
-            </h2>
-          </div>
+        <Panel>
+          <PanelHeader
+            title="Approx. Source Regions (GeoIP Estimate)"
+            subtitle="IP geolocation is approximate (proxies, VPNs, or VPS hosts)"
+          />
           <div className="space-y-1.5 p-4">
-            <p className="pb-1 text-[11px] text-gray-500">
-              IP-based geolocation may be inaccurate due to proxies, VPNs, or cloud VPS hosts.
-            </p>
             {data.regionTotals.length === 0 ? (
-              <p className="text-xs text-gray-500">No regional data available yet.</p>
+              <p className="text-xs text-slate-500">No regional data available yet.</p>
             ) : (
               data.regionTotals.map((item) => {
                 const widthPct = Math.max(Math.round((item.count / maxRegion) * 100), 3);
                 return (
                   <div
                     key={item.country}
-                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
                   >
                     <div
                       aria-hidden="true"
@@ -224,10 +206,10 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                       style={{ width: `${widthPct}%` }}
                     />
                     <div className="relative flex items-center justify-between text-xs">
-                      <span translate="no" className="font-mono text-gray-700">
+                      <span translate="no" className="font-mono font-medium text-slate-700">
                         {item.country}
                       </span>
-                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                      <span className="font-mono font-medium tabular-nums text-slate-900">
                         {formatCount(item.count)}
                       </span>
                     </div>
@@ -236,24 +218,20 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
               })
             )}
           </div>
-        </section>
+        </Panel>
 
-        <section className="rounded border border-gray-200 bg-white">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-700">
-              Observed ASNs (Reference Only)
-            </h2>
-          </div>
+        <Panel>
+          <PanelHeader title="Observed ASNs (Reference Only)" />
           <div className="space-y-1.5 p-4">
             {data.asnTotals.length === 0 ? (
-              <p className="text-xs text-gray-500">No ASN observations recorded yet.</p>
+              <p className="text-xs text-slate-500">No ASN observations recorded yet.</p>
             ) : (
               data.asnTotals.map((item) => {
                 const widthPct = Math.max(Math.round((item.count / maxAsn) * 100), 3);
                 return (
                   <div
                     key={item.asn}
-                    className="relative overflow-hidden rounded border border-gray-100 bg-gray-50/70 px-3 py-1.5"
+                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
                   >
                     <div
                       aria-hidden="true"
@@ -261,10 +239,10 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                       style={{ width: `${widthPct}%` }}
                     />
                     <div className="relative flex items-center justify-between text-xs">
-                      <span translate="no" className="font-mono text-gray-700">
+                      <span translate="no" className="font-mono font-medium text-slate-700">
                         {item.asn}
                       </span>
-                      <span className="font-mono font-medium tabular-nums text-gray-900">
+                      <span className="font-mono font-medium tabular-nums text-slate-900">
                         {formatCount(item.count)}
                       </span>
                     </div>
@@ -273,7 +251,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
               })
             )}
           </div>
-        </section>
+        </Panel>
       </div>
     </div>
   );
