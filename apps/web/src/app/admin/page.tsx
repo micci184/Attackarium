@@ -7,7 +7,7 @@ import { reviewDailyReportAction, updateEntitlementAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-function AdminDeniedView({ reason }: { reason: string }) {
+function AdminDeniedView() {
   return (
     <section className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-6 shadow-xs">
       <p className="text-xs font-medium uppercase tracking-wide text-red-700">
@@ -19,9 +19,6 @@ function AdminDeniedView({ reason }: { reason: string }) {
       <p className="mt-2 text-sm text-slate-600">
         This console is restricted to allowlisted operators authenticated with
         multi-factor authentication (MFA / aal2).
-      </p>
-      <p className="mt-2 font-mono text-xs text-slate-500">
-        Reason: {reason}
       </p>
       <Link
         href="/"
@@ -36,7 +33,7 @@ function AdminDeniedView({ reason }: { reason: string }) {
 export default async function AdminConsolePage() {
   const auth = await requireOperatorAdmin();
   if (!auth.ok) {
-    return <AdminDeniedView reason={auth.reason} />;
+    return <AdminDeniedView />;
   }
 
   const client = getAdminServiceClient();
@@ -119,6 +116,7 @@ export default async function AdminConsolePage() {
             <input
               name="user_id"
               required
+              pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
               placeholder="xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx"
               className="mt-1 w-72 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900"
             />

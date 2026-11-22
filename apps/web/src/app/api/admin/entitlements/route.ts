@@ -4,6 +4,7 @@ import {
   adminErrorResponse,
   appendAdminAuditLog,
   getAdminServiceClient,
+  isJsonContentType,
   requireOperatorAdmin,
 } from "@/lib/admin-auth";
 
@@ -57,6 +58,13 @@ export async function GET(): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   const auth = await requireOperatorAdmin();
   if (!auth.ok) return adminErrorResponse(auth);
+
+  if (!isJsonContentType(request)) {
+    return NextResponse.json(
+      { error: "unsupported_media_type" },
+      { status: 415, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 
   const client = getAdminServiceClient();
   if (!client) {

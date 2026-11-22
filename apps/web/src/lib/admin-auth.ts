@@ -74,6 +74,11 @@ export function adminErrorResponse(
   );
 }
 
+export function isJsonContentType(request: Request): boolean {
+  const contentType = request.headers.get("content-type") ?? "";
+  return contentType.toLowerCase().split(";")[0]?.trim() === "application/json";
+}
+
 export async function appendAdminAuditLog(
   client: SupabaseClient,
   entry: {
