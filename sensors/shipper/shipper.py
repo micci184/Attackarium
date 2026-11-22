@@ -19,6 +19,7 @@ import hmac
 import json
 import re
 import sqlite3
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -30,6 +31,8 @@ from typing import Any
 
 EVENT_NAMESPACE_UUID = uuid.UUID("7f3d56f8-3d1d-4d0e-942c-0df9b7489f41")
 SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
+SPOOL_ALERT_RATIO = 0.70
+SPOOL_ALERT_REPEAT_SECONDS = 300.0
 HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
 LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -370,6 +373,8 @@ class EventShipper:
         self.metrics = ShipperMetrics()
         self.consecutive_failures = 0
         self._last_heartbeat_sec: float | None = None
+        self._spool_alert_active = False
+        self._spool_notice_at: float | None = None
 
     def close(self) -> None:
         self.spool.close()
@@ -547,11 +552,51 @@ class EventShipper:
         self.metrics.last_retry_after_seconds = retry_after
         self.consecutive_failures += 1
 
+    def spool_status(self) -> dict[str, Any]:
+        used = self.spool.total_bytes()
+        cap = self.config.max_spool_bytes
+        ratio = 0.0 if cap <= 0 else used / cap
+        return {
+            "max_spool_bytes": cap,
+            "spool_utilization": round(ratio, 4),
+            "spool_alert": ratio >= SPOOL_ALERT_RATIO,
+        }
+
+    def note_spool_pressure(self, now: float | None = None) -> str | None:
+        """Record a local warning when the spool stays at or above 70% of its cap.
+
+        The notice goes to stderr so the existing shipper service journal captures
+        it. It repeats at most once per five minutes while the condition holds.
+        """
+        current = time.time() if now is None else now
+        status = self.spool_status()
+        alert = bool(status["spool_alert"])
+        repeat_due = (
+            self._spool_notice_at is None
+            or current - self._spool_notice_at >= SPOOL_ALERT_REPEAT_SECONDS
+        )
+        message: str | None = None
+        if alert and (not self._spool_alert_active or repeat_due):
+            message = (
+                "spool utilization "
+                f"{status['spool_utilization'] * 100:.1f}% "
+                f"({self.spool.total_bytes()}/{status['max_spool_bytes']} bytes); "
+                "investigate ingest before the cap drops events"
+            )
+        elif self._spool_alert_active and not alert:
+            message = "spool utilization returned below 70%"
+        self._spool_alert_active = alert
+        if message is not None:
+            self._spool_notice_at = current
+            print(message, file=sys.stderr, flush=True)
+        return message
+
     def metrics_snapshot(self) -> dict[str, Any]:
         """Local counters only. A successful batch is what moves the remote heartbeat."""
         return {
             "queue_depth": self.spool.count(),
             "queue_bytes": self.spool.total_bytes(),
+            **self.spool_status(),
             "enqueued": self.metrics.enqueued,
             "dropped_spool_full": self.metrics.dropped_spool_full,
             "dropped_invalid": self.metrics.dropped_invalid,
@@ -658,6 +703,7 @@ def main() -> None:
             for path in sources:
                 shipper.ingest_jsonl_file(path)
             shipper.flush_once()
+            shipper.note_spool_pressure()
             shipper.write_metrics(metrics_path)
             delay = shipper.next_backoff_seconds()
             time.sleep(delay if delay > 0 else 1.0)

@@ -39,6 +39,26 @@ investigation is finished and the owner chooses to destroy the host.
    resumes the same disk. A new instance is a later, separate decision. Do not
    treat a start as permission to widen the security group.
 
+## Storage pressure
+
+These checks do not add a monitoring service, and the sensor does not receive a
+database password.
+
+1. **Local spool.** The shipper writes `/var/lib/attackarium/shipper-metrics.json`.
+   `spool_alert` is true at 70% of the local cap. The same warning is written to
+   the shipper service journal and repeats at most every five minutes.
+   `journalctl -u attackarium-shipper` shows `spool utilization`.
+2. **Database budget.** From an operator machine that already has the Supabase
+   database URL, run:
+
+   ```sql
+   select pg_size_pretty(pg_database_size(current_database())) as database_size;
+   ```
+
+   The Phase 1 budget is the Supabase Free database quota, 500 MB. Above 70%
+   (350 MB), shorten detailed-event retention before daily aggregates. Do not
+   keep sanitized events for less than 30 days without a new decision.
+
 ## What this runbook does not add
 
 - A second AWS account, a dedicated abuse product, or a status page.

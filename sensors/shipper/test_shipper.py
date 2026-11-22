@@ -520,6 +520,37 @@ class ShipperIntegrationTests(unittest.TestCase):
             "CVE-2021-44228",
         )
 
+    def test_warns_when_spool_reaches_seventy_percent_and_clears_below_it(self) -> None:
+        spool_path = Path(self.tmpdir.name) / "pressure.sqlite3"
+        cfg = ShipperConfig(
+            sensor_id="sensor-dev-01",
+            hmac_secret=TEST_SECRET,
+            ingest_url="http://127.0.0.1:9/ingest",
+            spool_path=spool_path,
+            max_spool_bytes=400,
+        )
+        shipper = EventShipper(cfg)
+        try:
+            self.assertFalse(shipper.spool_status()["spool_alert"])
+            self.assertIsNone(shipper.note_spool_pressure(now=1_000))
+            queued = shipper.spool.enqueue({"id": "pressure-1", "pad": "x" * 300})
+            self.assertTrue(queued)
+            first = shipper.note_spool_pressure(now=1_000)
+            self.assertIsNotNone(first)
+            self.assertIn("spool utilization", first or "")
+            self.assertIsNone(shipper.note_spool_pressure(now=1_100))
+            repeated = shipper.note_spool_pressure(now=1_300)
+            self.assertIsNotNone(repeated)
+            snapshot = shipper.metrics_snapshot()
+            self.assertTrue(snapshot["spool_alert"])
+            self.assertGreaterEqual(snapshot["spool_utilization"], 0.70)
+            shipper.spool.delete_seqs([1])
+            cleared = shipper.note_spool_pressure(now=1_301)
+            self.assertEqual(cleared, "spool utilization returned below 70%")
+            self.assertFalse(shipper.metrics_snapshot()["spool_alert"])
+        finally:
+            shipper.close()
+
 
 if __name__ == "__main__":
     unittest.main()
