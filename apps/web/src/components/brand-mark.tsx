@@ -1,35 +1,33 @@
-export function BrandMark({ className = "h-7 w-7 shrink-0" }: { className?: string }) {
+import Image from "next/image";
+
+const LOGO_WIDTH = 520;
+const LOGO_HEIGHT = 96;
+
+/**
+ * Wordmark lockup. The light asset is dark ink for the default light chrome.
+ * The dark asset is light ink and is shown only when the OS prefers a dark scheme.
+ */
+export function BrandMark() {
   return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 32 32"
-      fill="none"
-      className={className}
-    >
-      {/* Observation baseline */}
-      <path
-        d="M5 25.5H27"
-        stroke="#94a3b8"
-        strokeWidth="1.75"
-        strokeLinecap="round"
+    <>
+      <Image
+        src="/brand/attackarium-logo-light.png"
+        alt="Attackarium Threat Observatory"
+        width={LOGO_WIDTH}
+        height={LOGO_HEIGHT}
+        priority
+        className="h-8 w-auto dark:hidden"
+        style={{ width: "auto", height: "2rem" }}
       />
-      {/* Geometric A-prism (observatory spire / signal beam) */}
-      <path
-        d="M8.5 25.5L16 7.5L23.5 25.5"
-        stroke="#0f172a"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <Image
+        src="/brand/attackarium-logo-dark.png"
+        alt="Attackarium Threat Observatory"
+        width={LOGO_WIDTH}
+        height={LOGO_HEIGHT}
+        priority
+        className="hidden h-8 w-auto dark:block"
+        style={{ width: "auto", height: "2rem" }}
       />
-      {/* Measurement crossbar */}
-      <path
-        d="M11.6 19H20.4"
-        stroke="#0f172a"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      {/* Single observed signal point */}
-      <circle cx="16" cy="7.5" r="2.7" fill="#632ca6" />
-    </svg>
+    </>
   );
 }

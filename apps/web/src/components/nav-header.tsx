@@ -74,30 +74,19 @@ export function NavHeader() {
   const pathname = usePathname();
 
   return (
-    <aside className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/90 lg:flex lg:h-screen lg:w-56 lg:shrink-0 lg:flex-col lg:border-b-0 lg:border-r lg:bg-white">
-      <div className="flex flex-col gap-2.5 px-4 py-3 lg:border-b lg:border-slate-200 lg:py-4">
+    <aside className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/90 lg:flex lg:h-screen lg:w-60 lg:shrink-0 lg:flex-col lg:border-b-0 lg:border-r lg:bg-white dark:border-slate-800 dark:bg-[#121826] dark:supports-[backdrop-filter]:bg-[#121826]/95">
+      <div className="flex flex-col gap-2.5 px-4 py-3 lg:border-b lg:border-slate-200 lg:py-4 dark:lg:border-slate-800">
         <div className="flex items-center justify-between gap-3">
           <Link
             href="/"
-            className="flex min-w-0 items-center gap-2.5 rounded-md pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] focus-visible:ring-offset-2"
+            className="flex min-w-0 items-center rounded-md pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#121826]"
           >
-            <BrandMark className="h-7 w-7 shrink-0" />
-            <div className="min-w-0 leading-tight">
-              <div
-                translate="no"
-                className="text-[15px] font-semibold tracking-tight text-slate-900"
-              >
-                Attackarium
-              </div>
-              <div translate="no" className="text-[11px] text-slate-500">
-                Threat Observatory
-              </div>
-            </div>
+            <BrandMark />
           </Link>
 
           <span
             translate="no"
-            className="font-mono text-[11px] text-slate-500 lg:hidden"
+            className="font-mono text-[11px] text-slate-500 lg:hidden dark:text-slate-400"
           >
             us-east-1
           </span>
@@ -120,8 +109,8 @@ export function NavHeader() {
                 aria-current={isActive ? "page" : undefined}
                 className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
                   isActive
-                    ? "bg-[#f4effa] text-[#632ca6]"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    ? "bg-[#f4effa] text-[#632ca6] dark:bg-white/10 dark:text-violet-200"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white"
                 }`}
               >
                 {item.icon}
@@ -150,13 +139,15 @@ export function NavHeader() {
                   aria-current={isActive ? "page" : undefined}
                   className={`group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] ${
                     isActive
-                      ? "bg-[#f4effa] text-[#632ca6]"
-                      : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                      ? "bg-[#f4effa] text-[#632ca6] dark:bg-white/10 dark:text-violet-200"
+                      : "text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white"
                   }`}
                 >
                   <span
                     className={
-                      isActive ? "text-[#632ca6]" : "text-slate-400 group-hover:text-slate-600"
+                      isActive
+                        ? "text-[#632ca6] dark:text-violet-200"
+                        : "text-slate-400 group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300"
                     }
                   >
                     {item.icon}
@@ -168,12 +159,12 @@ export function NavHeader() {
           })}
         </ul>
 
-        <div className="border-t border-slate-200 pt-3 text-xs text-slate-500">
+        <div className="border-t border-slate-200 pt-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
           <div className="flex items-center justify-between gap-2 px-1">
-            <span className="font-medium text-slate-700">Public dataset</span>
-            <span className="font-mono text-[11px] text-slate-500">Sanitized</span>
+            <span className="font-medium text-slate-700 dark:text-slate-200">Public dataset</span>
+            <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">Sanitized</span>
           </div>
-          <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-slate-500">
+          <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
             Source IPs, query values, credentials, and raw payloads are excluded.
           </p>
         </div>
