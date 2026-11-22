@@ -62,6 +62,44 @@ export async function requireOperatorAdmin(): Promise<AdminAuthDecision> {
   );
 }
 
+/**
+ * Verifies that the caller is an authenticated allowlisted operator (aal1 or aal2).
+ * Used strictly by the operator MFA enrollment/challenge flow so allowlisted
+ * operators can elevate from aal1 to aal2 without exposing MFA UI to general users.
+ */
+export async function requireAllowlistedOperatorSession(): Promise<
+  | { ok: true; userId: string; currentLevel: string | null }
+  | { ok: false; status: 401 | 403; reason: "unauthenticated" | "not_allowlisted" }
+> {
+  const allowedUserIds = parseAdminAllowedUserIds(
+    process.env.ADMIN_ALLOWED_USER_IDS,
+  );
+  const supabase = await createSupabaseAuthServerClient();
+  if (!supabase) {
+    return { ok: false, status: 401, reason: "unauthenticated" };
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return { ok: false, status: 401, reason: "unauthenticated" };
+  }
+
+  if (allowedUserIds.size === 0 || !allowedUserIds.has(user.id.toLowerCase())) {
+    return { ok: false, status: 403, reason: "not_allowlisted" };
+  }
+
+  const { data: aalData } =
+    await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+  return {
+    ok: true,
+    userId: user.id,
+    currentLevel: aalData?.currentLevel ?? null,
+  };
+}
+
 export function adminErrorResponse(
   decision: Extract<AdminAuthDecision, { ok: false }>,
 ): Response {
