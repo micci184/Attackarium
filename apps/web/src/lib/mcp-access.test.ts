@@ -100,7 +100,7 @@ describe("evaluateMcpAccess", () => {
     );
   });
 
-  it("requires an OAuth client and the read scope", () => {
+  it("requires an OAuth client and rejects disallowed scopes while accepting Supabase OAuth tokens without a scope claim", () => {
     assert.deepEqual(
       evaluateMcpAccess(identity({ clientId: null }), entitlement()),
       { ok: false, gate: "consent" },
@@ -109,8 +109,13 @@ describe("evaluateMcpAccess", () => {
       evaluateMcpAccess(identity({ clientId: "  " }), entitlement()),
       { ok: false, gate: "consent" },
     );
+    // Supabase OAuth 2.1 access tokens include client_id without a scope claim
     assert.deepEqual(
       evaluateMcpAccess(identity({ scopes: [] }), entitlement()),
+      { ok: true },
+    );
+    assert.deepEqual(
+      evaluateMcpAccess(identity({ scopes: ["admin:write"] }), entitlement()),
       { ok: false, gate: "consent" },
     );
   });

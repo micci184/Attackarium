@@ -178,7 +178,7 @@ describe("Remote MCP server security boundaries", () => {
     assert.ok(
       wwwAuth.includes('resource_metadata="https://attackarium.example/.well-known/oauth-protected-resource"'),
     );
-    assert.ok(wwwAuth.includes('scope="mcp:read"'));
+    assert.ok(wwwAuth.includes('scope="openid"'));
 
     // 2. Malformed token
     const resBad = await handler(mcpRequest(initBody, "not-a-jwt-secret-token"));
@@ -230,14 +230,25 @@ describe("Remote MCP server security boundaries", () => {
     assert.equal(resSpoofed.status, 403);
     assert.deepEqual(await resSpoofed.json(), { error: "forbidden", gate: "login" });
 
-    // Missing scope -> 403 + insufficient_scope challenge
-    const noScopeToken = await signToken(validClaims({ scope: "" }));
-    const resNoScope = await handler(mcpRequest(listReq, noScopeToken));
-    assert.equal(resNoScope.status, 403);
-    assert.deepEqual(await resNoScope.json(), { error: "forbidden", gate: "consent" });
+    // Disallowed scope -> 403 + insufficient_scope challenge
+    const badScopeToken = await signToken(validClaims({ scope: "admin:write" }));
+    const resBadScope = await handler(mcpRequest(listReq, badScopeToken));
+    assert.equal(resBadScope.status, 403);
+    assert.deepEqual(await resBadScope.json(), { error: "forbidden", gate: "consent" });
     assert.ok(
-      (resNoScope.headers.get("www-authenticate") ?? "").includes('error="insufficient_scope"'),
+      (resBadScope.headers.get("www-authenticate") ?? "").includes('error="insufficient_scope"'),
     );
+
+    // Direct session token without OAuth client_id -> 403
+    const noClientToken = await signToken(validClaims({ client_id: undefined }));
+    const resNoClient = await handler(mcpRequest(listReq, noClientToken));
+    assert.equal(resNoClient.status, 403);
+    assert.deepEqual(await resNoClient.json(), { error: "forbidden", gate: "consent" });
+
+    // Supabase OAuth 2.1 access token (client_id present, scope claim omitted) -> succeeds
+    const supabaseOAuthToken = await signToken(validClaims({ scope: undefined }));
+    const resSupabaseOAuth = await handler(mcpRequest(listReq, supabaseOAuthToken));
+    assert.equal(resSupabaseOAuth.status, 200);
 
     const token = await signToken(validClaims());
 

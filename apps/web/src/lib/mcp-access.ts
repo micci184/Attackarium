@@ -4,10 +4,14 @@
  * This function does not read tokens, prompts, or user profile fields.
  */
 
-export const MCP_READ_SCOPE = "mcp:read";
+// Supabase OAuth 2.1 Server supports standard OIDC scopes only (not custom scopes).
+// Use the minimal `openid` scope (no email/profile/phone requested) and enforce
+// read-only access server-side across the 3 read-only tools.
+export const MCP_READ_SCOPE = "openid";
 export const MCP_TERMS_VERSION = "2026-11-22";
 
 const ALLOWED_LOGIN_PROVIDERS = new Set(["google", "github"]);
+const ALLOWED_MCP_SCOPES = new Set([MCP_READ_SCOPE, "mcp:read"]);
 const USER_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -62,8 +66,15 @@ export function evaluateMcpAccess(
     return { ok: false, gate: "entitlement" };
   }
 
-  const scopes = new Set(identity.scopes);
-  if (identity.clientId === null || identity.clientId.trim() === "" || !scopes.has(MCP_READ_SCOPE)) {
+  if (identity.clientId === null || identity.clientId.trim() === "") {
+    return { ok: false, gate: "consent" };
+  }
+  // Supabase OAuth 2.1 access tokens carry `client_id` without a `scope` claim.
+  // When a `scope` claim is present, verify it contains an allowed read scope.
+  if (
+    identity.scopes.length > 0 &&
+    !identity.scopes.some((scope) => ALLOWED_MCP_SCOPES.has(scope))
+  ) {
     return { ok: false, gate: "consent" };
   }
 
