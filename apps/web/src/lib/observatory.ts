@@ -8,6 +8,7 @@ import {
   MOCK_REFERENCE_NOW_MS,
   MOCK_SENSORS,
   MOCK_SENSOR_STATUS_EVENTS,
+  MOCK_VULNERABILITIES,
 } from "./mock-data.ts";
 import {
   annotateSeriesCoverage,
@@ -38,20 +39,26 @@ import {
 } from "./dashboard-metrics.ts";
 import {
   AttackCategorySchema,
+  type EnrichedEventCveMatch,
   type EventDetailData,
   type OverviewData,
   type OverviewSensor,
   type PaginatedEventsResult,
+  type PatternCveContext,
   type Protocol,
   ProtocolSchema,
   PublicDailyStatSchema,
+  type PublicDetection,
   PublicDetectionSchema,
+  type PublicEventCveMatch,
   PublicEventCveMatchSchema,
   PublicEventSchema,
   type PublicSensor,
   PublicSensorSchema,
   type PublicSensorStatusEvent,
   PublicSensorStatusEventSchema,
+  type PublicVulnerability,
+  PublicVulnerabilitySchema,
   type SensorHealthStatus,
   type SensorsPageData,
   type TrendPeriod,
@@ -78,6 +85,123 @@ export function evaluateSensorHealth(
 }
 
 const SAMPLE_EVENT_LIMIT = 1000;
+const CVE_MATCH_WINDOW_LIMIT = 500;
+const VULNERABILITY_CONTEXT_LIMIT = 100;
+
+/**
+ * Combines event-level candidate CVE matches with detection provenance and
+ * cached vulnerability metadata. Drops any match whose backing detection is
+ * missing so ungrounded CVEs are never displayed.
+ */
+export function enrichEventCveMatches(
+  matches: readonly PublicEventCveMatch[],
+  detections: readonly PublicDetection[],
+  vulnerabilities: readonly PublicVulnerability[],
+): EnrichedEventCveMatch[] {
+  const detectionIds = new Set(detections.map((d) => d.id));
+  const vulnById = new Map(vulnerabilities.map((v) => [v.cve_id, v]));
+
+  return matches
+    .filter(
+      (match) =>
+        detectionIds.has(match.detection_id) &&
+        match.rule_id.length > 0 &&
+        match.rule_version.length > 0,
+    )
+    .map((match) => {
+      const vuln = vulnById.get(match.cve_id);
+      return {
+        ...match,
+        description: vuln?.description ?? null,
+        vendor: vuln?.vendor ?? null,
+        product: vuln?.product ?? null,
+        published_at: vuln?.published_at ?? null,
+        cvss_score: vuln?.cvss_score ?? null,
+        cvss_vector: vuln?.cvss_vector ?? null,
+        kev_added_at: vuln?.kev_added_at ?? null,
+        kev_updated_at: vuln?.kev_updated_at ?? null,
+        source_updated_at: vuln?.source_updated_at ?? null,
+      };
+    })
+    .toSorted((a, b) => b.confidence - a.confidence || a.cve_id.localeCompare(b.cve_id));
+}
+
+/**
+ * Summarizes evidence-backed candidate CVEs observed in a time window for
+ * inline display on Observed Patterns. Vulnerabilities without an observed
+ * match in `matches` are intentionally excluded.
+ */
+export function buildPatternCveContext(
+  matches: readonly PublicEventCveMatch[],
+  vulnerabilities: readonly PublicVulnerability[],
+  limit = 8,
+): PatternCveContext[] {
+  const vulnById = new Map(vulnerabilities.map((v) => [v.cve_id, v]));
+  const grouped = new Map<
+    string,
+    {
+      eventIds: Set<string>;
+      best: PublicEventCveMatch;
+      lastMatchedAt: string;
+    }
+  >();
+
+  for (const match of matches) {
+    if (!match.rule_id || !match.rule_version) continue;
+    const existing = grouped.get(match.cve_id);
+    if (!existing) {
+      grouped.set(match.cve_id, {
+        eventIds: new Set([match.event_id]),
+        best: match,
+        lastMatchedAt: match.created_at,
+      });
+      continue;
+    }
+    existing.eventIds.add(match.event_id);
+    if (match.created_at > existing.lastMatchedAt) {
+      existing.lastMatchedAt = match.created_at;
+    }
+    if (
+      match.confidence > existing.best.confidence ||
+      (match.confidence === existing.best.confidence &&
+        match.created_at > existing.best.created_at)
+    ) {
+      existing.best = match;
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .map(([cveId, entry]) => {
+      const vuln = vulnById.get(cveId);
+      return {
+        cveId,
+        ruleId: entry.best.rule_id,
+        ruleVersion: entry.best.rule_version,
+        maxConfidence: entry.best.confidence,
+        matchedEventCount: entry.eventIds.size,
+        lastMatchedAt: entry.lastMatchedAt,
+        kevPresent: vuln?.kev_present ?? entry.best.kev_present,
+        kevAddedAt: vuln?.kev_added_at ?? null,
+        kevUpdatedAt: vuln?.kev_updated_at ?? null,
+        epssScore: vuln?.epss_score ?? entry.best.epss_score,
+        epssPercentile: vuln?.epss_percentile ?? entry.best.epss_percentile,
+        epssDate: vuln?.epss_date ?? entry.best.epss_date,
+        cvssScore: vuln?.cvss_score ?? null,
+        vendor: vuln?.vendor ?? null,
+        product: vuln?.product ?? null,
+        description: vuln?.description ?? null,
+        reason: entry.best.reason,
+        eventsHref: "/events?category=suspected_cve_probe",
+      };
+    })
+    .toSorted(
+      (a, b) =>
+        b.matchedEventCount - a.matchedEventCount ||
+        b.maxConfidence - a.maxConfidence ||
+        a.cveId.localeCompare(b.cveId),
+    )
+    .slice(0, limit);
+}
 
 function protocolShare(
   rows: Iterable<{ protocol: Protocol; eventCount: number }>,
@@ -255,6 +379,10 @@ export async function getOverviewData(): Promise<OverviewData> {
         ...pattern,
         eventsHref: eventsFilterHref(pattern.protocol, pattern.key.split(":")[1]),
       })),
+      patternCveContext24h: buildPatternCveContext(
+        MOCK_CVE_MATCHES.filter((match) => Date.parse(match.created_at) >= windowStart),
+        MOCK_VULNERABILITIES,
+      ),
       httpPaths24h: topHttpPaths(MOCK_EVENTS),
       dataUpdatedAt: latestTimestamp(MOCK_EVENTS.map((event) => event.received_at)),
       recentEvents,
@@ -265,10 +393,20 @@ export async function getOverviewData(): Promise<OverviewData> {
   const currentHourMs = utcHourBucketStart(nowMs);
   const window24hStartMs = currentHourMs - 23 * HOUR_MS;
   const window48hStartMs = window24hStartMs - 24 * HOUR_MS;
+  const since24h = new Date(window24hStartMs).toISOString();
   const since48h = new Date(window48hStartMs).toISOString();
   const untilHour = new Date(currentHourMs).toISOString();
 
-  const [sensorsRes, recentRes, statusRes, firstSeenRes, sampleRes, aggregatePage] = await Promise.all([
+  const [
+    sensorsRes,
+    recentRes,
+    statusRes,
+    firstSeenRes,
+    sampleRes,
+    aggregatePage,
+    cveMatchesRes,
+    vulnsRes,
+  ] = await Promise.all([
     client.from("public_sensors").select("*").order("created_at", { ascending: true }),
     client
       .from("public_events")
@@ -284,7 +422,7 @@ export async function getOverviewData(): Promise<OverviewData> {
     client
       .from("public_observed_patterns")
       .select("pattern_type, pattern_key, protocol, first_seen_at, total_count")
-      .gte("first_seen_at", new Date(window24hStartMs).toISOString())
+      .gte("first_seen_at", since24h)
       .order("total_count", { ascending: false })
       .limit(20),
     client
@@ -293,7 +431,7 @@ export async function getOverviewData(): Promise<OverviewData> {
         "protocol, src_country, http_method, http_path_redacted, received_at",
         { count: "exact" },
       )
-      .gte("observed_at", new Date(window24hStartMs).toISOString())
+      .gte("observed_at", since24h)
       .lte("observed_at", new Date(currentHourMs + HOUR_MS - 1).toISOString())
       .order("observed_at", { ascending: false })
       .limit(SAMPLE_EVENT_LIMIT),
@@ -312,6 +450,17 @@ export async function getOverviewData(): Promise<OverviewData> {
           .range(from, to),
       "public_event_aggregates",
     ),
+    client
+      .from("public_event_cve_matches")
+      .select("*")
+      .gte("created_at", since24h)
+      .order("created_at", { ascending: false })
+      .limit(CVE_MATCH_WINDOW_LIMIT),
+    client
+      .from("public_vulnerabilities")
+      .select("*")
+      .order("matched_event_count", { ascending: false })
+      .limit(VULNERABILITY_CONTEXT_LIMIT),
   ]);
 
   if (sensorsRes.error) throw new Error(`public_sensors query failed: ${sensorsRes.error.message}`);
@@ -319,6 +468,8 @@ export async function getOverviewData(): Promise<OverviewData> {
   if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
   if (sampleRes.error) throw new Error(`public_events sample query failed: ${sampleRes.error.message}`);
   if (firstSeenRes.error) throw new Error(`public_observed_patterns query failed: ${firstSeenRes.error.message}`);
+  if (cveMatchesRes.error) throw new Error(`public_event_cve_matches query failed: ${cveMatchesRes.error.message}`);
+  if (vulnsRes.error) throw new Error(`public_vulnerabilities query failed: ${vulnsRes.error.message}`);
 
   const parsedSensors = z.array(PublicSensorSchema).parse(sensorsRes.data ?? []);
   const statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
@@ -417,6 +568,10 @@ export async function getOverviewData(): Promise<OverviewData> {
       ...pattern,
       eventsHref: eventsFilterHref(pattern.protocol, pattern.key.split(":")[1]),
     })),
+    patternCveContext24h: buildPatternCveContext(
+      z.array(PublicEventCveMatchSchema).parse(cveMatchesRes.data ?? []),
+      z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []),
+    ),
     httpPaths24h: topHttpPaths(sampleRows),
     dataUpdatedAt: latestTimestamp([
       ...hourRows.map((row) => row.updated_at),
@@ -455,6 +610,10 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
   let sourceMode: "mock" | "supabase" = "mock";
   let aggregateComplete = true;
   let hourAggregates: Array<z.infer<typeof HourAggregateSchema>> = [];
+  let cveMatches: PublicEventCveMatch[] = MOCK_CVE_MATCHES.filter(
+    (match) => Date.parse(match.created_at) >= windowStartMs && Date.parse(match.created_at) <= nowMs,
+  );
+  let vulnerabilities: PublicVulnerability[] = MOCK_VULNERABILITIES;
 
   if (client) {
     sourceMode = "supabase";
@@ -462,7 +621,16 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
     const statusSinceIso = new Date(seriesStartMs).toISOString();
     const hourStart = new Date(hourWindowStartMs).toISOString();
     const hourEnd = new Date(hourWindowEndMs).toISOString();
-    const [statsPage, hourPage, eventsRes, sensorsRes, oldestRes, statusRes] = await Promise.all([
+    const [
+      statsPage,
+      hourPage,
+      eventsRes,
+      sensorsRes,
+      oldestRes,
+      statusRes,
+      cveMatchesRes,
+      vulnsRes,
+    ] = await Promise.all([
       period === "24h"
         ? Promise.resolve({ rows: [] as Array<z.infer<typeof PublicDailyStatSchema>>, complete: true })
         : fetchAllRows(
@@ -514,18 +682,33 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
         .or(`ended_at.is.null,ended_at.gte.${statusSinceIso}`)
         .order("started_at", { ascending: false })
         .limit(200),
+      client
+        .from("public_event_cve_matches")
+        .select("*")
+        .gte("created_at", sinceIso)
+        .order("created_at", { ascending: false })
+        .limit(CVE_MATCH_WINDOW_LIMIT),
+      client
+        .from("public_vulnerabilities")
+        .select("*")
+        .order("matched_event_count", { ascending: false })
+        .limit(VULNERABILITY_CONTEXT_LIMIT),
     ]);
 
     if (eventsRes.error) throw new Error(`public_events trends query failed: ${eventsRes.error.message}`);
     if (sensorsRes.error) throw new Error(`public_sensors count failed: ${sensorsRes.error.message}`);
     if (oldestRes.error) throw new Error(`public_events history query failed: ${oldestRes.error.message}`);
     if (statusRes.error) throw new Error(`public_sensor_status_events query failed: ${statusRes.error.message}`);
+    if (cveMatchesRes.error) throw new Error(`public_event_cve_matches trends query failed: ${cveMatchesRes.error.message}`);
+    if (vulnsRes.error) throw new Error(`public_vulnerabilities trends query failed: ${vulnsRes.error.message}`);
 
     dailyStats = z.array(PublicDailyStatSchema).parse(statsPage.rows);
     hourAggregates = z.array(HourAggregateSchema).parse(hourPage.rows);
     aggregateComplete = statsPage.complete && hourPage.complete;
     recentEvents = z.array(PublicEventSchema).parse(eventsRes.data ?? []);
     statusEvents = z.array(PublicSensorStatusEventSchema).parse(statusRes.data ?? []);
+    cveMatches = z.array(PublicEventCveMatchSchema).parse(cveMatchesRes.data ?? []);
+    vulnerabilities = z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []);
     registeredSensorCount = sensorsRes.count ?? 0;
     eventMatchCount = eventsRes.count ?? recentEvents.length;
     const oldest = z
@@ -663,6 +846,7 @@ export async function getTrendsData(period: TrendPeriod = "30d"): Promise<Trends
             })),
           )
         : topPatterns(windowEvents),
+    patternCveContext: buildPatternCveContext(cveMatches, vulnerabilities),
     httpPaths: topHttpPaths(windowEvents),
   };
 }
@@ -767,11 +951,13 @@ export async function getEventDetail(id: string): Promise<EventDetailData> {
     if (!event) {
       return { sourceMode: "mock", event: null, detections: [], cveMatches: [] };
     }
+    const detections = MOCK_DETECTIONS.filter((d) => d.event_id === id);
+    const rawMatches = MOCK_CVE_MATCHES.filter((m) => m.event_id === id);
     return {
       sourceMode: "mock",
       event,
-      detections: MOCK_DETECTIONS.filter((d) => d.event_id === id),
-      cveMatches: MOCK_CVE_MATCHES.filter((m) => m.event_id === id),
+      detections,
+      cveMatches: enrichEventCveMatches(rawMatches, detections, MOCK_VULNERABILITIES),
     };
   }
 
@@ -789,11 +975,27 @@ export async function getEventDetail(id: string): Promise<EventDetailData> {
     return { sourceMode: "supabase", event: null, detections: [], cveMatches: [] };
   }
 
+  const detections = z.array(PublicDetectionSchema).parse(detectionsRes.data ?? []);
+  const rawMatches = z.array(PublicEventCveMatchSchema).parse(matchesRes.data ?? []);
+  const matchedCveIds = Array.from(new Set(rawMatches.map((m) => m.cve_id)));
+  let vulnerabilities: PublicVulnerability[] = [];
+
+  if (matchedCveIds.length > 0) {
+    const vulnsRes = await client
+      .from("public_vulnerabilities")
+      .select("*")
+      .in("cve_id", matchedCveIds);
+    if (vulnsRes.error) {
+      throw new Error(`public_vulnerabilities detail failed: ${vulnsRes.error.message}`);
+    }
+    vulnerabilities = z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []);
+  }
+
   return {
     sourceMode: "supabase",
     event: PublicEventSchema.parse(eventRes.data),
-    detections: z.array(PublicDetectionSchema).parse(detectionsRes.data ?? []),
-    cveMatches: z.array(PublicEventCveMatchSchema).parse(matchesRes.data ?? []),
+    detections,
+    cveMatches: enrichEventCveMatches(rawMatches, detections, vulnerabilities),
   };
 }
 

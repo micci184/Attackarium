@@ -5,8 +5,11 @@ import { ProtocolBadge } from "@/components/protocol-badge";
 import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
   formatConfidence,
+  formatCvss,
   formatEpss,
+  formatEpssPercentile,
   formatJstDateTime,
+  formatUtcDate,
   safeDisplayText,
 } from "@/lib/format";
 import { getEventDetail } from "@/lib/observatory";
@@ -188,7 +191,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
             Suspected Related CVEs (Candidate Hypothesis Only)
           </h2>
           <span className="text-[11px] text-gray-500">
-            Not proof of confirmed exploitation
+            Evidence-backed candidates only — not proof of confirmed exploitation
           </span>
         </div>
         <div className="p-4">
@@ -204,9 +207,16 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                   className="rounded border border-gray-200 border-l-2 border-l-amber-500 bg-white p-3.5 text-xs"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span translate="no" className="font-mono text-sm font-semibold text-gray-900">
-                      {safeDisplayText(m.cve_id)}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span translate="no" className="font-mono text-sm font-semibold text-gray-900">
+                        {safeDisplayText(m.cve_id)}
+                      </span>
+                      {m.vendor || m.product ? (
+                        <span translate="no" className="font-mono text-[11px] text-gray-500">
+                          {safeDisplayText(m.vendor)} / {safeDisplayText(m.product)}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                       <span
                         translate="no"
@@ -223,26 +233,70 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                         }`}
                       >
                         CISA KEV: {m.kev_present ? "Listed" : "Not Listed"}
+                        {m.kev_present && m.kev_added_at
+                          ? ` (added ${formatUtcDate(m.kev_added_at)})`
+                          : ""}
                       </span>
                       <span
                         translate="no"
                         className="rounded border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono tabular-nums text-gray-700"
                       >
-                        EPSS: {formatEpss(m.epss_score)}
-                        {m.epss_date ? ` (${m.epss_date})` : ""}
+                        FIRST EPSS: {formatEpss(m.epss_score)}
+                        {m.epss_percentile !== null
+                          ? ` (${formatEpssPercentile(m.epss_percentile)})`
+                          : ""}
+                        {m.epss_date ? ` · ${m.epss_date}` : ""}
                       </span>
+                      {m.cvss_score !== null ? (
+                        <span
+                          translate="no"
+                          className="rounded border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono tabular-nums text-gray-700"
+                        >
+                          CVSS: {formatCvss(m.cvss_score)}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                   <p className="mt-2 leading-relaxed text-gray-700">
                     {safeDisplayText(m.reason)}
                   </p>
-                  <p className="mt-2 font-mono text-[11px] text-gray-500">
-                    Rule:{" "}
-                    <span translate="no">
-                      {safeDisplayText(m.rule_id)}@{safeDisplayText(m.rule_version)}
-                    </span>{" "}
-                    — EPSS is a vulnerability-level 30-day forecast, not per-request
-                    exploit probability.
+                  {m.description ? (
+                    <p className="mt-2 rounded border border-gray-100 bg-gray-50 px-3 py-2 text-[11px] leading-relaxed text-gray-600">
+                      <span className="font-semibold text-gray-700">NVD Summary: </span>
+                      {safeDisplayText(m.description)}
+                    </p>
+                  ) : null}
+                  <dl className="mt-2.5 grid gap-2 rounded border border-gray-100 bg-gray-50/70 px-3 py-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <dt className="text-gray-400">Detection Rule</dt>
+                      <dd translate="no" className="mt-0.5 font-mono text-gray-700">
+                        {safeDisplayText(m.rule_id)}@{safeDisplayText(m.rule_version)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-400">Evaluated At</dt>
+                      <dd className="mt-0.5 font-mono tabular-nums text-gray-700">
+                        {formatJstDateTime(m.evaluated_at ?? m.created_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-400">NVD Published / Vector</dt>
+                      <dd translate="no" className="mt-0.5 truncate font-mono text-gray-700">
+                        {formatUtcDate(m.published_at)}
+                        {m.cvss_vector ? ` · ${safeDisplayText(m.cvss_vector)}` : ""}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-400">Feed Dates (KEV / EPSS)</dt>
+                      <dd translate="no" className="mt-0.5 font-mono tabular-nums text-gray-700">
+                        KEV {formatUtcDate(m.kev_updated_at)} / EPSS {m.epss_date ?? "—"}
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="mt-2 text-[11px] leading-relaxed text-gray-500">
+                    Candidate hypothesis only — not proof of exploitation. EPSS is a
+                    vulnerability-level 30-day forecast from FIRST, not per-request exploit
+                    probability.
                   </p>
                 </div>
               ))}

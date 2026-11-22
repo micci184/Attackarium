@@ -98,6 +98,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
 
       <PatternLists
         patterns={data.patterns}
+        cveContext={data.patternCveContext}
         httpPaths={data.httpPaths}
         sampledNote={
           data.isEventSampled
