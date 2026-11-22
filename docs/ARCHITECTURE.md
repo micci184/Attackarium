@@ -92,6 +92,15 @@ are never confused with confirmed exploitation:
 EPSS is a vulnerability-level forecast, not the probability that a specific
 observed request succeeded.
 
+The daily job in `jobs/threat-intel` stores the CISA KEV catalog and FIRST EPSS
+scores for those CVEs plus any CVE already stored. It does not import the full
+EPSS universe. Both feeds are validated before any write, so a feed outage
+leaves the last stored flags and scores in place. `kev_updated_at` is the KEV
+catalog `dateReleased`, and the job log records `catalogVersion`. GitHub Actions
+runs the job at 08:15 UTC when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+are repository secrets. Without those secrets the workflow skips and does not
+call the feeds.
+
 ## 6. Public web dashboard (no login required)
 
 General users can inspect sanitized observations without logging in:
