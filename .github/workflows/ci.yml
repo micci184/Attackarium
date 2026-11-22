@@ -50,6 +50,8 @@ jobs:
           node-version: 22
       - name: Run ingest core tests
         run: node --test supabase/functions/ingest/ingest.test.ts
+      - name: Run KEV and EPSS sync tests
+        run: node --test jobs/threat-intel/threat-intel.test.ts
 
   sensor-tests:
     name: Sensor Collector & Shipper Tests

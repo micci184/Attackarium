@@ -1,0 +1,35 @@
+name: Daily KEV and EPSS sync
+
+on:
+  schedule:
+    # FIRST publishes the daily EPSS file before this hour.
+    - cron: "15 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: threat-intel-daily
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync CISA KEV and FIRST EPSS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sync feeds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "Skipping KEV/EPSS sync: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not configured."
+            exit 0
+          fi
+          node jobs/threat-intel/run.ts
