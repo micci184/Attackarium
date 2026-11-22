@@ -401,7 +401,11 @@ declare
     'event_aggregates',
     'observed_patterns',
     'sensor_status_events',
-    'epss_daily_scores'
+    'epss_daily_scores',
+    'user_mcp_entitlements',
+    'mcp_usage_buckets',
+    'mcp_rate_limit_windows',
+    'admin_audit_logs'
   ];
   v_cnt integer;
 begin
@@ -588,7 +592,10 @@ declare
     'event_aggregates',
     'observed_patterns',
     'sensor_status_events',
-    'epss_daily_scores'
+    'epss_daily_scores',
+    'mcp_usage_buckets',
+    'mcp_rate_limit_windows',
+    'admin_audit_logs'
   ];
   v_cnt integer;
 begin
@@ -647,6 +654,191 @@ begin
     or (select count(*) from public.public_vulnerabilities where cvss_score = 9.8) <> 1
   then
     raise exception 'authenticated could not read the sanitized observation views';
+  end if;
+end $$;
+
+-- 6. MCP entitlements: own-row read and Terms acceptance only.
+reset role;
+
+insert into public.user_mcp_entitlements (user_id, mcp_enabled, is_suspended)
+values
+  ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', false, false),
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', true, false),
+  ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', true, true);
+
+insert into public.mcp_usage_buckets (
+  bucket_start, granularity, request_kind, tool_name, call_count, success_count
+)
+values (
+  timestamptz '2026-11-22 00:00:00+00',
+  'hour',
+  'tool_call',
+  'get_observation_summary',
+  1,
+  1
+);
+
+insert into public.admin_audit_logs (actor_user_id, action, target_type, target_id)
+values (
+  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  'entitlement.review',
+  'user_mcp_entitlements',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+);
+
+do $$
+begin
+  update public.admin_audit_logs set action = 'tamper';
+  raise exception 'SECURITY FAILURE: admin_audit_logs accepted an update';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  delete from public.admin_audit_logs;
+  raise exception 'SECURITY FAILURE: admin_audit_logs accepted a delete';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  truncate table public.admin_audit_logs;
+  raise exception 'SECURITY FAILURE: admin_audit_logs accepted a truncate';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in (
+        'user_mcp_entitlements',
+        'mcp_usage_buckets',
+        'mcp_rate_limit_windows',
+        'admin_audit_logs'
+      )
+      and (
+        column_name ~* '(email|prompt|token|password|src_ip|payload)'
+        or column_name in ('name', 'full_name', 'display_name')
+      )
+  ) then
+    raise exception 'Phase 2 authz tables include a forbidden column';
+  end if;
+end $$;
+
+select set_config('request.jwt.claim.sub', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true);
+set local role authenticated;
+
+do $$
+declare
+  v_count integer;
+  v_enabled boolean;
+begin
+  select count(*) into v_count from public.user_mcp_entitlements;
+  if v_count <> 1 then
+    raise exception 'Expected the authenticated user to see only their entitlement, got %', v_count;
+  end if;
+  select mcp_enabled into v_enabled from public.user_mcp_entitlements;
+  if v_enabled is distinct from false then
+    raise exception 'Own entitlement row was not readable';
+  end if;
+  perform public.accept_mcp_terms('2026-11-22');
+end $$;
+
+do $$
+begin
+  update public.user_mcp_entitlements set mcp_enabled = true;
+  raise exception 'SECURITY FAILURE: authenticated updated mcp_enabled';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  insert into public.user_mcp_entitlements (user_id, mcp_enabled)
+  values ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', true);
+  raise exception 'SECURITY FAILURE: authenticated inserted an entitlement';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+do $$
+begin
+  delete from public.user_mcp_entitlements;
+  raise exception 'SECURITY FAILURE: authenticated deleted an entitlement';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+-- Suspended user cannot accept terms or clear suspension
+reset role;
+select set_config('request.jwt.claim.sub', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', true);
+set local role authenticated;
+
+do $$
+begin
+  perform public.accept_mcp_terms('2026-11-22');
+  raise exception 'SECURITY FAILURE: suspended user accepted MCP terms';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+reset role;
+
+do $$
+declare
+  v_enabled boolean;
+  v_version text;
+begin
+  select mcp_enabled, terms_version
+  into v_enabled, v_version
+  from public.user_mcp_entitlements
+  where user_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  if v_enabled is distinct from false or v_version is distinct from '2026-11-22' then
+    raise exception 'Terms acceptance changed mcp_enabled or skipped the terms version';
+  end if;
+  if exists (
+    select 1
+    from public.user_mcp_entitlements
+    where user_id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+      and terms_version is not null
+  ) then
+    raise exception 'Terms acceptance wrote another user row';
+  end if;
+end $$;
+
+set local role anon;
+
+do $$
+begin
+  perform public.accept_mcp_terms('2026-11-22');
+  raise exception 'SECURITY FAILURE: anon accepted MCP terms';
+exception
+  when insufficient_privilege then
+    null;
+end $$;
+
+reset role;
+set local role service_role;
+
+do $$
+begin
+  insert into public.admin_audit_logs (actor_user_id, action)
+  values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'entitlement.note');
+  if (select count(*) from public.admin_audit_logs) <> 2 then
+    raise exception 'service_role could not append an audit log';
   end if;
 end $$;
 
