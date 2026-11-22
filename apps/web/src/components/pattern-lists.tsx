@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ProtocolBadge } from "@/components/protocol-badge";
 import { formatCount, safeDisplayText } from "@/lib/format";
 import type { HttpPathTotal, PatternTotal } from "@/lib/types";
@@ -28,7 +29,16 @@ export function PatternLists({
                 <li key={pattern.key} className="flex items-center justify-between gap-3 py-2 text-xs">
                   <div className="flex min-w-0 items-center gap-2">
                     <ProtocolBadge protocol={pattern.protocol} />
-                    <span className="truncate text-gray-800">{safeDisplayText(pattern.label)}</span>
+                    {pattern.eventsHref ? (
+                      <Link
+                        href={pattern.eventsHref}
+                        className="truncate rounded text-gray-800 hover:text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                      >
+                        {safeDisplayText(pattern.label)}
+                      </Link>
+                    ) : (
+                      <span className="truncate text-gray-800">{safeDisplayText(pattern.label)}</span>
+                    )}
                   </div>
                   <span className="font-mono tabular-nums text-gray-900">{formatCount(pattern.count)}</span>
                 </li>
