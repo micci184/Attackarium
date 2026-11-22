@@ -1,31 +1,40 @@
 interface MethodologyBannerProps {
   sourceMode: "mock" | "supabase";
+  sensorCount?: number;
 }
 
-export function MethodologyBanner({ sourceMode }: MethodologyBannerProps) {
+export function MethodologyBanner({ sourceMode, sensorCount = 1 }: MethodologyBannerProps) {
+  const sensorLabel = sensorCount === 1 ? "1 sensor" : `${sensorCount} sensors`;
   return (
-    <section
-      aria-label="Observation caveats"
-      className="flex flex-col gap-2 rounded-lg border border-slate-200 border-l-2 border-l-[#632ca6] bg-white px-4 py-2.5 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
-    >
-      <p className="min-w-0 flex-1 leading-relaxed">
-        <span className="font-semibold text-slate-900">Observation scope:</span>{" "}
-        Metrics reflect unsolicited traffic observed on one low-interaction honeypot
-        in US East (N. Virginia), not global Internet attack volume. Candidate CVE links are{" "}
-        <span className="font-medium text-slate-900">not proof of successful exploitation</span>.
-      </p>
-      <span
-        translate="no"
-        className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-slate-600"
-      >
-        <span
-          aria-hidden="true"
-          className={`h-1.5 w-1.5 rounded-full ${
-            sourceMode === "mock" ? "bg-amber-500" : "bg-emerald-600"
-          }`}
-        />
-        {sourceMode === "mock" ? "Synthetic mock" : "Supabase public"}
-      </span>
-    </section>
+    <details className="group rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs text-slate-600">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6] focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="font-medium text-slate-800">Observation scope:</span>
+          <span>{sensorLabel} · US East (N. Virginia) · Low-interaction honeypot</span>
+          <span className="text-slate-400" aria-hidden="true">·</span>
+          <span className="text-slate-500">Not global traffic; CVE tags are not proof of exploitation</span>
+        </span>
+        <span className="inline-flex items-center gap-2 text-[11px] font-medium text-[#632ca6]">
+          {sourceMode === "mock" ? (
+            <span className="font-mono text-amber-700">Synthetic preview</span>
+          ) : null}
+          <span className="group-open:hidden">Methodology</span>
+          <span className="hidden group-open:inline">Hide details</span>
+        </span>
+      </summary>
+      <div className="mt-2.5 border-t border-slate-100 pt-2.5 text-xs leading-relaxed text-slate-600">
+        <p>
+          Metrics reflect unsolicited Internet probes observed on operator-managed
+          low-interaction decoys in US East (N. Virginia), not global Internet attack
+          volume. Source IPs, HTTP query values, credentials, and raw payloads are
+          excluded from public views. Candidate CVE, KEV, and EPSS links provide
+          analytical context and are{" "}
+          <strong className="font-medium text-slate-900">
+            not proof of successful exploitation
+          </strong>
+          .
+        </p>
+      </div>
+    </details>
   );
 }

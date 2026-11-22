@@ -591,4 +591,48 @@ describe("ingest Edge Function core security & idempotency", () => {
       "/proxy/https://[REDACTED]@example.invalid/cb?code=[REDACTED]",
     );
   });
+
+  it("does not misclassify plain SSH connections or Redis command probes as auth_attempt", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({
+        events: [
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+            observed_at: new Date(BASE_NOW_MS - 3000).toISOString(),
+            protocol: "ssh",
+            dst_port: 22,
+            event_type: "ssh_new_connection",
+            src_ip: "198.51.100.61",
+            metadata: {},
+          },
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+            observed_at: new Date(BASE_NOW_MS - 2000).toISOString(),
+            protocol: "redis",
+            dst_port: 6379,
+            event_type: "redis_command_probe",
+            src_ip: "198.51.100.62",
+            metadata: {},
+          },
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+            observed_at: new Date(BASE_NOW_MS - 1000).toISOString(),
+            protocol: "ssh",
+            dst_port: 22,
+            event_type: "ssh_login_attempt",
+            src_ip: "198.51.100.63",
+            metadata: {},
+          },
+        ],
+      }),
+      requestId: "req-category-accuracy-001",
+    });
+
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")?.attack_category, "port_scan");
+    assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2")?.attack_category, null);
+    assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3")?.attack_category, "auth_attempt");
+  });
 });

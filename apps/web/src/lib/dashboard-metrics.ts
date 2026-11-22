@@ -27,7 +27,7 @@ const CATEGORY_LABELS: Record<AttackCategory, string> = {
 
 export function parseTrendPeriod(value: string | undefined): TrendPeriod {
   if (value === "24h" || value === "7d" || value === "30d") return value;
-  return "30d";
+  return "7d";
 }
 
 export function periodLengthMs(period: TrendPeriod): number {
@@ -294,9 +294,32 @@ function addCounts(rows: Iterable<CountRow>): Map<string, CountRow> {
   return totals;
 }
 
+const PROTOCOL_DISPLAY: Record<Protocol, string> = {
+  ssh: "SSH",
+  http: "HTTP",
+  https: "HTTPS",
+  telnet: "Telnet",
+  ftp: "FTP",
+  mysql: "MySQL",
+  redis: "Redis",
+  other: "Other",
+};
+
+const CATEGORY_PLURAL: Record<AttackCategory, string> = {
+  port_scan: "connection and scan probes",
+  auth_attempt: "authentication attempts",
+  http_path_probe: "HTTP path probes",
+  web_attack_attempt: "web attack attempts",
+  suspected_cve_probe: "suspected CVE probes",
+};
+
 /**
- * Explainable 24h comparison. Small samples stay out, and a percentage is shown
- * only when the previous window is large enough to support it.
+ * Explainable 24h observation highlights.
+ * - When the prior 24h window precedes observation start (baseline building),
+ *   increase/decrease claims are suppressed and factual summaries of current
+ *   observed activity are returned instead.
+ * - When a full prior 24h baseline exists, small samples stay out and
+ *   percentages are shown only when the prior window supports them.
  */
 export function selectNoteworthyObservations(input: {
   current: Iterable<CountRow>;
@@ -308,10 +331,113 @@ export function selectNoteworthyObservations(input: {
     totalCount: number;
   }>;
   comparisonReliable: boolean;
+  hasPriorWindowBaseline?: boolean;
   limit?: number;
 }): NoteworthyObservation[] {
   const current = addCounts(input.current);
   const prior = addCounts(input.prior);
+  const hasBaseline = input.hasPriorWindowBaseline ?? true;
+  const maxItems = input.limit ?? 3;
+
+  // Baseline building: never treat pre-observation empty time as 0 measured events.
+  if (!hasBaseline) {
+    const byProtocol = new Map<Protocol, number>();
+    let totalCurrent = 0;
+    for (const row of current.values()) {
+      byProtocol.set(row.protocol, (byProtocol.get(row.protocol) ?? 0) + row.eventCount);
+      totalCurrent += row.eventCount;
+    }
+    if (totalCurrent < MIN_NOTEWORTHY_COUNT) return [];
+
+    const rankedProtocols = Array.from(byProtocol.entries()).toSorted(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+    const summaries: NoteworthyObservation[] = [];
+
+    const top1 = rankedProtocols[0];
+    const top2 = rankedProtocols[1];
+    if (top1 && top2 && (top1[1] + top2[1]) / totalCurrent >= 0.65) {
+      const combined = top1[1] + top2[1];
+      const share = Math.round((combined / totalCurrent) * 100);
+      summaries.push({
+        id: `summary:dominant:${top1[0]}:${top2[0]}`,
+        kind: "summary",
+        severity: "primary",
+        title: `${PROTOCOL_DISPLAY[top1[0]]} and ${PROTOCOL_DISPLAY[top2[0]]} probes account for ${share}% of observed activity`,
+        detail: `${PROTOCOL_DISPLAY[top1[0]]}: ${top1[1]} events · ${PROTOCOL_DISPLAY[top2[0]]}: ${top2[1]} events (last 24 UTC hours)`,
+        rationale: "Baseline building — 24h increase/decrease comparison activates after 48h of stored history.",
+        protocol: top1[0],
+        currentCount: combined,
+        priorCount: 0,
+        delta: combined,
+        showPercent: false,
+        comparisonReliable: input.comparisonReliable,
+        href: eventsFilterHref(top1[0]),
+      });
+    } else if (top1) {
+      const share = Math.round((top1[1] / totalCurrent) * 100);
+      summaries.push({
+        id: `summary:dominant:${top1[0]}`,
+        kind: "summary",
+        severity: "primary",
+        title: `${PROTOCOL_DISPLAY[top1[0]]} traffic leads current observations (${share}%)`,
+        detail: `${PROTOCOL_DISPLAY[top1[0]]}: ${top1[1]} of ${totalCurrent} stored events (last 24 UTC hours)`,
+        rationale: "Baseline building — 24h increase/decrease comparison activates after 48h of stored history.",
+        protocol: top1[0],
+        currentCount: top1[1],
+        priorCount: 0,
+        delta: top1[1],
+        showPercent: false,
+        comparisonReliable: input.comparisonReliable,
+        href: eventsFilterHref(top1[0]),
+      });
+    }
+
+    const httpTotal = (byProtocol.get("http") ?? 0) + (byProtocol.get("https") ?? 0);
+    if (httpTotal >= MIN_NOTEWORTHY_COUNT && top1?.[0] !== "http" && top2?.[0] !== "http") {
+      summaries.push({
+        id: "summary:http:probes",
+        kind: "summary",
+        severity: "secondary",
+        title: "Unsolicited HTTP requests targeted web and router endpoints",
+        detail: `HTTP/HTTPS: ${httpTotal} events recorded in the last 24 UTC hours`,
+        rationale: "Inspect sanitized request paths to see which endpoints were probed.",
+        protocol: "http",
+        currentCount: httpTotal,
+        priorCount: 0,
+        delta: httpTotal,
+        showPercent: false,
+        comparisonReliable: input.comparisonReliable,
+        href: eventsFilterHref("http"),
+      });
+    }
+
+    const dbTotal = (byProtocol.get("redis") ?? 0) + (byProtocol.get("mysql") ?? 0);
+    if (dbTotal >= MIN_NOTEWORTHY_COUNT && summaries.length < maxItems) {
+      const primaryDb: Protocol = (byProtocol.get("redis") ?? 0) >= (byProtocol.get("mysql") ?? 0) ? "redis" : "mysql";
+      const parts: string[] = [];
+      if (byProtocol.get("redis")) parts.push(`Redis: ${byProtocol.get("redis")}`);
+      if (byProtocol.get("mysql")) parts.push(`MySQL: ${byProtocol.get("mysql")}`);
+      summaries.push({
+        id: "summary:db:probes",
+        kind: "summary",
+        severity: "secondary",
+        title: "Database and datastore ports received automated probing",
+        detail: `${parts.join(" · ")} events in the last 24 UTC hours`,
+        rationale: "Exposed service decoys capture unsolicited connection and command attempts.",
+        protocol: primaryDb,
+        currentCount: dbTotal,
+        priorCount: 0,
+        delta: dbTotal,
+        showPercent: false,
+        comparisonReliable: input.comparisonReliable,
+        href: eventsFilterHref(primaryDb),
+      });
+    }
+
+    return summaries.slice(0, maxItems);
+  }
+
   const allKeys = new Set([...current.keys(), ...prior.keys()]);
   const notes: NoteworthyObservation[] = [];
 
@@ -330,8 +456,12 @@ export function selectNoteworthyObservations(input: {
     notes.push({
       id: `category:${key}`,
       kind: "change",
-      title: `${CATEGORY_LABELS[category]} ${direction}`,
-      detail: `${protocol.toUpperCase()} · ${formatWindowDelta(currentCount, previous)}`,
+      severity: Math.abs(delta) >= 50 ? "primary" : "secondary",
+      title: `${PROTOCOL_DISPLAY[protocol]} ${CATEGORY_PLURAL[category]} ${direction}`,
+      detail: formatWindowDelta(currentCount, previous),
+      rationale: previous >= MIN_PRIOR_FOR_PERCENT
+        ? "Exceeded 50% shift threshold with sufficient prior baseline."
+        : "Absolute change only — prior 24h count is below 10 for percentage claims.",
       protocol,
       currentCount,
       priorCount: previous,
@@ -348,8 +478,10 @@ export function selectNoteworthyObservations(input: {
     notes.push({
       id: `first:${pattern.patternType}:${pattern.protocol}:${pattern.patternKey}`,
       kind: "first_seen",
-      title: "First stored observation in this window",
-      detail: `${pattern.protocol.toUpperCase()} · ${pattern.patternKey} · ${pattern.totalCount} stored events`,
+      severity: "secondary",
+      title: `New ${PROTOCOL_DISPLAY[pattern.protocol]} pattern observed (${pattern.patternKey})`,
+      detail: `${pattern.totalCount} stored events in the last 24 UTC hours`,
+      rationale: "First appearance of this pattern key in stored observatory history.",
       protocol: pattern.protocol,
       currentCount: pattern.totalCount,
       priorCount: 0,
@@ -362,7 +494,7 @@ export function selectNoteworthyObservations(input: {
 
   return notes
     .toSorted((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.title.localeCompare(b.title))
-    .slice(0, input.limit ?? 3);
+    .slice(0, maxItems);
 }
 
 function formatWindowDelta(current: number, prior: number): string {
@@ -526,6 +658,35 @@ export function formatOutageDuration(startedAt: string, endedAt: string | null, 
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+export function annotateSeriesPreHistory(
+  series: TrendBucket[],
+  historyStartedAt: string | null,
+): TrendBucket[] {
+  if (series.length === 0 || !historyStartedAt) return series;
+  const historyMs = Date.parse(historyStartedAt);
+  if (Number.isNaN(historyMs)) return series;
+
+  let startMarked = false;
+  return series.map((bucket, idx) => {
+    const startMs = Date.parse(bucket.bucketStart);
+    if (Number.isNaN(startMs)) return bucket;
+    const nextMs =
+      idx + 1 < series.length
+        ? Date.parse(series[idx + 1].bucketStart)
+        : startMs + (bucket.label.includes(":") ? HOUR_MS : DAY_MS);
+    const endMs = Number.isNaN(nextMs) ? startMs + DAY_MS : nextMs;
+
+    if (endMs <= historyMs && bucket.totalEvents === 0) {
+      return { ...bucket, isPreHistory: true };
+    }
+    if (!startMarked && startMs <= historyMs && historyMs < endMs) {
+      startMarked = true;
+      return { ...bucket, isObservationStart: true };
+    }
+    return bucket;
+  });
 }
 
 export function trendPeriodLabel(period: TrendPeriod): string {

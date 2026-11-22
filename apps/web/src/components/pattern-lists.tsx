@@ -28,8 +28,8 @@ export function PatternLists({
     <div className="grid gap-4 lg:grid-cols-2">
       <Panel>
         <PanelHeader
-          title="Observed Patterns"
-          subtitle="Grouped by protocol and attack category"
+          title="Observed Categories"
+          subtitle="Grouped by protocol and classified activity type"
         />
         <div className="p-4">
           {patterns.length === 0 ? (

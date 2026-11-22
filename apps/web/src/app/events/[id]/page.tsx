@@ -9,8 +9,11 @@ import {
   formatCvss,
   formatEpss,
   formatEpssPercentile,
+  formatEventTypeLabel,
+  formatFingerprintLabel,
   formatJstDateTime,
   formatUtcDate,
+  resolveDisplayCategory,
   safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
@@ -31,6 +34,8 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
   }
 
   const { event, detections, cveMatches } = detail;
+  const displayCategory = resolveDisplayCategory(event.event_type, event.attack_category);
+  const hasGeoOrAsn = Boolean(event.src_country) || Boolean(event.src_asn);
 
   return (
     <div className="space-y-5">
@@ -40,10 +45,10 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
             href="/events"
             className="rounded text-xs font-medium text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
           >
-            ← Back to Event Explorer
+            ← Back to Explore
           </Link>
           <h1 className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">
-            Event Detail
+            {formatEventTypeLabel(event.event_type)}
           </h1>
           <p translate="no" className="mt-0.5 break-all font-mono text-xs text-slate-500">
             {event.id}
@@ -59,7 +64,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
         <PanelHeader title="Sanitized event attributes" />
         <dl className="grid divide-y divide-slate-100 text-xs sm:grid-cols-2 sm:divide-y-0">
           <div className="border-b border-slate-100 px-4 py-3 sm:border-r">
-            <dt className="font-medium text-slate-500">Observed at</dt>
+            <dt className="font-medium text-slate-500">Observed at (JST)</dt>
             <dd className="mt-1 font-mono tabular-nums text-slate-900">
               {formatJstDateTime(event.observed_at)}
             </dd>
@@ -77,8 +82,8 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
             </dd>
           </div>
           <div className="border-b border-slate-100 px-4 py-3">
-            <dt className="font-medium text-slate-500">Attack category</dt>
-            <dd className="mt-1 text-slate-900">{attackCategoryLabel(event.attack_category)}</dd>
+            <dt className="font-medium text-slate-500">Category</dt>
+            <dd className="mt-1 text-slate-900">{attackCategoryLabel(displayCategory)}</dd>
             <dd className="mt-1 text-[11px] text-slate-500">
               A category describes the observed request shape. It does not prove that an exploit
               succeeded.
@@ -86,20 +91,25 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
           </div>
           <div className="border-b border-slate-100 px-4 py-3 sm:border-r">
             <dt className="font-medium text-slate-500">Event type</dt>
-            <dd translate="no" className="mt-1 font-mono text-slate-900">
-              {safeDisplayText(event.event_type)}
+            <dd className="mt-1 text-slate-900">
+              <span>{formatEventTypeLabel(event.event_type)}</span>{" "}
+              <span translate="no" className="font-mono text-[11px] text-slate-500">
+                ({safeDisplayText(event.event_type)})
+              </span>
             </dd>
           </div>
           <div className="border-b border-slate-100 px-4 py-3">
             <dt className="font-medium text-slate-500">Approx. region / ASN</dt>
             <dd translate="no" className="mt-1 font-mono text-slate-900">
-              {safeDisplayText(event.src_country)} / {safeDisplayText(event.src_asn)}
+              {hasGeoOrAsn
+                ? `${safeDisplayText(event.src_country)} / ${safeDisplayText(event.src_asn)}`
+                : "Not collected (GeoIP disabled)"}
             </dd>
           </div>
           <div className="border-b border-slate-100 px-4 py-3 sm:col-span-2">
             <dt className="font-medium text-slate-500">Fingerprint</dt>
             <dd translate="no" className="mt-1 font-mono text-slate-900">
-              {safeDisplayText(event.fingerprint)}
+              {event.fingerprint ? formatFingerprintLabel(event.fingerprint) : "—"}
             </dd>
           </div>
           <div className="px-4 py-3 sm:col-span-2">

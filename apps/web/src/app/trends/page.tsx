@@ -23,19 +23,25 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
   const period = parseTrendPeriod(params.period);
   const data = await getTrendsData(period);
   const worldMapData = buildWorldMapData(data.regionTotals);
+
+  const knownRegions = data.regionTotals.filter((r) => r.country !== "UNKNOWN");
+  const knownAsns = data.asnTotals.filter((a) => a.asn !== "UNKNOWN");
+  const hasGeoData = worldMapData.totalMapped > 0;
+  const hasAsnData = knownAsns.length > 0;
+
   const maxProto = Math.max(...data.protocolTotals.map((p) => p.count), 1);
   const maxPort = Math.max(...data.portTotals.map((p) => p.count), 1);
-  const maxRegion = Math.max(...data.regionTotals.map((r) => r.count), 1);
-  const maxAsn = Math.max(...data.asnTotals.map((a) => a.count), 1);
+  const maxRegion = Math.max(...knownRegions.map((r) => r.count), 1);
+  const maxAsn = Math.max(...knownAsns.map((a) => a.count), 1);
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="Trends"
-        description="Event volume for the selected window, plus protocol, pattern, and sanitized HTTP path trends"
+        description="Event volume over time, protocol distribution, and observed probe patterns"
         meta={
           <ObservationMeta
-            windowLabel={trendPeriodLabel(period)}
+            windowLabel={`${trendPeriodLabel(period)} (UTC buckets, timestamps in JST)`}
             updatedAt={data.dataUpdatedAt}
             sensorCount={data.registeredSensorCount}
           />
@@ -43,7 +49,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         actions={<PeriodNav period={period} />}
       />
 
-      <MethodologyBanner sourceMode={data.sourceMode} />
+      <MethodologyBanner sourceMode={data.sourceMode} sensorCount={data.registeredSensorCount} />
 
       {data.coverageGaps.length > 0 ? (
         <Callout
@@ -54,7 +60,7 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
               href="/sensors"
               className="rounded font-medium text-amber-950 underline hover:text-amber-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
             >
-              Inspect Sensors →
+              Inspect Coverage →
             </Link>
           }
         >
@@ -64,52 +70,34 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         </Callout>
       ) : null}
 
+      {/* 1. Event volume over time */}
       <VolumeChart
         series={data.series}
         heading={period === "24h" ? "Hourly Event Volume (UTC)" : "Daily Event Volume (UTC)"}
         emptyLabel="No stored observations in this window."
         footnote={[
           seriesHasLeadingGap(data.series, data.historyStartedAt)
-            ? `Early zero buckets precede the first stored observation (${formatJstDateTime(data.historyStartedAt)}). They indicate missing history, not a measured quiet period.`
+            ? `Dashed buckets before ${formatJstDateTime(data.historyStartedAt)} precede the start of observation and represent missing history, not measured zero-event periods.`
             : null,
           data.aggregateComplete
             ? data.seriesSource === "event_aggregates"
-              ? "Hourly totals are complete UTC-hour rollups. The bucket sum is the period total. The current hour is still open until the next rollup."
+              ? "Hourly totals use complete UTC-hour rollups. The current hour remains open until the next rollup."
               : data.seriesSource === "daily_stats"
-                ? "Daily totals come from every rollup row in the UTC window. The bucket sum is the period total. A zero day has no stored rollup."
-                : "Totals are counted from stored events. A zero bucket has no stored observation."
-            : "The aggregate read stopped early. Bucket totals are partial and are not an exact period count.",
+                ? "Daily totals use complete UTC-day rollups. Unshaded zero days had no stored events."
+                : "Totals are counted from stored events."
+            : "The aggregate read stopped early; bucket totals are partial.",
           data.rollupPendingEvents > 0
-            ? `${formatCount(data.rollupPendingEvents)} recent or unclassified events in this window are pending the next 15m rollup.`
+            ? `${formatCount(data.rollupPendingEvents)} recent or unclassified events are pending the next 15m rollup.`
             : null,
         ]
           .filter((line) => line !== null)
           .join(" ")}
       />
 
-      <PatternLists
-        patterns={data.patterns}
-        cveContext={data.patternCveContext}
-        httpPaths={data.httpPaths}
-        sampledNote={
-          data.isEventSampled
-            ? data.seriesSource === "event_aggregates"
-              ? "Ports, regions, and HTTP paths use the newest stored events in this window. Pattern totals use the full UTC-hour rollup."
-              : "Path and pattern lists use the newest stored events in this window, not every row."
-            : null
-        }
-      />
-
-      <WorldGeoMap
-        data={worldMapData}
-        title="Geographic Distribution (GeoIP Estimate)"
-        subtitle="Country/region-level heatmap across sampled events (hover or focus to inspect)"
-      />
-
-      {/* Top Lists (2x2 panels) */}
+      {/* 2. Protocol distribution & destination ports */}
       <div className="grid gap-4 md:grid-cols-2">
         <Panel>
-          <PanelHeader title="Protocols In This Window" />
+          <PanelHeader title="Protocol Distribution" />
           <div className="space-y-1.5 p-4">
             {data.protocolTotals.length === 0 ? (
               <p className="text-xs text-slate-500">No protocol statistics recorded yet.</p>
@@ -130,7 +118,12 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
                       }}
                     />
                     <div className="relative flex items-center justify-between text-xs">
-                      <ProtocolBadge protocol={item.protocol} />
+                      <Link
+                        href={`/events?protocol=${item.protocol}&period=${period}`}
+                        className="rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                      >
+                        <ProtocolBadge protocol={item.protocol} />
+                      </Link>
                       <span className="font-mono font-medium tabular-nums text-slate-900">
                         {formatCount(item.count)}
                       </span>
@@ -180,76 +173,107 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
             )}
           </div>
         </Panel>
-
-        <Panel>
-          <PanelHeader
-            title="Approx. Source Regions (GeoIP Estimate)"
-            subtitle="IP geolocation is approximate (proxies, VPNs, or VPS hosts)"
-          />
-          <div className="space-y-1.5 p-4">
-            {data.regionTotals.length === 0 ? (
-              <p className="text-xs text-slate-500">No regional data available yet.</p>
-            ) : (
-              data.regionTotals.map((item) => {
-                const widthPct = Math.max(Math.round((item.count / maxRegion) * 100), 3);
-                return (
-                  <div
-                    key={item.country}
-                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
-                  >
-                    <div
-                      aria-hidden="true"
-                      className="absolute inset-y-0 left-0 bg-blue-600/10"
-                      style={{ width: `${widthPct}%` }}
-                    />
-                    <div className="relative flex items-center justify-between text-xs">
-                      <span translate="no" className="font-mono font-medium text-slate-700">
-                        {item.country}
-                      </span>
-                      <span className="font-mono font-medium tabular-nums text-slate-900">
-                        {formatCount(item.count)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </Panel>
-
-        <Panel>
-          <PanelHeader title="Observed ASNs (Reference Only)" />
-          <div className="space-y-1.5 p-4">
-            {data.asnTotals.length === 0 ? (
-              <p className="text-xs text-slate-500">No ASN observations recorded yet.</p>
-            ) : (
-              data.asnTotals.map((item) => {
-                const widthPct = Math.max(Math.round((item.count / maxAsn) * 100), 3);
-                return (
-                  <div
-                    key={item.asn}
-                    className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
-                  >
-                    <div
-                      aria-hidden="true"
-                      className="absolute inset-y-0 left-0 bg-teal-600/10"
-                      style={{ width: `${widthPct}%` }}
-                    />
-                    <div className="relative flex items-center justify-between text-xs">
-                      <span translate="no" className="font-mono font-medium text-slate-700">
-                        {item.asn}
-                      </span>
-                      <span className="font-mono font-medium tabular-nums text-slate-900">
-                        {formatCount(item.count)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </Panel>
       </div>
+
+      {/* 3. Observed categories & HTTP probe paths */}
+      <PatternLists
+        patterns={data.patterns}
+        cveContext={data.patternCveContext}
+        httpPaths={data.httpPaths}
+        sampledNote={
+          data.isEventSampled
+            ? data.seriesSource === "event_aggregates"
+              ? "Destination ports and HTTP paths use the newest stored events in this window. Category totals use the full UTC-hour rollup."
+              : "Path and port lists use the newest stored events in this window, not every row."
+            : null
+        }
+      />
+
+      {/* GeoIP & ASN section — shown in full when enrichment data is present, compact note otherwise */}
+      {hasGeoData || hasAsnData ? (
+        <>
+          {hasGeoData ? (
+            <WorldGeoMap
+              data={worldMapData}
+              title="Geographic Distribution (GeoIP Estimate)"
+              subtitle="Country/region-level heatmap across sampled events (hover or focus to inspect)"
+            />
+          ) : null}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {hasGeoData ? (
+              <Panel>
+                <PanelHeader
+                  title="Approx. Source Regions (GeoIP Estimate)"
+                  subtitle="IP geolocation is approximate (proxies, VPNs, or VPS hosts)"
+                />
+                <div className="space-y-1.5 p-4">
+                  {knownRegions.map((item) => {
+                    const widthPct = Math.max(Math.round((item.count / maxRegion) * 100), 3);
+                    return (
+                      <div
+                        key={item.country}
+                        className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
+                      >
+                        <div
+                          aria-hidden="true"
+                          className="absolute inset-y-0 left-0 bg-blue-600/10"
+                          style={{ width: `${widthPct}%` }}
+                        />
+                        <div className="relative flex items-center justify-between text-xs">
+                          <span translate="no" className="font-mono font-medium text-slate-700">
+                            {item.country}
+                          </span>
+                          <span className="font-mono font-medium tabular-nums text-slate-900">
+                            {formatCount(item.count)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Panel>
+            ) : null}
+
+            {hasAsnData ? (
+              <Panel>
+                <PanelHeader title="Observed ASNs (Reference Only)" />
+                <div className="space-y-1.5 p-4">
+                  {knownAsns.map((item) => {
+                    const widthPct = Math.max(Math.round((item.count / maxAsn) * 100), 3);
+                    return (
+                      <div
+                        key={item.asn}
+                        className="relative overflow-hidden rounded-md border border-slate-200/70 bg-slate-50/70 px-3 py-2"
+                      >
+                        <div
+                          aria-hidden="true"
+                          className="absolute inset-y-0 left-0 bg-teal-600/10"
+                          style={{ width: `${widthPct}%` }}
+                        />
+                        <div className="relative flex items-center justify-between text-xs">
+                          <span translate="no" className="font-mono font-medium text-slate-700">
+                            {item.asn}
+                          </span>
+                          <span className="font-mono font-medium tabular-nums text-slate-900">
+                            {formatCount(item.count)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Panel>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <p className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+          <span className="font-medium text-slate-700">Region &amp; ASN breakdown:</span>{" "}
+          GeoIP and ASN enrichment is not enabled for this sensor in Phase 1; source IPs are hashed
+          and excluded from public views.
+        </p>
+      )}
     </div>
   );
 }

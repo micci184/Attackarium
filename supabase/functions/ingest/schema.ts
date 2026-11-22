@@ -88,8 +88,15 @@ export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
 
+const CONNECTION_OR_SCAN_EVENT_PATTERN =
+  /(^port_scan$|_new_connection$|_connection$|_remote_version$|_scan$)/i;
+const COMMAND_PROBE_EVENT_PATTERN = /_command(_probe)?$/i;
+const AUTH_EVENT_PATTERN = /(_login|_auth|_password|_brute)/i;
+
 /**
- * Coarse observation label. An omitted category is derived from protocol.
+ * Coarse observation label. An omitted category is derived from event_type
+ * and protocol without over-claiming authentication attempts for plain
+ * connections or protocol command probes.
  * suspected_cve_probe is never invented here; a later rule must set it.
  */
 export function deriveAttackCategory(
@@ -100,10 +107,19 @@ export function deriveAttackCategory(
   if (explicit && ATTACK_CATEGORY_SET.has(explicit)) {
     return explicit as AttackCategory;
   }
-  if (AUTH_PROTOCOLS.has(protocol)) return "auth_attempt";
+  if (CONNECTION_OR_SCAN_EVENT_PATTERN.test(eventType)) {
+    return "port_scan";
+  }
+  if (COMMAND_PROBE_EVENT_PATTERN.test(eventType)) {
+    return null;
+  }
+  if (AUTH_EVENT_PATTERN.test(eventType)) {
+    return "auth_attempt";
+  }
   if (protocol === "http" || protocol === "https") {
     return eventType === "http_payload_probe" ? "web_attack_attempt" : "http_path_probe";
   }
+  if (AUTH_PROTOCOLS.has(protocol)) return "auth_attempt";
   return null;
 }
 

@@ -5,13 +5,17 @@ import { describe, it } from "node:test";
 import {
   formatCvss,
   formatEpssPercentile,
+  formatEventTypeLabel,
+  formatFingerprintLabel,
   formatJstDateTime,
   formatUtcDate,
+  resolveDisplayCategory,
   safeDisplayHttpPath,
   safeDisplayText,
 } from "./format.ts";
 import {
   annotateSeriesCoverage,
+  annotateSeriesPreHistory,
   buildDailySeries,
   buildHourlySeries,
   buildUtcHourlySeries,
@@ -221,8 +225,8 @@ describe("observatory data layer (mock mode)", () => {
   it("aggregates trends series and formats JST / strips control chars", async () => {
     process.env.USE_MOCK = "true";
     const trends = await getTrendsData();
-    assert.equal(trends.period, "30d");
-    assert.equal(trends.series.length, 30);
+    assert.equal(trends.period, "7d");
+    assert.equal(trends.series.length, 7);
     assert.equal(trends.seriesSource, "daily_stats");
     assert.ok(trends.protocolTotals.length > 0);
     assert.ok(trends.patterns.length > 0);
@@ -230,6 +234,10 @@ describe("observatory data layer (mock mode)", () => {
     for (const day of trends.series) {
       assert.equal("uniqueSources" in day, false);
     }
+
+    const month = await getTrendsData("30d");
+    assert.equal(month.series.length, 30);
+    assert.equal(month.seriesSource, "daily_stats");
 
     const hourly = await getTrendsData("24h");
     assert.equal(hourly.series.length, 24);
@@ -249,7 +257,8 @@ describe("observatory data layer (mock mode)", () => {
     assert.match(formatJstDateTime("2026-11-21T00:00:00.000Z"), /2026\/11\/21 09:00:00 JST/);
     assert.equal(safeDisplayText("abc\u0000\u202edef"), "abcdef");
     assert.equal(parseTrendPeriod("7d"), "7d");
-    assert.equal(parseTrendPeriod("nope"), "30d");
+    assert.equal(parseTrendPeriod("30d"), "30d");
+    assert.equal(parseTrendPeriod("nope"), "7d");
   });
 
   it("builds flat world map data covering both polygons (JP) and small-territory markers (SG)", () => {
@@ -490,5 +499,48 @@ describe("observatory data layer (mock mode)", () => {
       if (previousMock === undefined) delete process.env.USE_MOCK;
       else process.env.USE_MOCK = previousMock;
     }
+  });
+
+  it("suppresses increase claims during baseline building, marks pre-observation buckets, and formats event labels accurately", () => {
+    // Baseline building: no prior 24h history -> return summary observations, never "increased"
+    const baselineNotes = selectNoteworthyObservations({
+      current: [
+        { protocol: "ssh", attack_category: "port_scan", eventCount: 332 },
+        { protocol: "telnet", attack_category: "auth_attempt", eventCount: 326 },
+        { protocol: "http", attack_category: "http_path_probe", eventCount: 40 },
+      ],
+      prior: [],
+      comparisonReliable: true,
+      hasPriorWindowBaseline: false,
+    });
+    assert.ok(baselineNotes.length >= 1);
+    assert.equal(baselineNotes[0].kind, "summary");
+    assert.ok(!baselineNotes[0].title.toLowerCase().includes("increased"));
+    assert.ok(baselineNotes[0].title.includes("SSH") && baselineNotes[0].title.includes("Telnet"));
+
+    // Pre-observation buckets are marked distinctly from measured zero-event buckets
+    const annotated = annotateSeriesPreHistory(
+      [
+        { bucketStart: "2026-11-19T00:00:00.000Z", label: "11-19", totalEvents: 0 },
+        { bucketStart: "2026-11-20T00:00:00.000Z", label: "11-20", totalEvents: 0 },
+        { bucketStart: "2026-11-21T00:00:00.000Z", label: "11-21", totalEvents: 50 },
+        { bucketStart: "2026-11-22T00:00:00.000Z", label: "11-22", totalEvents: 0 },
+      ],
+      "2026-11-21T21:00:00.000Z",
+    );
+    assert.equal(annotated[0].isPreHistory, true);
+    assert.equal(annotated[1].isPreHistory, true);
+    assert.equal(annotated[2].isObservationStart, true);
+    assert.equal(annotated[3].isPreHistory, undefined);
+
+    // Human-readable event labels & accurate category reconciliation
+    assert.equal(formatEventTypeLabel("ssh_new_connection"), "SSH connection");
+    assert.equal(formatEventTypeLabel("telnet_login_attempt"), "Telnet login attempt");
+    assert.equal(formatEventTypeLabel("redis_command_probe"), "Redis command probe");
+    assert.equal(formatFingerprintLabel("oc-6001"), "Telnet login attempt (oc-6001)");
+    assert.equal(resolveDisplayCategory("ssh_new_connection", "auth_attempt"), "port_scan");
+    assert.equal(resolveDisplayCategory("redis_command_probe", "auth_attempt"), null);
+    assert.equal(resolveDisplayCategory("telnet_login_attempt", "auth_attempt"), "auth_attempt");
+    assert.equal(parseTrendPeriod(undefined), "7d");
   });
 });
