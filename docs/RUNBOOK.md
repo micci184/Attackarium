@@ -64,8 +64,13 @@ change and no egress opening):
    port 22 unless told otherwise, so pass the admin port:
 
    ```bash
-   aws ec2-instance-connect open-tunnel --instance-id <instance-id> \
-     --remote-port 2222 --local-port 12222 &
+   cd infra/aws-sensor
+   ADMIN_PORT=$(terraform console <<< 'var.admin_ssh_port')
+   aws ec2-instance-connect open-tunnel --region us-east-1 \
+     --instance-id "$(terraform output -raw instance_id)" \
+     --remote-port "$ADMIN_PORT" --local-port 12222 &
+   # Wait for the listener before copying.
+   until nc -z 127.0.0.1 12222; do sleep 1; done
    scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/
    ```
 
