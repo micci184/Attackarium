@@ -44,8 +44,11 @@ investigation is finished and the owner chooses to destroy the host.
 
 ## Sensor host access & code deployment (ADR-025)
 
-Operator SSH goes through the EC2 Instance Connect Endpoint (EICE). No public
-admin port and no instance IAM role are used. You need the operator private key
+Operator SSH goes through the EC2 Instance Connect Endpoint (EICE) on port 3389
+(EICE tunnels only to 22 or 3389; 22 is the decoy). No public admin port and no
+instance IAM role are used. cloud-init is disabled after first boot
+(`/etc/cloud/cloud-init.disabled`) because `nftables` blocks the instance metadata
+service and cloud-init would otherwise stall every reboot for about 8 minutes. You need the operator private key
 and an AWS identity allowed to call `ec2-instance-connect:OpenTunnel`
 (protect it with MFA).
 

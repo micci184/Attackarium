@@ -97,3 +97,7 @@ runcmd:
   # Ubuntu 24.04 uses ssh.socket on port 22 by default; switch to ssh.service so Port ${admin_ssh_port} takes effect.
   - systemctl disable --now ssh.socket || true
   - systemctl enable --now ssh.service || systemctl restart sshd
+  # Later boots must not re-run cloud-init: nftables blocks the instance
+  # metadata service, so cloud-init would stall boot for minutes before
+  # sshd and the sensor services start.
+  - touch /etc/cloud/cloud-init.disabled
