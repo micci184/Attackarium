@@ -1,7 +1,9 @@
 # Copy to terraform.tfvars locally (never commit terraform.tfvars).
 aws_region          = "us-east-1"
 admin_ssh_port      = 2222
-admin_ssh_cidrs     = ["203.0.113.10/32"]
+# Operator SSH goes through the EC2 Instance Connect Endpoint; keep this empty.
+# Break-glass only (also needs the host nftables copy): ["203.0.113.10/32"]
+admin_ssh_cidrs     = []
 ssh_public_key      = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithOperatorPublicKey operator@example"
 ingest_egress_cidrs = ["198.51.100.0/24"]
 enable_https_decoy  = false

@@ -22,7 +22,9 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
    AWS EC2 Security Group / NACL and host OS firewall (`nftables`/`iptables`) layers; verify
    egress blocking with automated tests before public exposure.
 3. **Management:** dedicated non-decoy management path/port, key-based SSH only, no password login,
-   management source allowlist, and an emergency teardown procedure that cannot be publicly abused.
+   reachable only through the EC2 Instance Connect Endpoint (IAM-authenticated, CloudTrail-logged,
+   no public admin port, no instance IAM role; ADR-025), and an emergency teardown procedure that
+   cannot be publicly abused.
 4. **Privilege:** run decoys and collectors as unprivileged accounts with only necessary bind-port
    capabilities (`CAP_NET_BIND_SERVICE`); isolate processes, limit filesystem/memory/tasks, and
    do **not** attach IAM roles or mount AWS credentials on the sensor host.
