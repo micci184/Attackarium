@@ -252,7 +252,9 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
     ) -> None:
         self.config = config
         self.write_lock = threading.Lock()
-        self._last_prune = 0.0
+        # -inf so the first write prunes even when the monotonic clock is < 60s
+        # (e.g. a freshly booted host or CI runner).
+        self._last_prune = float("-inf")
         self.connection_semaphore = threading.BoundedSemaphore(
             max(1, config.max_concurrent_connections)
         )

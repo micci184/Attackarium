@@ -205,6 +205,19 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertIn("prune failed (OSError)", written)
         self.assertNotIn("no space left", written)
 
+    def test_first_write_prunes_even_right_after_boot(self) -> None:
+        # A freshly booted host or CI runner can report monotonic() < 60s;
+        # the first write must still prune instead of waiting a full minute.
+        with mock.patch.object(collector.time, "monotonic", return_value=1.0), mock.patch.object(
+            collector, "prune_temp_jsonl"
+        ) as prune:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", "/boot")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+        self.assertEqual(prune.call_count, 1)
+
     def test_never_persists_client_ip_headers(self) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         conn.request(
