@@ -11,7 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 import collector
-from collector import CollectorConfig, create_server, prune_temp_jsonl
+from collector import CollectorConfig, classify_host_header, create_server, prune_temp_jsonl
 from signatures import (
     InspectionInput,
     RuleHit,
@@ -217,6 +217,46 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             resp.read()
             conn.close()
         self.assertEqual(prune.call_count, 1)
+
+    def test_classifies_host_header_without_keeping_its_value(self) -> None:
+        cases = {
+            None: "absent",
+            "": "absent",
+            "   ": "absent",
+            "203.0.113.10": "ip_literal",
+            "203.0.113.10:8080": "ip_literal",
+            "[2001:db8::1]": "ip_literal",
+            "[2001:db8::1]:443": "ip_literal",
+            "victim-corp.example": "hostname",
+            "victim-corp.example:8443": "hostname",
+            "${jndi:ldap://host-e2e.invalid/a}": "hostname",
+            "\x00203.0.113.10": "ip_literal",
+        }
+        for value, expected in cases.items():
+            self.assertEqual(classify_host_header(value), expected, repr(value))
+
+    def test_never_persists_host_header_value(self) -> None:
+        requests = [
+            ("203.0.113.10:80", "ip_literal"),
+            ("victim-corp.example", "hostname"),
+            (None, "absent"),
+        ]
+        for host, _ in requests:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.putrequest("GET", "/", skip_host=True)
+            if host is not None:
+                conn.putheader("Host", host)
+            conn.endheaders()
+            conn.getresponse().read()
+            conn.close()
+
+        raw_jsonl = self.output_path.read_text(encoding="utf-8")
+        for forbidden in ("203.0.113.10", "victim-corp.example", f"127.0.0.1:{self.port}"):
+            self.assertNotIn(forbidden, raw_jsonl)
+        records = self._read_records()
+        self.assertEqual([r["metadata"]["host_kind"] for r in records], [kind for _, kind in requests])
+        for record in records:
+            self.assertNotIn("host", record["metadata"]["headers"])
 
     def test_never_persists_client_ip_headers(self) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
