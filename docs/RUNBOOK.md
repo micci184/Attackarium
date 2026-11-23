@@ -122,7 +122,8 @@ Changing host firewall rules (`/etc/nftables.conf`):
   5. Set `DeleteOnTermination=true` on the reattached root volume and verify it,
      because a reattached volume defaults to `false`:
      `aws ec2 modify-instance-attribute --instance-id <id> --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"DeleteOnTermination":true}}]'`.
-     Then start the sensor. The public IP changes; expect a recorded coverage gap.
+     Then start the sensor. The Elastic IP keeps the public address unchanged;
+     expect a recorded coverage gap if the stop lasts more than 15 minutes.
   6. Terminate the rescue instance and remove the temporary SG and rules.
   7. After verification and the rollback window, delete the step 1 root-volume
      snapshot, and deregister any AMI **and delete its EBS snapshots**. They

@@ -10,6 +10,7 @@ Terraform configuration for the single isolated Attackarium honeypot sensor host
   - Outbound: strictly `443/TCP` to `var.ingest_egress_cidrs`, DNS to VPC resolver, and NTP to Amazon Time Sync. No `0.0.0.0/0` egress during normal operation.
 - Layer 2 firewall (host `nftables` via cloud-init): mirrors the Security Group rules, applies per-source new-connection rate limiting (`30/s`, burst `60`) on decoy ports, and disables Ubuntu 24.04 `ssh.socket` so `sshd` listens strictly on `var.admin_ssh_port`.
 - EC2 Instance Connect Endpoint in the sensor subnet for IAM-authenticated operator SSH (no public admin port, no instance IAM role, no extra cost). Connect with `terraform output -raw admin_ssh_command`; see `docs/RUNBOOK.md`.
+- Elastic IP associated with the sensor, so stop/start keeps the same public IPv4 (observation continuity). It costs the same as an auto-assigned address while associated. `terraform output public_ip` is marked sensitive; never publish the address.
 - Single EC2 instance: `t3a.small`, `cpu_credits = "standard"`, latest Ubuntu Server LTS AMI, encrypted `gp3` 20 GiB root volume, 1 public IPv4, **no IAM role**, IMDSv2 required (`hop_limit = 1`), and termination protection enabled by default.
 - Single AWS Budget (`40` USD/month, scoped to `Project=Attackarium` tag, email alerts at 50% / 80% / 100%, notification only — does not stop the instance).
 

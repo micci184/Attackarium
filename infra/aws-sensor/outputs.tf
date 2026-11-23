@@ -4,8 +4,9 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  description = "Public IPv4 address of the isolated sensor host."
-  value       = aws_instance.sensor.public_ip
+  description = "Stable public IPv4 (Elastic IP) of the isolated sensor host. Never publish it."
+  value       = aws_eip.sensor.public_ip
+  sensitive   = true
 }
 
 output "security_group_id" {

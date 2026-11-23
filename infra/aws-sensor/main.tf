@@ -300,6 +300,25 @@ resource "aws_instance" "sensor" {
 }
 
 # -----------------------------------------------------------------------------
+# Stable public IPv4 (Elastic IP). Without it, every stop/start assigns a new
+# address, and a fresh address receives little traffic until scanners find it,
+# which breaks observation continuity. While associated, an Elastic IP costs the
+# same as an auto-assigned public IPv4. Never publish this address.
+# -----------------------------------------------------------------------------
+resource "aws_eip" "sensor" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${local.name_prefix}-eip"
+  }
+}
+
+resource "aws_eip_association" "sensor" {
+  instance_id   = aws_instance.sensor.id
+  allocation_id = aws_eip.sensor.id
+}
+
+# -----------------------------------------------------------------------------
 # Cost Guardrail: Single AWS Budget scoped to Project=Attackarium tag (ADR-020)
 # Requires activating the "Project" user-defined Cost Allocation Tag in AWS Billing.
 # -----------------------------------------------------------------------------
