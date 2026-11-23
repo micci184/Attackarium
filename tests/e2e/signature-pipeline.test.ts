@@ -121,6 +121,12 @@ function createSupabaseStub(events: () => NormalizedAttackEvent[]) {
     assert.equal(url.origin, SUPABASE_URL, `unexpected outbound request to ${url.origin}`);
     const table = url.pathname.replace(/^\/rest\/v1\//, "");
     const method = init?.method ?? "GET";
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("apikey"), SERVICE_ROLE_KEY);
+    const expectUpsert = (onConflict: string, resolution: string) => {
+      assert.equal(url.searchParams.get("on_conflict"), onConflict, `${table} on_conflict changed`);
+      assert.match(headers.get("prefer") ?? "", new RegExp(`resolution=${resolution}`), `${table} Prefer changed`);
+    };
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>[]) : [];
 
     if (table === "attack_events" && method === "GET") {
@@ -146,6 +152,7 @@ function createSupabaseStub(events: () => NormalizedAttackEvent[]) {
       return json(200, rows);
     }
     if (table === "detections" && method === "POST") {
+      expectUpsert("event_id,rule_id,rule_version", "merge-duplicates");
       const row = body[0];
       const key = `${row.event_id}|${row.rule_id}|${row.rule_version}`;
       const existing = detections.get(key);
@@ -155,11 +162,13 @@ function createSupabaseStub(events: () => NormalizedAttackEvent[]) {
       return json(201, [{ id }]);
     }
     if (table === "vulnerabilities" && method === "POST") {
+      expectUpsert("cve_id", "ignore-duplicates");
       vulnerabilities.add(String(body[0].cve_id));
       return new Response(null, { status: 201 });
     }
     if (table === "vulnerabilities" && method === "GET") return json(200, []);
     if (table === "event_cve_matches" && method === "POST") {
+      expectUpsert("event_id,cve_id,detection_id", "merge-duplicates");
       const row = body[0];
       matches.set(`${row.event_id}|${row.cve_id}|${row.detection_id}`, row);
       return new Response(null, { status: 201 });
@@ -187,6 +196,7 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
     remaining: number;
     last_error: string | null;
     probe_labels: string[];
+    probe_event_ids: Record<string, string>;
   };
   const ingestResponses: number[] = [];
 
@@ -263,6 +273,18 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
     }
   });
 
+  it("attributes each detection to the probe that triggered it", () => {
+    for (const [label, expected] of Object.entries(EXPECTED)) {
+      const event = ingestRepo.events.get(sensorSummary.probe_event_ids[label] ?? "");
+      assert.ok(event, `no stored event for probe ${label}`);
+      const detections = event.metadata.signature_detections;
+      const rules = Array.isArray(detections)
+        ? (detections as Array<{ signature_id: string }>).map((d) => d.signature_id).sort()
+        : [];
+      assert.deepEqual(rules, [...expected.rules].sort(), `detections for probe ${label}`);
+    }
+  });
+
   it("never stores raw IPs, callback hosts, or raw payloads", () => {
     // In this loopback test the client IP equals the destination in the Host
     // header (the sensor's own address), so drop Host before the IP check.
@@ -319,6 +341,19 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
     for (const row of stub.detections.values()) {
       const evidence = JSON.stringify(row.evidence_redacted);
       assert.ok(!evidence.includes("callback-e2e.invalid"));
+    }
+    for (const [label, expected] of Object.entries(EXPECTED)) {
+      const eventId = sensorSummary.probe_event_ids[label];
+      const cves = [...stub.matches.values()]
+        .filter((row) => row.event_id === eventId)
+        .map((row) => String(row.cve_id))
+        .sort();
+      assert.deepEqual(cves, [...expected.cves].sort(), `candidate CVEs for probe ${label}`);
+      const rules = [...stub.detections.values()]
+        .filter((row) => row.event_id === eventId)
+        .map((row) => String(row.rule_id))
+        .sort();
+      assert.deepEqual(rules, [...expected.rules].sort(), `detection rows for probe ${label}`);
     }
     // NVD lookups failed (404 stub) but matches stayed in place.
     assert.equal(first.nvdFailed, expectedCves.length);

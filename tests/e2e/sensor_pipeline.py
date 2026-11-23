@@ -116,6 +116,10 @@ def main() -> int:
         thread.join(timeout=5)
 
     lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    # Probes are sent sequentially, so JSONL order matches PROBES order.
+    probe_event_ids = {
+        label: json.loads(line)["id"] for (label, *_), line in zip(PROBES, lines)
+    }
 
     shipper = EventShipper(
         ShipperConfig(
@@ -146,6 +150,7 @@ def main() -> int:
                 "remaining": remaining,
                 "last_error": last_error,
                 "probe_labels": [label for label, *_ in PROBES],
+                "probe_event_ids": probe_event_ids,
             }
         )
     )
