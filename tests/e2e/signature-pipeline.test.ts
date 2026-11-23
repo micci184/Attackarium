@@ -286,16 +286,14 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
   });
 
   it("never stores raw IPs, callback hosts, or raw payloads", () => {
-    // In this loopback test the client IP equals the destination in the Host
-    // header (the sensor's own address), so drop Host before the IP check.
-    const withoutHost = [...ingestRepo.events.values()].map((event) => {
-      const headers = { ...((event.metadata.headers as Record<string, unknown>) ?? {}) };
-      delete headers.host;
-      return { ...event, metadata: { ...event.metadata, headers } };
-    });
-    const serialized = JSON.stringify(withoutHost);
+    // The Host header (the sensor's own address for IP-direct scans) must be
+    // reduced to host_kind, so the loopback address appears nowhere.
+    const serialized = JSON.stringify([...ingestRepo.events.values()]);
     for (const event of ingestRepo.events.values()) {
       assert.match(String(event.src_ip_hash), /^[0-9a-f]{64}$/, "source IP must be stored only as a hash");
+      const headers = (event.metadata.headers as Record<string, unknown> | undefined) ?? {};
+      assert.ok(!("host" in headers), "Host header value must never be stored");
+      assert.equal(event.metadata.host_kind, "ip_literal");
     }
     for (const forbidden of ["127.0.0.1", "callback-e2e.invalid", "jndi:ldap", "<?php", "classLoader.resources", "password FROM users"]) {
       assert.ok(!serialized.includes(forbidden), `stored events leak ${forbidden}`);
