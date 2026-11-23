@@ -60,9 +60,17 @@ change and no egress opening):
 1. Back up the deployed files on the host
    (`/opt/attackarium/http-collector/*.py`, `/opt/attackarium/shipper/*.py`).
 2. Copy `sensors/http-collector/collector.py`, `sensors/http-collector/signatures.py`,
-   and `sensors/shipper/shipper.py` over the EICE tunnel (`aws ec2-instance-connect open-tunnel`
-   plus `scp -P <local-port>`), install them with the same owner and mode as the
-   files they replace, and restart the collector and shipper systemd units.
+   and `sensors/shipper/shipper.py` over an EICE tunnel. `open-tunnel` targets
+   port 22 unless told otherwise, so pass the admin port:
+
+   ```bash
+   aws ec2-instance-connect open-tunnel --instance-id <instance-id> \
+     --remote-port 2222 --local-port 12222 &
+   scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/
+   ```
+
+   Install them with the same owner and mode as the files they replace, and
+   restart the collector and shipper systemd units.
 3. Verify `systemctl is-active`, the journal (no tracebacks), a fresh heartbeat on
    `/sensors`, and that the local spool drains.
 4. If the change adds a data-minimization rule, re-run the matching idempotent
@@ -92,11 +100,17 @@ Changing host firewall rules (`/etc/nftables.conf`):
   3. Stop the sensor, detach its root volume, and attach it to the rescue
      instance. Over EICE, mount it, edit `etc/nftables.conf` (and deploy any
      sensor code at the same time), and validate with `nft -c -f`.
-  4. Reattach the volume to the sensor as its root device and start it. The
-     public IP changes; expect a recorded coverage gap.
-  5. Terminate the rescue instance and remove the temporary SG and rules.
-  6. After verification, deregister any AMI **and delete its EBS snapshots**.
-     They contain the shipper HMAC secret.
+  4. On the rescue instance, `umount` the volume. Detach it and wait until it is
+     `available`. Reattach it to the sensor as its original root device
+     (`/dev/sda1`).
+  5. Set `DeleteOnTermination=true` on the reattached root volume and verify it,
+     because a reattached volume defaults to `false`:
+     `aws ec2 modify-instance-attribute --instance-id <id> --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"DeleteOnTermination":true}}]'`.
+     Then start the sensor. The public IP changes; expect a recorded coverage gap.
+  6. Terminate the rescue instance and remove the temporary SG and rules.
+  7. After verification and the rollback window, delete the step 1 root-volume
+     snapshot, and deregister any AMI **and delete its EBS snapshots**. They
+     contain the shipper HMAC secret.
 
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
