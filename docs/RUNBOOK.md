@@ -42,6 +42,42 @@ investigation is finished and the owner chooses to destroy the host.
    resumes the same disk. A new instance is a later, separate decision. Do not
    treat a start as permission to widen the security group.
 
+## Sensor host access & code deployment (ADR-025)
+
+Operator SSH goes through the EC2 Instance Connect Endpoint (EICE). No public
+admin port and no instance IAM role are used. You need the operator private key
+and an AWS identity allowed to call `ec2-instance-connect:OpenTunnel`
+(protect it with MFA).
+
+```bash
+cd infra/aws-sensor
+terraform output -raw admin_ssh_command   # replace <operator-private-key>
+```
+
+Deploying collector/shipper code that needs no new packages (no Terraform
+change and no egress opening):
+
+1. Back up the deployed files on the host
+   (`/opt/attackarium/http-collector/*.py`, `/opt/attackarium/shipper/*.py`).
+2. Copy `sensors/http-collector/collector.py`, `sensors/http-collector/signatures.py`,
+   and `sensors/shipper/shipper.py` over the EICE tunnel (`aws ec2-instance-connect open-tunnel`
+   plus `scp -P <local-port>`), install them as `root:root 0644`, and restart
+   `attackarium-http-collector` and `attackarium-shipper`.
+3. Verify `systemctl is-active`, the journal (no tracebacks), a fresh heartbeat on
+   `/sensors`, and that the local spool drains.
+4. If the change adds a data-minimization rule, re-run the matching idempotent
+   cleanup migration SQL once the spool is empty, so events queued before the
+   update are cleaned too.
+5. Roll back by restoring the backed-up files and restarting the services.
+
+Changing host firewall rules (`/etc/nftables.conf`) requires editing the file on
+the host. cloud-init writes it only at first boot, so a later `terraform apply`
+does not update it. To change it from outside (for example after losing access),
+create an AMI of the instance, relaunch from it with `sensor_ami_id` and
+`terraform apply -replace=aws_instance.sensor`. This means downtime and a new
+public IP. Keep the AMI as the rollback point and delete it afterwards: it
+contains the shipper HMAC secret.
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):

@@ -33,13 +33,20 @@ variable "admin_ssh_port" {
 }
 
 variable "admin_ssh_cidrs" {
-  description = "Operator source CIDRs allowed to reach the dedicated management SSH port. Never use 0.0.0.0/0."
+  description = "Optional break-glass public source CIDRs for the management SSH port. Normal access uses the EC2 Instance Connect Endpoint, so keep this empty. Never use 0.0.0.0/0. Note: the host nftables copy is written by cloud-init at first boot only."
   type        = list(string)
+  default     = []
 
   validation {
-    condition     = length(var.admin_ssh_cidrs) > 0 && !contains(var.admin_ssh_cidrs, "0.0.0.0/0") && alltrue([for c in var.admin_ssh_cidrs : can(cidrhost(c, 0))])
-    error_message = "admin_ssh_cidrs must contain at least one valid IPv4 CIDR and must never include 0.0.0.0/0."
+    condition     = !contains(var.admin_ssh_cidrs, "0.0.0.0/0") && alltrue([for c in var.admin_ssh_cidrs : can(cidrhost(c, 0))])
+    error_message = "admin_ssh_cidrs must contain only valid IPv4 CIDRs and must never include 0.0.0.0/0."
   }
+}
+
+variable "sensor_ami_id" {
+  description = "Optional AMI to launch the sensor from (for example an operator-made image of the current root volume during a planned relaunch or rollback). Null uses the latest Ubuntu 24.04 LTS image."
+  type        = string
+  default     = null
 }
 
 variable "ssh_public_key" {

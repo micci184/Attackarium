@@ -12,15 +12,16 @@ locals {
   )
 }
 
-# Resolve the latest official Canonical Ubuntu Server LTS AMI without pinning a single release (ADR-019).
-# Even-year .04 releases match LTS only and exclude interim releases (e.g. .10 or odd-year .04).
+# Resolve the latest official Canonical Ubuntu Server 24.04 LTS AMI (ADR-019).
+# EC2 name filters support only the * and ? wildcards (no [...] classes), so
+# the LTS release is named explicitly. Bump it deliberately for the next LTS.
 data "aws_ami" "ubuntu_lts" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-*-2[468].04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
 
   filter {
@@ -116,6 +117,8 @@ resource "aws_vpc_security_group_ingress_rule" "decoy_tcp" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# Optional break-glass only. Normal administration goes through the EC2
+# Instance Connect Endpoint below, so this is empty by default.
 resource "aws_vpc_security_group_ingress_rule" "admin_ssh" {
   for_each = toset(var.admin_ssh_cidrs)
 
@@ -125,6 +128,50 @@ resource "aws_vpc_security_group_ingress_rule" "admin_ssh" {
   from_port         = var.admin_ssh_port
   to_port           = var.admin_ssh_port
   cidr_ipv4         = each.value
+}
+
+# -----------------------------------------------------------------------------
+# Operator access: EC2 Instance Connect Endpoint (no public admin port, no
+# instance IAM role). The operator opens an IAM-authenticated tunnel; the
+# instance still requires the operator SSH key. Each tunnel is logged in
+# CloudTrail and limited to 1 hour by the service.
+# -----------------------------------------------------------------------------
+resource "aws_security_group" "eice" {
+  name        = "${local.name_prefix}-eice-sg"
+  description = "EC2 Instance Connect Endpoint: egress only to the sensor admin SSH port"
+  vpc_id      = aws_vpc.sensor.id
+
+  tags = {
+    Name = "${local.name_prefix}-eice-sg"
+  }
+}
+
+resource "aws_vpc_security_group_egress_rule" "eice_to_sensor_admin" {
+  security_group_id            = aws_security_group.eice.id
+  description                  = "EICE to sensor management SSH only"
+  ip_protocol                  = "tcp"
+  from_port                    = var.admin_ssh_port
+  to_port                      = var.admin_ssh_port
+  referenced_security_group_id = aws_security_group.sensor.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "admin_ssh_from_eice" {
+  security_group_id            = aws_security_group.sensor.id
+  description                  = "Operator management SSH via EC2 Instance Connect Endpoint only"
+  ip_protocol                  = "tcp"
+  from_port                    = var.admin_ssh_port
+  to_port                      = var.admin_ssh_port
+  referenced_security_group_id = aws_security_group.eice.id
+}
+
+resource "aws_ec2_instance_connect_endpoint" "admin" {
+  subnet_id          = aws_subnet.sensor_public.id
+  security_group_ids = [aws_security_group.eice.id]
+  preserve_client_ip = false
+
+  tags = {
+    Name = "${local.name_prefix}-eice"
+  }
 }
 
 resource "aws_vpc_security_group_egress_rule" "ingest_https" {
@@ -196,7 +243,7 @@ resource "aws_key_pair" "operator" {
 }
 
 resource "aws_instance" "sensor" {
-  ami                         = data.aws_ami.ubuntu_lts.id
+  ami                         = coalesce(var.sensor_ami_id, data.aws_ami.ubuntu_lts.id)
   instance_type               = "t3a.small"
   subnet_id                   = aws_subnet.sensor_public.id
   vpc_security_group_ids      = [aws_security_group.sensor.id]
@@ -230,6 +277,7 @@ resource "aws_instance" "sensor" {
   user_data = templatefile("${path.module}/templates/cloud-init.yaml.tftpl", {
     admin_ssh_port      = var.admin_ssh_port
     admin_ssh_cidrs     = var.admin_ssh_cidrs
+    eice_source_cidr    = var.subnet_cidr
     decoy_tcp_ports     = local.decoy_tcp_ports
     ingest_egress_cidrs = var.ingest_egress_cidrs
     vpc_dns_ip          = local.vpc_dns_ip
