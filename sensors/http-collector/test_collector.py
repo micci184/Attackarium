@@ -231,6 +231,11 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             "victim-corp.example:8443": "hostname",
             "${jndi:ldap://host-e2e.invalid/a}": "hostname",
             "\x00203.0.113.10": "ip_literal",
+            # Unicode whitespace; same cases as metadata_sanitization_test.sql.
+            "\u00a0": "absent",
+            "\u00a0203.0.113.5\u0085": "ip_literal",
+            "\u3000\u2028[2001:db8::2]\u202f": "ip_literal",
+            "\u0085victim-corp.example\u00a0": "hostname",
         }
         for value, expected in cases.items():
             self.assertEqual(classify_host_header(value), expected, repr(value))
