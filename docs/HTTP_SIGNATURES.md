@@ -42,6 +42,21 @@ catalog, not from the stored object. `indicator_match` rules create a `detection
 row and no CVE match. `candidate_cve` rules also create one `event_cve_matches` row
 per catalog CVE. NVD metadata is fetched afterwards, one catalog CVE at a time.
 
+## End-to-end verification
+
+`tests/e2e/signature-pipeline.test.ts` (CI job `e2e-signature-pipeline`) runs the
+real collector, shipper (spool, HMAC, HTTP delivery), ingest handler, and
+`jobs/cve-matching` against synthetic probes on loopback only. It fails if a rule
+ID, `rule_version`, or indicator drifts between `sensors/http-collector/signatures.py`
+and `jobs/cve-matching/rules.ts`, if `attack_category` or `signature_detections`
+is dropped on the way to the database, or if the matching job's event query no
+longer selects those events. PostgREST and NVD are stubbed; no external request
+is made.
+
+If production shows HTTP events but no `signature_detections`, first confirm that
+the deployed collector includes signature detection (added in commit `aa83524`).
+Detections apply only to traffic captured after the updated collector is running.
+
 ## Known blind spots and limitations
 
 - **Size limits:** Payloads placed beyond `max_body_bytes` (default `4096` bytes) or inside header blocks rejected with `431` (`> 8192` bytes) are intentionally not buffered or inspected.
