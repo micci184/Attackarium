@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socketserver
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -37,36 +38,56 @@ from signatures import (
 TEMP_LOG_MAX_AGE = dt.timedelta(hours=24)
 
 
+def _is_fresh_jsonl_line(line: str, cutoff: dt.datetime) -> bool:
+    try:
+        record = json.loads(line)
+        observed_raw = str(record.get("observed_at", ""))
+        observed = dt.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=dt.timezone.utc)
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+        return False
+    return observed >= cutoff
+
+
 def prune_temp_jsonl(
     path: Path,
     now: dt.datetime | None = None,
     max_age: dt.timedelta = TEMP_LOG_MAX_AGE,
 ) -> None:
-    """Keep only JSONL records whose observed_at is inside max_age."""
+    """Keep only JSONL records whose observed_at is inside max_age.
+
+    Streams line by line into a sibling temp file and atomically replaces the
+    original only when something was dropped, so memory stays bounded by a
+    single line regardless of file size. The shipper treats the inode change
+    like a rotation and relies on idempotent event IDs.
+    """
     if not path.exists():
         return
     current = now or dt.datetime.now(dt.timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=dt.timezone.utc)
     cutoff = current - max_age
-    raw = path.read_text(encoding="utf-8")
-    kept: list[str] = []
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-            observed_raw = str(record.get("observed_at", ""))
-            observed = dt.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
-            if observed.tzinfo is None:
-                observed = observed.replace(tzinfo=dt.timezone.utc)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            continue
-        if observed >= cutoff:
-            kept.append(line)
-    text = ("\n".join(kept) + "\n") if kept else ""
-    if text != raw:
-        path.write_text(text, encoding="utf-8")
+
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".prune", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    dropped = False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out, path.open(
+            "r", encoding="utf-8", errors="replace"
+        ) as src:
+            for line in src:
+                stripped = line.rstrip("\n")
+                if stripped.strip() and _is_fresh_jsonl_line(stripped, cutoff):
+                    out.write(stripped + "\n")
+                else:
+                    dropped = True
+        if dropped:
+            os.chmod(tmp_path, path.stat().st_mode & 0o777)
+            os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 SAFE_HEADER_ALLOWLIST = frozenset(
@@ -78,7 +99,6 @@ SAFE_HEADER_ALLOWLIST = frozenset(
         "content-type",
         "content-length",
         "referer",
-        "x-forwarded-for",
     }
 )
 
