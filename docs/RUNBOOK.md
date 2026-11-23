@@ -80,7 +80,9 @@ change and no egress opening):
    done
    nc -z 127.0.0.1 12222 || { echo "tunnel not ready" >&2; kill "$TUNNEL_PID"; exit 1; }
    scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/
+   SCP_STATUS=$?
    kill "$TUNNEL_PID"
+   [ "$SCP_STATUS" -eq 0 ] || { echo "scp failed" >&2; exit "$SCP_STATUS"; }
    ```
 
    Install them with the same owner and mode as the files they replace, and
