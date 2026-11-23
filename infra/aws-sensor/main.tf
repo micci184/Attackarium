@@ -308,6 +308,9 @@ resource "aws_instance" "sensor" {
 resource "aws_eip" "sensor" {
   domain = "vpc"
 
+  # AWS recommends an explicit IGW dependency for EIPs in a freshly built VPC.
+  depends_on = [aws_internet_gateway.sensor]
+
   tags = {
     Name = "${local.name_prefix}-eip"
   }

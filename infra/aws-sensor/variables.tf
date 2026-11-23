@@ -44,9 +44,14 @@ variable "admin_ssh_cidrs" {
 }
 
 variable "sensor_ami_id" {
-  description = "Optional AMI to launch the sensor from (for example an operator-made image of the current root volume during a planned relaunch or rollback). Null uses the latest Ubuntu 24.04 LTS image."
+  description = "Optional AMI to launch a deliberately replaced sensor from. Use a fresh/stock image whose firewall does not block the instance metadata service. Never use an image of the current root volume: its nftables output policy blocks IMDS, so cloud-init may not apply the new user data (see docs/RUNBOOK.md). Null uses the latest Ubuntu 24.04 LTS image."
   type        = string
   default     = null
+
+  validation {
+    condition     = var.sensor_ami_id == null || can(regex("^ami-[0-9a-f]{8,17}$", var.sensor_ami_id))
+    error_message = "sensor_ami_id must be null or an AMI ID such as ami-0123456789abcdef0."
+  }
 }
 
 variable "ssh_public_key" {

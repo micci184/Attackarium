@@ -73,16 +73,16 @@ change and no egress opening):
      --instance-id "$(terraform output -raw instance_id)" \
      --remote-port "$ADMIN_PORT" --local-port 12222 &
    TUNNEL_PID=$!
+   # Always stop the tunnel, including on Ctrl-C or an early failure.
+   trap 'kill "$TUNNEL_PID" 2>/dev/null || true' EXIT
    for _ in $(seq 1 30); do   # bounded wait (about 30 s)
      kill -0 "$TUNNEL_PID" 2>/dev/null || { echo "tunnel exited" >&2; exit 1; }
      nc -z 127.0.0.1 12222 && break
      sleep 1
    done
-   nc -z 127.0.0.1 12222 || { echo "tunnel not ready" >&2; kill "$TUNNEL_PID"; exit 1; }
-   scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/
-   SCP_STATUS=$?
-   kill "$TUNNEL_PID"
-   [ "$SCP_STATUS" -eq 0 ] || { echo "scp failed" >&2; exit "$SCP_STATUS"; }
+   nc -z 127.0.0.1 12222 || { echo "tunnel not ready" >&2; exit 1; }
+   scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/ \
+     || { echo "scp failed" >&2; exit 1; }
    ```
 
    Install them with the same owner and mode as the files they replace, and
