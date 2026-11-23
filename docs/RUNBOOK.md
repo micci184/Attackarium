@@ -61,8 +61,8 @@ change and no egress opening):
    (`/opt/attackarium/http-collector/*.py`, `/opt/attackarium/shipper/*.py`).
 2. Copy `sensors/http-collector/collector.py`, `sensors/http-collector/signatures.py`,
    and `sensors/shipper/shipper.py` over the EICE tunnel (`aws ec2-instance-connect open-tunnel`
-   plus `scp -P <local-port>`), install them as `root:root 0644`, and restart
-   `attackarium-http-collector` and `attackarium-shipper`.
+   plus `scp -P <local-port>`), install them with the same owner and mode as the
+   files they replace, and restart the collector and shipper systemd units.
 3. Verify `systemctl is-active`, the journal (no tracebacks), a fresh heartbeat on
    `/sensors`, and that the local spool drains.
 4. If the change adds a data-minimization rule, re-run the matching idempotent
@@ -70,13 +70,33 @@ change and no egress opening):
    update are cleaned too.
 5. Roll back by restoring the backed-up files and restarting the services.
 
-Changing host firewall rules (`/etc/nftables.conf`) requires editing the file on
-the host. cloud-init writes it only at first boot, so a later `terraform apply`
-does not update it. To change it from outside (for example after losing access),
-create an AMI of the instance, relaunch from it with `sensor_ami_id` and
-`terraform apply -replace=aws_instance.sensor`. This means downtime and a new
-public IP. Keep the AMI as the rollback point and delete it afterwards: it
-contains the shipper HMAC secret.
+Changing host firewall rules (`/etc/nftables.conf`):
+
+- cloud-init writes the file only at first boot, and `aws_instance.sensor`
+  ignores `user_data` changes. A `terraform apply` therefore never updates the
+  running host's firewall, and it does not stop or restart the instance.
+- **With access:** edit the file on the host, check it with `nft -c -f`, and
+  apply it with `nft -f /etc/nftables.conf`.
+- **Ordering:** a Terraform change that removes a public admin SG rule must be
+  applied only after the host firewall already allows the EICE subnet on the
+  admin port. Otherwise the operator is locked out.
+- **Without access (recovery):** do **not** relaunch from an AMI of the current
+  root volume. Its `nftables` output policy drops traffic to the instance
+  metadata service, and `nftables.service` and `cloud-init-local.service` have
+  no boot ordering. cloud-init may fail to fetch the new user data, and the
+  replacement would be unreachable too. Edit the volume offline instead:
+  1. Snapshot the root volume (rollback point).
+  2. Launch a temporary rescue instance (stock Ubuntu 24.04 LTS) in the same AZ,
+     with no public IP and a temporary SG that allows SSH only from the EICE SG.
+     Add a matching temporary EICE SG egress rule.
+  3. Stop the sensor, detach its root volume, and attach it to the rescue
+     instance. Over EICE, mount it, edit `etc/nftables.conf` (and deploy any
+     sensor code at the same time), and validate with `nft -c -f`.
+  4. Reattach the volume to the sensor as its root device and start it. The
+     public IP changes; expect a recorded coverage gap.
+  5. Terminate the rescue instance and remove the temporary SG and rules.
+  6. After verification, deregister any AMI **and delete its EBS snapshots**.
+     They contain the shipper HMAC secret.
 
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 

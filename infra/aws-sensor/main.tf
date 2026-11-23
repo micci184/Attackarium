@@ -286,8 +286,12 @@ resource "aws_instance" "sensor" {
   user_data_replace_on_change = false
 
   # Prevent daily Ubuntu AMI updates from forcing instance replacement on later SG/budget applies.
+  # user_data is ignored too: in the AWS provider, a user_data change stops and
+  # starts the instance even with user_data_replace_on_change = false (an
+  # outage and a new public IP), and cloud-init would not re-apply it anyway.
+  # A deliberately replaced instance still receives the current user_data.
   lifecycle {
-    ignore_changes = [ami]
+    ignore_changes = [ami, user_data]
   }
 
   tags = {
