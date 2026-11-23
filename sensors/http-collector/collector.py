@@ -98,7 +98,6 @@ def prune_temp_jsonl(
 
 SAFE_HEADER_ALLOWLIST = frozenset(
     {
-        "host",
         "user-agent",
         "accept",
         "accept-language",
@@ -212,6 +211,31 @@ def redact_path(raw_path: str, max_length: int = 512) -> str:
             # credentials, PII, or arbitrary payloads while retaining parameter keys.
             safe_pairs.append(f"{k}=[REDACTED]")
     return f"{safe_base}?{'&'.join(safe_pairs)}"[:max_length]
+
+
+# Explicit trim set (every character Python str.isspace() accepts) so the
+# collector and the SQL migration classify legacy values identically.
+HOST_TRIM_CHARS = "\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+HOST_PORT_SUFFIX = re.compile(r":[0-9]{1,5}$")
+IPV4_LITERAL = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$")
+
+
+def classify_host_header(value: Any) -> str:
+    """Reduce the Host header to its kind; never keep the value.
+
+    For scanners that connect by IP, Host is the sensor's own public address,
+    which would identify the honeypot if it ever leaked. Hostnames are fully
+    attacker-controlled. Keep in sync with
+    supabase/migrations/20261123000002_replace_host_header_with_kind.sql.
+    """
+    text = strip_control(str(value)).strip(HOST_TRIM_CHARS) if value is not None else ""
+    if not text:
+        return "absent"
+    if text.startswith("["):
+        return "ip_literal"
+    if IPV4_LITERAL.match(HOST_PORT_SUFFIX.sub("", text)):
+        return "ip_literal"
+    return "hostname"
 
 
 def extract_safe_headers(headers: Any, max_len: int) -> dict[str, str]:
@@ -422,6 +446,7 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
 
         metadata: dict[str, Any] = {
             "headers": safe_headers,
+            "host_kind": classify_host_header(self.headers.get("host")),
             "declared_content_length": declared_len,
             "sampled_body_bytes": len(body_bytes),
             "body_truncated": body_truncated,
