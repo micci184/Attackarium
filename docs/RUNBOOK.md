@@ -66,12 +66,21 @@ change and no egress opening):
    ```bash
    cd infra/aws-sensor
    ADMIN_PORT=$(terraform console <<< 'var.admin_ssh_port')
+   command -v nc >/dev/null || { echo "nc is required" >&2; exit 1; }
+   # The local port must be free, so a ready listener is this tunnel's own.
+   ! nc -z 127.0.0.1 12222 || { echo "port 12222 already in use" >&2; exit 1; }
    aws ec2-instance-connect open-tunnel --region us-east-1 \
      --instance-id "$(terraform output -raw instance_id)" \
      --remote-port "$ADMIN_PORT" --local-port 12222 &
-   # Wait for the listener before copying.
-   until nc -z 127.0.0.1 12222; do sleep 1; done
+   TUNNEL_PID=$!
+   for _ in $(seq 1 30); do   # bounded wait (about 30 s)
+     kill -0 "$TUNNEL_PID" 2>/dev/null || { echo "tunnel exited" >&2; exit 1; }
+     nc -z 127.0.0.1 12222 && break
+     sleep 1
+   done
+   nc -z 127.0.0.1 12222 || { echo "tunnel not ready" >&2; kill "$TUNNEL_PID"; exit 1; }
    scp -P 12222 -i <operator-private-key> <files> ubuntu@127.0.0.1:/tmp/
+   kill "$TUNNEL_PID"
    ```
 
    Install them with the same owner and mode as the files they replace, and
