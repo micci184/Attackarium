@@ -7,8 +7,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
+import collector
 from collector import CollectorConfig, create_server, prune_temp_jsonl
 from signatures import (
     InspectionInput,
@@ -176,9 +178,32 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             json.dumps({"observed_at": fresh, "id": "a"}) + "\n", encoding="utf-8"
         )
         inode_before = self.output_path.stat().st_ino
-        prune_temp_jsonl(self.output_path, now=now)
+        # An unchanged log must not need a temporary copy (or its disk space).
+        with mock.patch.object(
+            collector.tempfile, "mkstemp", side_effect=OSError("no space left")
+        ) as mkstemp:
+            prune_temp_jsonl(self.output_path, now=now)
+        mkstemp.assert_not_called()
         self.assertEqual(self.output_path.stat().st_ino, inode_before)
         self.assertEqual([r["id"] for r in self._read_records()], ["a"])
+
+    def test_prune_failure_does_not_block_recording_and_backs_off(self) -> None:
+        with mock.patch.object(
+            collector, "prune_temp_jsonl", side_effect=OSError("no space left")
+        ) as prune, mock.patch.object(collector.sys, "stderr") as stderr:
+            for path in ("/first", "/second"):
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+                conn.request("GET", path)
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                self.assertEqual(resp.status, 404)
+        self.assertEqual([r["http_path"] for r in self._read_records()], ["/first", "/second"])
+        # Retried at most once per minute, not on every request.
+        self.assertEqual(prune.call_count, 1)
+        written = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("prune failed (OSError)", written)
+        self.assertNotIn("no space left", written)
 
     def test_never_persists_client_ip_headers(self) -> None:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)

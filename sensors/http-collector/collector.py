@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socketserver
+import sys
 import tempfile
 import threading
 import time
@@ -57,10 +58,12 @@ def prune_temp_jsonl(
 ) -> None:
     """Keep only JSONL records whose observed_at is inside max_age.
 
-    Streams line by line into a sibling temp file and atomically replaces the
-    original only when something was dropped, so memory stays bounded by a
-    single line regardless of file size. The shipper treats the inode change
-    like a rotation and relies on idempotent event IDs.
+    A read-only streaming pass first checks whether anything has expired, so an
+    unchanged log never needs a temporary copy (or the extra disk space). Only
+    then does a second pass stream the kept lines into a sibling temp file and
+    atomically replace the original. Memory stays bounded by a single line. The
+    shipper treats the inode change like a rotation and relies on idempotent
+    event IDs.
     """
     if not path.exists():
         return
@@ -69,22 +72,25 @@ def prune_temp_jsonl(
         current = current.replace(tzinfo=dt.timezone.utc)
     cutoff = current - max_age
 
+    def keep(line: str) -> bool:
+        stripped = line.rstrip("\n")
+        return bool(stripped.strip()) and _is_fresh_jsonl_line(stripped, cutoff)
+
+    with path.open("r", encoding="utf-8", errors="replace") as src:
+        if all(keep(line) for line in src):
+            return
+
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".prune", dir=path.parent)
     tmp_path = Path(tmp_name)
-    dropped = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out, path.open(
             "r", encoding="utf-8", errors="replace"
         ) as src:
             for line in src:
-                stripped = line.rstrip("\n")
-                if stripped.strip() and _is_fresh_jsonl_line(stripped, cutoff):
-                    out.write(stripped + "\n")
-                else:
-                    dropped = True
-        if dropped:
-            os.chmod(tmp_path, path.stat().st_mode & 0o777)
-            os.replace(tmp_path, path)
+                if keep(line):
+                    out.write(line.rstrip("\n") + "\n")
+        os.chmod(tmp_path, path.stat().st_mode & 0o777)
+        os.replace(tmp_path, path)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -280,8 +286,15 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         with self.write_lock:
             now_mono = time.monotonic()
             if now_mono - self._last_prune >= 60:
-                prune_temp_jsonl(self.config.output_jsonl)
+                # Advance the schedule first so a failing prune retries at most
+                # once per minute, and never let it block the request append.
                 self._last_prune = now_mono
+                try:
+                    prune_temp_jsonl(self.config.output_jsonl)
+                except OSError as exc:
+                    sys.stderr.write(
+                        f"temp JSONL prune failed ({type(exc).__name__}); will retry\n"
+                    )
             with self.config.output_jsonl.open("a", encoding="utf-8") as fp:
                 fp.write(line)
 
