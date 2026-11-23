@@ -119,6 +119,37 @@ def compute_hmac_sha256_hex(secret: str, message: str) -> str:
     ).hexdigest()
 
 
+# Known Redis command verbs. Anything else is recorded as "OTHER" so attacker-
+# controlled strings never reach the spool or Supabase. Keep in sync with
+# supabase/migrations/20261123000001_sanitize_opencanary_cmd_metadata.sql.
+KNOWN_COMMAND_VERBS = frozenset(
+    {
+        "ACL", "APPEND", "AUTH", "BGREWRITEAOF", "BGSAVE", "CLIENT", "CLUSTER",
+        "COMMAND", "CONFIG", "DBSIZE", "DEBUG", "DEL", "ECHO", "EVAL", "EVALSHA",
+        "EXEC", "EXISTS", "EXPIRE", "FLUSHALL", "FLUSHDB", "GET", "HELLO",
+        "HGETALL", "HSET", "INCR", "INFO", "KEYS", "LASTSAVE", "LPUSH", "MEMORY",
+        "MGET", "MODULE", "MONITOR", "MSET", "MULTI", "PING", "PSYNC", "PUBLISH",
+        "QUIT", "REPLCONF", "REPLICAOF", "RPUSH", "SAVE", "SCAN", "SCRIPT",
+        "SELECT", "SET", "SETEX", "SHUTDOWN", "SLAVEOF", "SLOWLOG", "SUBSCRIBE",
+        "SYNC", "TIME", "TTL", "TYPE",
+    }
+)
+MAX_COMMAND_LENGTH_RECORDED = 65535
+
+
+def sanitize_command(value: Any) -> dict[str, Any]:
+    """Reduce an OpenCanary CMD value to an allowlisted verb and its length."""
+    if not isinstance(value, (str, int, float, bool)):
+        return {"cmd_verb": "OTHER", "cmd_length": 0}
+    text = str(value)
+    parts = text.strip().split(None, 1)
+    verb = parts[0].upper() if parts else ""
+    return {
+        "cmd_verb": verb if verb in KNOWN_COMMAND_VERBS else "OTHER",
+        "cmd_length": min(len(text), MAX_COMMAND_LENGTH_RECORDED),
+    }
+
+
 def normalize_record(raw: dict[str, Any], sensor_id: str) -> dict[str, Any] | None:
     """Normalize either an HTTP collector record or an OpenCanary JSONL record."""
     if not isinstance(raw, dict):
@@ -190,9 +221,12 @@ def normalize_record(raw: dict[str, Any], sensor_id: str) -> dict[str, Any] | No
         safe_meta: dict[str, Any] = {"logtype": logtype}
         logdata = raw.get("logdata")
         if isinstance(logdata, dict):
-            for key in ("LOCALVERSION", "REMOTEVERSION", "SESSION", "CMD"):
+            for key in ("LOCALVERSION", "REMOTEVERSION", "SESSION"):
                 if key in logdata and isinstance(logdata[key], (str, int, float, bool)):
                     safe_meta[key.lower()] = str(logdata[key])[:256]
+            # Never persist the raw attacker-supplied command string.
+            if "CMD" in logdata:
+                safe_meta.update(sanitize_command(logdata["CMD"]))
 
         # Deterministic UUIDv5 so re-reading the same OpenCanary line is idempotent
         dedupe_seed = json.dumps(

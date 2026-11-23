@@ -19,6 +19,8 @@ import json
 import os
 import re
 import socketserver
+import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -37,36 +39,61 @@ from signatures import (
 TEMP_LOG_MAX_AGE = dt.timedelta(hours=24)
 
 
+def _is_fresh_jsonl_line(line: str, cutoff: dt.datetime) -> bool:
+    try:
+        record = json.loads(line)
+        observed_raw = str(record.get("observed_at", ""))
+        observed = dt.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=dt.timezone.utc)
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+        return False
+    return observed >= cutoff
+
+
 def prune_temp_jsonl(
     path: Path,
     now: dt.datetime | None = None,
     max_age: dt.timedelta = TEMP_LOG_MAX_AGE,
 ) -> None:
-    """Keep only JSONL records whose observed_at is inside max_age."""
+    """Keep only JSONL records whose observed_at is inside max_age.
+
+    A read-only streaming pass first checks whether anything has expired, so an
+    unchanged log never needs a temporary copy (or the extra disk space). Only
+    then does a second pass stream the kept lines into a sibling temp file and
+    atomically replace the original. Memory stays bounded by a single line. The
+    shipper treats the inode change like a rotation and relies on idempotent
+    event IDs.
+    """
     if not path.exists():
         return
     current = now or dt.datetime.now(dt.timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=dt.timezone.utc)
     cutoff = current - max_age
-    raw = path.read_text(encoding="utf-8")
-    kept: list[str] = []
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-            observed_raw = str(record.get("observed_at", ""))
-            observed = dt.datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
-            if observed.tzinfo is None:
-                observed = observed.replace(tzinfo=dt.timezone.utc)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            continue
-        if observed >= cutoff:
-            kept.append(line)
-    text = ("\n".join(kept) + "\n") if kept else ""
-    if text != raw:
-        path.write_text(text, encoding="utf-8")
+
+    def keep(line: str) -> bool:
+        stripped = line.rstrip("\n")
+        return bool(stripped.strip()) and _is_fresh_jsonl_line(stripped, cutoff)
+
+    with path.open("r", encoding="utf-8", errors="replace") as src:
+        if all(keep(line) for line in src):
+            return
+
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".prune", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out, path.open(
+            "r", encoding="utf-8", errors="replace"
+        ) as src:
+            for line in src:
+                if keep(line):
+                    out.write(line.rstrip("\n") + "\n")
+        os.chmod(tmp_path, path.stat().st_mode & 0o777)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 SAFE_HEADER_ALLOWLIST = frozenset(
@@ -78,7 +105,6 @@ SAFE_HEADER_ALLOWLIST = frozenset(
         "content-type",
         "content-length",
         "referer",
-        "x-forwarded-for",
     }
 )
 
@@ -226,7 +252,9 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
     ) -> None:
         self.config = config
         self.write_lock = threading.Lock()
-        self._last_prune = 0.0
+        # -inf so the first write prunes even when the monotonic clock is < 60s
+        # (e.g. a freshly booted host or CI runner).
+        self._last_prune = float("-inf")
         self.connection_semaphore = threading.BoundedSemaphore(
             max(1, config.max_concurrent_connections)
         )
@@ -260,8 +288,15 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         with self.write_lock:
             now_mono = time.monotonic()
             if now_mono - self._last_prune >= 60:
-                prune_temp_jsonl(self.config.output_jsonl)
+                # Advance the schedule first so a failing prune retries at most
+                # once per minute, and never let it block the request append.
                 self._last_prune = now_mono
+                try:
+                    prune_temp_jsonl(self.config.output_jsonl)
+                except OSError as exc:
+                    sys.stderr.write(
+                        f"temp JSONL prune failed ({type(exc).__name__}); will retry\n"
+                    )
             with self.config.output_jsonl.open("a", encoding="utf-8") as fp:
                 fp.write(line)
 

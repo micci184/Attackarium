@@ -7,8 +7,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
+import collector
 from collector import CollectorConfig, create_server, prune_temp_jsonl
 from signatures import (
     InspectionInput,
@@ -144,6 +146,102 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         records = self._read_records()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["src_ip"], "192.0.2.2")
+
+    def test_prune_streams_drops_invalid_lines_and_leaves_no_temp_files(self) -> None:
+        now = dt.datetime(2026, 11, 21, tzinfo=dt.timezone.utc)
+        old = (now - dt.timedelta(hours=30)).isoformat().replace("+00:00", "Z")
+        fresh = now.isoformat().replace("+00:00", "Z")
+        self.output_path.write_text(
+            json.dumps({"observed_at": old, "id": "old"})
+            + "\n\nnot-json\n"
+            + json.dumps({"observed_at": "garbage", "id": "bad-ts"})
+            + "\n"
+            + json.dumps(["not", "an", "object"])
+            + "\n"
+            + json.dumps({"observed_at": fresh, "id": "fresh-1"})
+            + "\n"
+            + json.dumps({"observed_at": fresh, "id": "fresh-2"})
+            + "\n",
+            encoding="utf-8",
+        )
+        self.output_path.chmod(0o640)
+        prune_temp_jsonl(self.output_path, now=now)
+        self.assertEqual([r["id"] for r in self._read_records()], ["fresh-1", "fresh-2"])
+        self.assertEqual(self.output_path.stat().st_mode & 0o777, 0o640)
+        leftovers = [p.name for p in self.output_path.parent.iterdir() if p.name.endswith(".prune")]
+        self.assertEqual(leftovers, [])
+
+    def test_prune_does_not_rewrite_when_nothing_expired(self) -> None:
+        now = dt.datetime(2026, 11, 21, tzinfo=dt.timezone.utc)
+        fresh = now.isoformat().replace("+00:00", "Z")
+        self.output_path.write_text(
+            json.dumps({"observed_at": fresh, "id": "a"}) + "\n", encoding="utf-8"
+        )
+        inode_before = self.output_path.stat().st_ino
+        # An unchanged log must not need a temporary copy (or its disk space).
+        with mock.patch.object(
+            collector.tempfile, "mkstemp", side_effect=OSError("no space left")
+        ) as mkstemp:
+            prune_temp_jsonl(self.output_path, now=now)
+        mkstemp.assert_not_called()
+        self.assertEqual(self.output_path.stat().st_ino, inode_before)
+        self.assertEqual([r["id"] for r in self._read_records()], ["a"])
+
+    def test_prune_failure_does_not_block_recording_and_backs_off(self) -> None:
+        with mock.patch.object(
+            collector, "prune_temp_jsonl", side_effect=OSError("no space left")
+        ) as prune, mock.patch.object(collector.sys, "stderr") as stderr:
+            for path in ("/first", "/second"):
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+                conn.request("GET", path)
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                self.assertEqual(resp.status, 404)
+        self.assertEqual([r["http_path"] for r in self._read_records()], ["/first", "/second"])
+        # Retried at most once per minute, not on every request.
+        self.assertEqual(prune.call_count, 1)
+        written = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("prune failed (OSError)", written)
+        self.assertNotIn("no space left", written)
+
+    def test_first_write_prunes_even_right_after_boot(self) -> None:
+        # A freshly booted host or CI runner can report monotonic() < 60s;
+        # the first write must still prune instead of waiting a full minute.
+        with mock.patch.object(collector.time, "monotonic", return_value=1.0), mock.patch.object(
+            collector, "prune_temp_jsonl"
+        ) as prune:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", "/boot")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+        self.assertEqual(prune.call_count, 1)
+
+    def test_never_persists_client_ip_headers(self) -> None:
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        conn.request(
+            "GET",
+            "/index.html",
+            headers={
+                "User-Agent": "SyntheticScanner/1.0",
+                "X-Forwarded-For": "203.0.113.77, 198.51.100.9",
+                "X-Real-IP": "203.0.113.78",
+                "Forwarded": "for=203.0.113.79",
+            },
+        )
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+
+        raw_jsonl = self.output_path.read_text(encoding="utf-8")
+        for ip in ("203.0.113.77", "198.51.100.9", "203.0.113.78", "203.0.113.79"):
+            self.assertNotIn(ip, raw_jsonl)
+        headers = self._read_records()[0]["metadata"]["headers"]
+        self.assertNotIn("x-forwarded-for", headers)
+        self.assertNotIn("x-real-ip", headers)
+        self.assertNotIn("forwarded", headers)
+        self.assertEqual(headers.get("user-agent"), "SyntheticScanner/1.0")
 
     def test_rejects_requests_when_concurrency_cap_is_exhausted(self) -> None:
         # Exhaust all permits in the server semaphore to deterministically test 503 shedding

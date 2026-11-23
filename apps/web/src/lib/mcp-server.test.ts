@@ -201,9 +201,61 @@ describe("Remote MCP server security boundaries", () => {
     const resWrongAud = await handler(mcpRequest(initBody, wrongAudToken));
     assert.equal(resWrongAud.status, 401);
 
-    assert.equal(usage.length, 5);
-    assert.ok(usage.every((u) => u.authFailureDelta === 1 && u.callDelta === 0));
-    assert.ok(!JSON.stringify(usage).includes("not-a-jwt-secret-token"));
+    // Unauthenticated requests must never trigger telemetry (DB) writes.
+    assert.equal(usage.length, 0);
+  });
+
+  it("never touches the database or verifier for unauthenticated or malformed bearer tokens", async () => {
+    let verifyCalls = 0;
+    let dbCalls = 0;
+    const handler = createAttackariumMcpHandler({
+      verifyToken: async () => {
+        verifyCalls += 1;
+        return null;
+      },
+      fetchEntitlement: async () => {
+        dbCalls += 1;
+        return validEntitlement();
+      },
+      consumeRateLimit: async () => {
+        dbCalls += 1;
+        return { allowed: true, currentCount: 1, retryAfterSeconds: 60 };
+      },
+      recordUsage: async () => {
+        dbCalls += 1;
+      },
+      observatory: mockObservatory,
+    });
+
+    const listReq = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    const b64 = (value: unknown) =>
+      Buffer.from(JSON.stringify(value)).toString("base64url");
+    const garbageTokens = [
+      "not-a-jwt",
+      "a.b",
+      "a.b.c.d",
+      "@@@.###.$$$",
+      `${b64({ alg: "none", typ: "JWT" })}.${b64({ sub: TEST_USER_ID })}.`,
+      `${b64({ alg: "none", typ: "JWT" })}.${b64({ sub: TEST_USER_ID })}.x`,
+      `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: TEST_USER_ID })}.sig`,
+      "bm90LWpzb24.e30.sig",
+    ];
+
+    const missing = await handler(mcpRequest(listReq));
+    assert.equal(missing.status, 401);
+    for (const token of garbageTokens) {
+      const res = await handler(mcpRequest(listReq, token));
+      assert.equal(res.status, 401, `expected 401 for ${token}`);
+      assert.ok((res.headers.get("www-authenticate") ?? "").includes("resource_metadata="));
+    }
+    assert.equal(verifyCalls, 0);
+
+    // A well-formed but unverifiable token reaches the verifier, never the DB.
+    const plausible = `${b64({ alg: "ES256", typ: "JWT" })}.${b64({ sub: TEST_USER_ID })}.c2ln`;
+    const resPlausible = await handler(mcpRequest(listReq, plausible));
+    assert.equal(resPlausible.status, 401);
+    assert.equal(verifyCalls, 1);
+    assert.equal(dbCalls, 0);
   });
 
   it("enforces all 5 gates server-side and reflects immediate revocation/suspension", async () => {
@@ -455,5 +507,91 @@ describe("Remote MCP server security boundaries", () => {
     const res = await handler(hugeReq);
     assert.equal(res.status, 413);
     assert.deepEqual(await res.json(), { error: "payload_too_large" });
+  });
+
+  it("aborts chunked POST bodies without Content-Length once they exceed 64 KiB", async () => {
+    const { signToken, verifyToken } = await createTestCryptoVerifier();
+    const token = await signToken(validClaims());
+    const handler = createAttackariumMcpHandler({
+      verifyToken,
+      fetchEntitlement: async () => validEntitlement(),
+      consumeRateLimit: async () => ({ allowed: true, currentCount: 1, retryAfterSeconds: 60 }),
+      observatory: mockObservatory,
+    });
+
+    let chunksPulled = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(16 * 1024).fill(0x20);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksPulled += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const req = new Request(MCP_URL, {
+      method: "POST",
+      headers: { ...MCP_HEADERS, Authorization: `Bearer ${token}` },
+      body: endless,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    assert.equal(req.headers.get("content-length"), null);
+
+    const res = await handler(req);
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: "payload_too_large" });
+    assert.ok(cancelled, "stream should be cancelled after exceeding the limit");
+    assert.ok(chunksPulled <= 8, `read too many chunks: ${chunksPulled}`);
+  });
+
+  it("serves chunked POST bodies within the limit", async () => {
+    const { signToken, verifyToken } = await createTestCryptoVerifier();
+    const token = await signToken(validClaims());
+    const usage: McpUsageRecord[] = [];
+    const handler = createAttackariumMcpHandler({
+      verifyToken,
+      fetchEntitlement: async () => validEntitlement(),
+      consumeRateLimit: async () => ({ allowed: true, currentCount: 1, retryAfterSeconds: 60 }),
+      recordUsage: async (record) => {
+        usage.push(record);
+      },
+      observatory: mockObservatory,
+    });
+
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: { name: "get_observation_summary", arguments: { period: "24h" } },
+      }),
+    );
+    const half = Math.floor(payload.length / 2);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload.slice(0, half));
+        controller.enqueue(payload.slice(half));
+        controller.close();
+      },
+    });
+
+    const res = await handler(
+      new Request(MCP_URL, {
+        method: "POST",
+        headers: { ...MCP_HEADERS, Authorization: `Bearer ${token}` },
+        body: stream,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }),
+    );
+    assert.equal(res.status, 200);
+    const rpc = await parseJsonRpcResponse(res);
+    assert.equal(rpc.id, 7);
+    assert.deepEqual(
+      usage.map((u) => [u.requestKind, u.toolName, u.successDelta]),
+      [["tool_call", "get_observation_summary", 1]],
+    );
   });
 });

@@ -10,6 +10,7 @@ import {
   buildWwwAuthenticateHeader,
   createSupabaseJwtVerifier,
   extractBearerToken,
+  isPlausibleJwt,
   type VerifyMcpTokenFn,
 } from "./mcp-auth.ts";
 import {
@@ -75,27 +76,59 @@ function resolveResourceOrigin(request: Request, configuredOrigin?: string): str
   return getPublicOrigin(request);
 }
 
-async function inspectRpcTarget(request: Request): Promise<ParsedRpcTarget> {
-  if (request.method !== "POST") {
-    return { requestKind: "initialize", toolName: "", trackCall: false };
-  }
+/**
+ * Reads a request body into memory, aborting as soon as more than maxBytes
+ * arrive. Returns null when the limit is exceeded. Never trusts Content-Length.
+ */
+async function readBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    const body = (await request.clone().json()) as {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function inspectRpcTarget(body: Uint8Array): ParsedRpcTarget {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as {
       method?: unknown;
       params?: { name?: unknown } | null;
     } | null;
 
-    if (body?.method === "initialize") {
+    if (parsed?.method === "initialize") {
       return { requestKind: "initialize", toolName: "", trackCall: true };
     }
     if (
-      body?.method === "tools/call" &&
-      typeof body.params?.name === "string" &&
-      isMcpToolName(body.params.name)
+      parsed?.method === "tools/call" &&
+      typeof parsed.params?.name === "string" &&
+      isMcpToolName(parsed.params.name)
     ) {
       return {
         requestKind: "tool_call",
-        toolName: body.params.name,
+        toolName: parsed.params.name,
         trackCall: true,
       };
     }
@@ -167,21 +200,12 @@ export function createAttackariumMcpHandler(
     const origin = resolveResourceOrigin(request, deps.siteOrigin);
     const resourceMetadataUrl = `${origin}/.well-known/oauth-protected-resource`;
 
-    // Gate 1a: Require a valid Bearer JWT before reading any untrusted body.
-    const bearerToken = extractBearerToken(request);
-    if (!bearerToken) {
-      await safeRecordUsage(deps.recordUsage, {
-        observedAt,
-        requestKind: "initialize",
-        toolName: "",
-        callDelta: 0,
-        successDelta: 0,
-        errorDelta: 0,
-        authFailureDelta: 1,
-        rateLimitedDelta: 0,
-        latencyMs: Math.max(0, nowFn() - startedAt),
-      });
-      return jsonError(
+    // Gate 1a: Require a structurally valid Bearer JWT with a verified
+    // signature before reading any untrusted body or touching the database.
+    // Unauthenticated failures are intentionally NOT written to usage telemetry:
+    // an anonymous caller must never be able to trigger database writes.
+    const unauthorized = () =>
+      jsonError(
         401,
         { error: "unauthorized" },
         {
@@ -191,31 +215,15 @@ export function createAttackariumMcpHandler(
           ),
         },
       );
+
+    const bearerToken = extractBearerToken(request);
+    if (!bearerToken || !isPlausibleJwt(bearerToken)) {
+      return unauthorized();
     }
 
     const identity = await deps.verifyToken(bearerToken);
     if (!identity) {
-      await safeRecordUsage(deps.recordUsage, {
-        observedAt,
-        requestKind: "initialize",
-        toolName: "",
-        callDelta: 0,
-        successDelta: 0,
-        errorDelta: 0,
-        authFailureDelta: 1,
-        rateLimitedDelta: 0,
-        latencyMs: Math.max(0, nowFn() - startedAt),
-      });
-      return jsonError(
-        401,
-        { error: "unauthorized" },
-        {
-          "WWW-Authenticate": buildWwwAuthenticateHeader(
-            resourceMetadataUrl,
-            MCP_READ_SCOPE,
-          ),
-        },
-      );
+      return unauthorized();
     }
 
     // Gates 1b-5: Live DB lookup on every request so suspension and revocation
@@ -294,7 +302,14 @@ export function createAttackariumMcpHandler(
       );
     }
 
-    // Bound POST payload size before parsing JSON or invoking the MCP handler.
+    // Bound POST payload size while streaming, so chunked requests or requests
+    // without Content-Length are aborted as soon as they exceed the limit.
+    let boundedRequest = request;
+    let target: ParsedRpcTarget = {
+      requestKind: "initialize",
+      toolName: "",
+      trackCall: false,
+    };
     if (request.method === "POST") {
       const contentLength = Number.parseInt(
         request.headers.get("content-length") ?? "",
@@ -303,16 +318,21 @@ export function createAttackariumMcpHandler(
       if (Number.isFinite(contentLength) && contentLength > MAX_MCP_BODY_BYTES) {
         return jsonError(413, { error: "payload_too_large" });
       }
-      const rawBytes = (await request.clone().arrayBuffer()).byteLength;
-      if (rawBytes > MAX_MCP_BODY_BYTES) {
+      const body = await readBodyWithLimit(request, MAX_MCP_BODY_BYTES);
+      if (body === null) {
         return jsonError(413, { error: "payload_too_large" });
       }
+      boundedRequest = new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body,
+        signal: request.signal,
+      });
+      target = inspectRpcTarget(body);
     }
 
-    const target = await inspectRpcTarget(request);
-
     try {
-      const response = await mcpHandler(request);
+      const response = await mcpHandler(boundedRequest);
       const isSuccess = response.status >= 200 && response.status < 400;
       if (target.trackCall) {
         await safeRecordUsage(deps.recordUsage, {

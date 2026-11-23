@@ -1,4 +1,9 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import {
+  createRemoteJWKSet,
+  decodeProtectedHeader,
+  jwtVerify,
+  type JWTPayload,
+} from "jose";
 import { MCP_READ_SCOPE, type McpAccessIdentity } from "./mcp-access.ts";
 
 const ALLOWED_JWT_ALGORITHMS = ["RS256", "ES256"];
@@ -22,6 +27,31 @@ export function extractBearerToken(request: Request): string | null {
   const token = match?.[1] ?? null;
   if (!token || token.length > MAX_BEARER_TOKEN_LENGTH) return null;
   return token;
+}
+
+const JWT_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Cheap, side-effect-free pre-auth guard that runs before signature
+ * verification. Rejects bearer strings that cannot be a compact JWS signed
+ * with an allowed algorithm, so garbage tokens never reach JWKS lookups or
+ * any database call. Passing this check proves nothing about authenticity.
+ */
+export function isPlausibleJwt(token: string): boolean {
+  const segments = token.split(".");
+  if (segments.length !== 3) return false;
+  if (!segments.every((segment) => JWT_SEGMENT_PATTERN.test(segment))) {
+    return false;
+  }
+  try {
+    const header = decodeProtectedHeader(token);
+    return (
+      typeof header.alg === "string" &&
+      ALLOWED_JWT_ALGORITHMS.includes(header.alg)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function buildWwwAuthenticateHeader(
