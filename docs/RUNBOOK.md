@@ -46,9 +46,26 @@ investigation is finished and the owner chooses to destroy the host.
 
 Operator SSH goes through the EC2 Instance Connect Endpoint (EICE) on port 3389
 (EICE tunnels only to 22 or 3389; 22 is the decoy). No public admin port and no
-instance IAM role are used. cloud-init is disabled after first boot
-(`/etc/cloud/cloud-init.disabled`) because `nftables` blocks the instance metadata
-service and cloud-init would otherwise stall every reboot for about 8 minutes. You need the operator private key
+instance IAM role are used. Hosts bootstrapped with the current user data disable
+cloud-init after first boot (`/etc/cloud/cloud-init.disabled`), because `nftables`
+blocks the instance metadata service and cloud-init would otherwise stall every
+reboot for about 8 minutes. Terraform ignores `user_data` changes, so a host
+created before this change must get the marker manually over an operator
+session (`sudo touch /etc/cloud/cloud-init.disabled`) or be replaced. The current
+production sensor already has it (2026-11-23).
+
+Changing the management port on an existing sensor (host config is not
+re-rendered from user data), in this order:
+
+1. While the current path still works, add the new port to
+   `/etc/ssh/sshd_config.d/99-attackarium-hardening.conf` and to the host
+   `nftables` admin rule. Check with `sshd -t` and `nft -c -f`, then apply with
+   `nft -f /etc/nftables.conf` and `systemctl reload ssh`.
+2. Confirm the new port accepts connections.
+3. Apply the Terraform Security Group change (`admin_ssh_port`).
+4. Remove the old port from sshd and `nftables`.
+
+If access is lost at any point, use the offline root-volume procedure below. You need the operator private key
 and an AWS identity allowed to call `ec2-instance-connect:OpenTunnel`
 (protect it with MFA).
 
