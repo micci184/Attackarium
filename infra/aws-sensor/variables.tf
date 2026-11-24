@@ -22,13 +22,13 @@ variable "subnet_cidr" {
 }
 
 variable "admin_ssh_port" {
-  description = "Dedicated management SSH port separated from decoy port 22."
+  description = "Dedicated management SSH port, separate from the decoy port 22. EC2 Instance Connect Endpoint tunnels only to port 22 or 3389, and 22 is the OpenCanary decoy, so management SSH uses 3389 (ADR-025). The Security Group exposes it only to the EICE Security Group."
   type        = number
-  default     = 2222
+  default     = 3389
 
   validation {
-    condition     = var.admin_ssh_port >= 1024 && var.admin_ssh_port <= 65535 && !contains([3306, 6379], var.admin_ssh_port)
-    error_message = "admin_ssh_port must be an unprivileged port (1024-65535) that does not collide with decoy ports."
+    condition     = var.admin_ssh_port == 3389
+    error_message = "admin_ssh_port must be 3389: EC2 Instance Connect Endpoint only tunnels to 22 or 3389, and 22 is the decoy SSH port."
   }
 }
 

@@ -44,8 +44,35 @@ investigation is finished and the owner chooses to destroy the host.
 
 ## Sensor host access & code deployment (ADR-025)
 
-Operator SSH goes through the EC2 Instance Connect Endpoint (EICE). No public
-admin port and no instance IAM role are used. You need the operator private key
+Operator SSH goes through the EC2 Instance Connect Endpoint (EICE) on port 3389
+(EICE tunnels only to 22 or 3389; 22 is the decoy). No public admin port and no
+instance IAM role are used. Hosts bootstrapped with the current user data disable
+cloud-init after first boot (`/etc/cloud/cloud-init.disabled`), because `nftables`
+blocks the instance metadata service and cloud-init would otherwise stall every
+reboot for about 8 minutes. Terraform ignores `user_data` changes, so a host
+created before this change must get the marker manually over an operator
+session (`sudo touch /etc/cloud/cloud-init.disabled`) or be replaced. The current
+production sensor already has it (2026-11-23).
+
+Changing the management port on an existing sensor (host config is not
+re-rendered from user data), in this order:
+
+Keep the existing session open throughout.
+
+1. Over the current path, add the new port to
+   `/etc/ssh/sshd_config.d/99-attackarium-hardening.conf` and to the host
+   `nftables` admin rule, **keeping the old port** in both. Check with
+   `sshd -t` and `nft -c -f /etc/nftables.conf`, then apply with
+   `nft -f /etc/nftables.conf` and `systemctl reload ssh`.
+2. Host-local check only: the Security Group still allows the old port, so
+   EICE cannot reach the new one yet. Confirm `ss -ltn` shows sshd on both
+   ports, and `nft list chain inet attackarium input` allows both.
+3. Apply the Terraform Security Group change (`admin_ssh_port`).
+4. Open a **new** EICE SSH session on the new port and confirm it works.
+5. Only then remove the old port from sshd and `nftables` (validate and
+   reload as in step 1), and confirm a fresh EICE session still connects.
+
+If access is lost at any point, use the offline root-volume procedure below. You need the operator private key
 and an AWS identity allowed to call `ec2-instance-connect:OpenTunnel`
 (protect it with MFA).
 
@@ -114,8 +141,13 @@ Changing host firewall rules (`/etc/nftables.conf`):
      with no public IP and a temporary SG that allows SSH only from the EICE SG.
      Add a matching temporary EICE SG egress rule.
   3. Stop the sensor, detach its root volume, and attach it to the rescue
-     instance. Over EICE, mount it, edit `etc/nftables.conf` (and deploy any
-     sensor code at the same time), and validate with `nft -c -f`.
+     instance. Over EICE, mount it and make the host match `admin_ssh_port`
+     (3389): set `Port 3389` in `etc/ssh/sshd_config.d/99-attackarium-hardening.conf`,
+     allow 3389 from the sensor subnet in `etc/nftables.conf` (validate with
+     `nft -c -f <mounted>/etc/nftables.conf`), create
+     `etc/cloud/cloud-init.disabled`, and deploy any sensor code at the same time.
+     If the Security Group still uses another port, apply Terraform with
+     `admin_ssh_port = 3389` before starting the sensor again.
   4. On the rescue instance, `umount` the volume. Detach it and wait until it is
      `available`. Reattach it to the sensor as its original root device
      (`/dev/sda1`).
