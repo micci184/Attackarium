@@ -57,13 +57,20 @@ production sensor already has it (2026-11-23).
 Changing the management port on an existing sensor (host config is not
 re-rendered from user data), in this order:
 
-1. While the current path still works, add the new port to
+Keep the existing session open throughout.
+
+1. Over the current path, add the new port to
    `/etc/ssh/sshd_config.d/99-attackarium-hardening.conf` and to the host
-   `nftables` admin rule. Check with `sshd -t` and `nft -c -f`, then apply with
+   `nftables` admin rule, **keeping the old port** in both. Check with
+   `sshd -t` and `nft -c -f /etc/nftables.conf`, then apply with
    `nft -f /etc/nftables.conf` and `systemctl reload ssh`.
-2. Confirm the new port accepts connections.
+2. Host-local check only: the Security Group still allows the old port, so
+   EICE cannot reach the new one yet. Confirm `ss -ltn` shows sshd on both
+   ports, and `nft list chain inet attackarium input` allows both.
 3. Apply the Terraform Security Group change (`admin_ssh_port`).
-4. Remove the old port from sshd and `nftables`.
+4. Open a **new** EICE SSH session on the new port and confirm it works.
+5. Only then remove the old port from sshd and `nftables` (validate and
+   reload as in step 1), and confirm a fresh EICE session still connects.
 
 If access is lost at any point, use the offline root-volume procedure below. You need the operator private key
 and an AWS identity allowed to call `ec2-instance-connect:OpenTunnel`
