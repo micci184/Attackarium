@@ -141,8 +141,13 @@ Changing host firewall rules (`/etc/nftables.conf`):
      with no public IP and a temporary SG that allows SSH only from the EICE SG.
      Add a matching temporary EICE SG egress rule.
   3. Stop the sensor, detach its root volume, and attach it to the rescue
-     instance. Over EICE, mount it, edit `etc/nftables.conf` (and deploy any
-     sensor code at the same time), and validate with `nft -c -f`.
+     instance. Over EICE, mount it and make the host match `admin_ssh_port`
+     (3389): set `Port 3389` in `etc/ssh/sshd_config.d/99-attackarium-hardening.conf`,
+     allow 3389 from the sensor subnet in `etc/nftables.conf` (validate with
+     `nft -c -f <mounted>/etc/nftables.conf`), create
+     `etc/cloud/cloud-init.disabled`, and deploy any sensor code at the same time.
+     If the Security Group still uses another port, apply Terraform with
+     `admin_ssh_port = 3389` before starting the sensor again.
   4. On the rescue instance, `umount` the volume. Detach it and wait until it is
      `available`. Reattach it to the sensor as its original root device
      (`/dev/sda1`).
