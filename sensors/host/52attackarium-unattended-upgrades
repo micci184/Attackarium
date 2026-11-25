@@ -3,10 +3,9 @@
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 
-// Fail the whole refresh if ANY index (including -security) cannot be
-// fetched. Without this, apt still runs Post-Invoke-Success after a partial
-// refresh, which touches update-success-stamp, and the recorder could mark a
-// host with stale security indexes as up to date.
+// Make `apt-get update` exit non-zero if ANY index (including -security)
+// cannot be fetched. record_os_update_status.sh uses that exit status as its
+// refresh evidence (apt's success hooks run even after a partial failure).
 APT::Update::Error-Mode "any";
 
 // Reboot automatically when an update requires it (kernel, libc), at a fixed

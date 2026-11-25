@@ -166,11 +166,14 @@ Changing host firewall rules (`/etc/nftables.conf`):
 The sensor installs security updates by itself: `unattended-upgrades` runs
 daily over permanent TCP/80 egress to the Canonical-owned archive ranges
 (`os_update_egress_cidrs`), and reboots at 04:00 UTC when an update requires
-it. After each `apt-daily-upgrade` run, `/usr/local/sbin/record_os_update_status.sh`
-records a success only if the package lists were completely refreshed
-(`update-stamp`, which `apt.systemd.daily` touches only when `apt-get update`
-exits 0; `APT::Update::Error-Mode "any"` makes a partial refresh fail) since
-the last recorded success, and the latest run finished without errors; the shipper reports it to `/admin` (Current within
+it. Each `apt-daily-upgrade` run first refreshes the package lists itself
+(`record_os_update_status.sh refresh`, `apt-get update` with
+`APT::Update::Error-Mode "any"`) and stores that attempt's outcome from the
+exit status; apt's success hooks and stamps are not trusted because they run
+even after a partial failure. Afterwards (`record`), success is written only if
+that refresh succeeded, the unattended-upgrades run that followed finished
+cleanly, and it is newer than the last recorded success. The shipper reports
+it to `/admin` (Current within
 3 days, Due after 3, Overdue after 7). The `sensor-patch-freshness-weekly`
 GitHub Actions workflow fails (and GitHub emails the maintainer) when an
 active sensor is not current. Its public logs print counts only.
@@ -209,10 +212,19 @@ change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
    (`0644`), and `sensors/host/apt-daily-upgrade-attackarium.conf` as
    `/etc/systemd/system/apt-daily-upgrade.service.d/attackarium-status.conf`
    (`0644`); then `systemctl daemon-reload`.
-4. Verify: `sudo apt-get update` succeeds, `scripts/verify_egress.sh` still
-   passes (arbitrary egress blocked), then run
-   `sudo systemctl start apt-daily-upgrade.service` and confirm
-   `/var/lib/attackarium-patch/last-success` was refreshed.
+4. Verify: `sudo /usr/local/sbin/verify_egress.sh` still passes (arbitrary
+   egress blocked). Then run `sudo systemctl start apt-daily-upgrade.service`
+   (its pre-step refreshes the lists). Expected:
+   `/var/lib/attackarium-patch/refresh-result` shows `result=ok`, the latest
+   run in `/var/log/unattended-upgrades/unattended-upgrades.log` ends with
+   "All upgrades installed" or "No packages found ...", and `last-success`
+   has a newer `finished_at` (that run's completion time). If not, read
+   `journalctl -u apt-daily-upgrade.service` for the
+   `record_os_update_status` lines: `refresh failed` means apt could not
+   reach the archive (check `nftables`, the Security Group, and
+   `getent ahostsv4 archive.ubuntu.com`); `does not follow the latest
+   refresh` means unattended-upgrade did not run (check
+   `APT::Periodic::Unattended-Upgrade`).
 
 ## OS security patch window (ADR-026, #94)
 
