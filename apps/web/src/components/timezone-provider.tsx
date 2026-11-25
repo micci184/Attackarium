@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { formatUtcDateTime, formatUtcShort } from "@/lib/format";
+import { formatUtcDateTime, formatUtcShort, parseTimestamp } from "@/lib/format";
 
 export type TimezoneMode = "utc" | "local";
 
@@ -90,7 +90,7 @@ function formatLocalDateTime(
   variant: "datetime" | "short",
   tzLabel: string,
 ): string {
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   const pad = (n: number) => String(n).padStart(2, "0");
   const year = date.getFullYear();

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { redirect } from "next/navigation";
 import {
   getAdminServiceClient,
@@ -214,11 +215,17 @@ export default async function AdminMcpUsagePage({
         <h2 className="text-base font-semibold text-slate-900">
           Recent {granularity} buckets
         </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Buckets are aggregated on UTC {granularity === "day" ? "days" : "hours"};
+          start times follow the timezone toggle.
+        </p>
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
-                <th className="px-3 py-2 font-medium">Bucket (UTC)</th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Bucket start (<TimezoneLabel />)
+                </th>
                 <th className="px-3 py-2 font-medium">Kind</th>
                 <th className="px-3 py-2 font-medium">Tool</th>
                 <th className="px-3 py-2 font-medium">Calls</th>
@@ -238,8 +245,8 @@ export default async function AdminMcpUsagePage({
                   <tr
                     key={`${bucket.bucket_start}-${bucket.request_kind}-${bucket.tool_name}`}
                   >
-                    <td className="px-3 py-2 font-mono text-slate-600">
-                      {bucket.bucket_start}
+                    <td className="px-3 py-2 font-mono tabular-nums text-slate-600">
+                      <FormattedTime iso={bucket.bucket_start} />
                     </td>
                     <td className="px-3 py-2 font-mono text-slate-800">
                       {bucket.request_kind}
