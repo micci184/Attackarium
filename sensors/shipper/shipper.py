@@ -503,14 +503,15 @@ class EventShipper:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.
             retry = self._send_body(events, False, None, now_sec)
-            if retry[0] != "permanent_400":
+            if retry[0] == "ok":
                 # Only the status block was rejected (an ingest without #94).
                 self._patch_status_disabled = True
                 sys.stderr.write(
                     "ingest rejected sensor_status; patch status reporting disabled\n"
                 )
-            # Otherwise an event is the problem: keep status enabled and let
-            # poison-pill isolation handle the event.
+            # Otherwise (an event-level 400, or a transient failure that proves
+            # nothing) keep status enabled; poison-pill isolation and the normal
+            # retry path handle the events.
             result = retry
         return result
 

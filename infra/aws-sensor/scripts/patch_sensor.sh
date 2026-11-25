@@ -76,6 +76,31 @@ date_plus_days() {
 
 remote() { ssh -F "$WORK_DIR/ssh_config" sensor "$@"; }
 
+# Run a remote command, but never past the given wall-clock deadline (in
+# bash SECONDS). Portable: macOS has no coreutils `timeout` by default, and
+# ssh's own timeouts do not bound the EICE ProxyCommand. Prints stdout.
+remote_until() {
+  local deadline="$1" out pid
+  shift
+  out="$(mktemp "$WORK_DIR/probe.XXXXXX")"
+  remote "$@" >"$out" 2>/dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( SECONDS >= deadline )); then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -f "$out"
+      return 124
+    fi
+    sleep 0.2
+  done
+  local rc=0
+  wait "$pid" || rc=$?
+  cat "$out"
+  rm -f "$out"
+  return "$rc"
+}
+
 close_egress() {
   (( OPENED == 1 && CLOSED == 0 )) || return 0
   log "closing patch egress (targeted apply with an empty list)"
@@ -231,10 +256,10 @@ maybe_reboot() {
   log "rebooting the sensor (reboot required)"
   # The connection usually drops during the reboot, so the exit status is not
   # meaningful; a changed boot id is the proof that the reboot happened.
-  remote 'sudo systemctl reboot' || true
+  remote_until "$deadline" 'sudo systemctl reboot' >/dev/null || true
   while :; do
     sleep "$SLEEP_SECONDS"
-    after="$(remote 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    after="$(remote_until "$deadline" 'cat /proc/sys/kernel/random/boot_id' || true)"
     [[ -n "$after" && "$after" != "$before" ]] && break
     (( SECONDS >= deadline )) && die "sensor did not complete a reboot within ${REBOOT_WAIT_SECONDS}s"
   done

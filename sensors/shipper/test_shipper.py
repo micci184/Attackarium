@@ -709,6 +709,37 @@ class ShipperIntegrationTests(unittest.TestCase):
             shipper.close()
         self.assertIn({"patch_last_success_at": "2026-11-25T07:00:17Z"}, self.state.received_sensor_status)
 
+    def test_transient_failure_on_fallback_keeps_status_enabled(self) -> None:
+        self.state.reject_event_ids.add("33333333-3333-4333-8333-333333333333")
+        shipper = self._patch_shipper("finished_at=2026-11-25T07:00:17Z\nresult=success\n")
+        try:
+            shipper.ingest_jsonl_lines([self._EVENT_LINE])
+            # First request: 400 (event rejected). Fallback: 503 (transient).
+            original = shipper._send_body
+            calls = {"n": 0}
+
+            def flaky(events, include_status, patched_at, now_sec):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    return ("transient", 503, None)
+                return original(events, include_status, patched_at, now_sec)
+
+            shipper._send_body = flaky  # type: ignore[method-assign]
+            shipper.flush_once()
+            self.assertFalse(shipper._patch_status_disabled)
+            self.assertEqual(shipper.spool.count(), 1)  # kept for retry
+            shipper._send_body = original  # type: ignore[method-assign]
+            self.state.reject_event_ids.clear()
+            self.state.received_sensor_status.clear()
+            shipper.consecutive_failures = 0
+            shipper.flush_once()
+        finally:
+            shipper.close()
+        self.assertIn("33333333-3333-4333-8333-333333333333", self.state.received_event_ids)
+        self.assertEqual(
+            self.state.received_sensor_status, [{"patch_last_success_at": "2026-11-25T07:00:17Z"}]
+        )
+
     def test_ingest_rejecting_status_never_drops_events(self) -> None:
         self.state.reject_sensor_status = True
         shipper = self._patch_shipper("finished_at=2026-11-25T07:00:17Z\nresult=success\n")
