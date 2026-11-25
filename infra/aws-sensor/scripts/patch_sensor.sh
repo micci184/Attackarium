@@ -79,11 +79,13 @@ remote() { ssh -F "$WORK_DIR/ssh_config" sensor "$@"; }
 # Run a remote command, but never past the given wall-clock deadline (in
 # bash SECONDS). Portable: macOS has no coreutils `timeout` by default, and
 # ssh's own timeouts do not bound the EICE ProxyCommand. Prints stdout.
+# ssh is started directly (not through a function), so the background PID is
+# ssh itself; SIGTERM makes ssh exit and terminate its ProxyCommand child.
 remote_until() {
   local deadline="$1" out pid
   shift
   out="$(mktemp "$WORK_DIR/probe.XXXXXX")"
-  remote "$@" >"$out" 2>/dev/null &
+  ssh -F "$WORK_DIR/ssh_config" sensor "$@" >"$out" 2>/dev/null &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if (( SECONDS >= deadline )); then

@@ -85,7 +85,8 @@ EOF" ;;
             exit 255 ;;
           *boot_id*)
             if [[ -f "$STUB_STATE/rebooted" ]]; then
-              [[ -n "${STUB_PROBE_HANG:-}" ]] && sleep "$STUB_PROBE_HANG"
+              # exec: the hanging process is the "ssh" PID the wrapper holds.
+              [[ -n "${STUB_PROBE_HANG:-}" ]] && exec sleep "$STUB_PROBE_HANG"
               echo "boot-b"
             else
               echo "boot-a"
@@ -270,12 +271,16 @@ class PatchSensorTest(unittest.TestCase):
     def test_hanging_probe_is_bounded_by_the_reboot_deadline(self) -> None:
         start = time.monotonic()
         proc = self.run_script(
-            STUB_REBOOT_REQUIRED="yes", STUB_PROBE_HANG="30", PATCH_SENSOR_REBOOT_WAIT_SECONDS="2"
+            STUB_REBOOT_REQUIRED="yes", STUB_PROBE_HANG="31.37", PATCH_SENSOR_REBOOT_WAIT_SECONDS="2"
         )
         elapsed = time.monotonic() - start
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("did not complete a reboot", proc.stderr)
         self.assertLess(elapsed, 15)
+        # The timed-out probe process must not survive the wrapper.
+        time.sleep(0.3)
+        leftover = subprocess.run(["pgrep", "-f", "sleep 31.37"], capture_output=True, text=True)
+        self.assertEqual(leftover.stdout.strip(), "", "a timed-out probe is still running")
 
     def test_each_service_is_checked_separately(self) -> None:
         proc = self.run_script(STUB_HTTP_COLLECTOR_RC="3")
