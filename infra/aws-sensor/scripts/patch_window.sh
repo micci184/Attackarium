@@ -219,9 +219,11 @@ inner_run() {
 
   # A previous window whose flows could not be verified must be cleaned up
   # first; otherwise overwriting window-addrs would stop tracking it.
-  if [[ -f "$WINDOW_ADDRS_FILE" ]]; then
+  # restore_firewall reloads the persisted ruleset first, so a leftover rule
+  # cannot re-admit a flow between the drain and the new window.
+  if [[ -f "$WINDOW_ADDRS_FILE" ]] || patch_rule_present; then
     log "cleaning up a previous window before opening a new one"
-    end_window_flows || { detail="previous window flows not cleaned up; run: $SELF cleanup"; exit 1; }
+    restore_firewall || { detail="previous window flows not cleaned up; run: $SELF cleanup"; exit 1; }
   fi
 
   local addrs

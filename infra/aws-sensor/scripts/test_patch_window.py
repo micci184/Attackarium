@@ -253,11 +253,22 @@ class PatchWindowTest(unittest.TestCase):
         proc = self.run_script("run")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         calls = self.calls()
+        # The persisted ruleset is reloaded before the retained flows are drained.
+        self.assertLess(calls.index("nft -f /etc/nftables.conf"), calls.index("ss -K -tn dst 45.33.9.9 dport = :80"))
         self.assertLess(
             calls.index("ss -K -tn dst 45.33.9.9 dport = :80"),
             next(i for i, c in enumerate(calls) if c.startswith("nft insert")),
         )
         self.assertEqual(self.result()["result"], "success")
+
+    def test_leftover_rule_without_address_file_is_restored_first(self) -> None:
+        (self.state / "rule").write_text(f"leftover # {TAG}\n")
+        proc = self.run_script("run")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self.calls()
+        first_restore = calls.index("nft -f /etc/nftables.conf")
+        first_insert = next(i for i, c in enumerate(calls) if c.startswith("nft insert"))
+        self.assertLess(first_restore, first_insert)
 
     def test_install_mode_pins_packages_inside_the_same_window(self) -> None:
         proc = self.run_script("install", "openssl=3.0.13-0ubuntu3.15", "libssl3t64=3.0.13-0ubuntu3.15")
