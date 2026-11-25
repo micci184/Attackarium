@@ -79,18 +79,30 @@ remote() { ssh -F "$WORK_DIR/ssh_config" sensor "$@"; }
 # Run a remote command, but never past the given wall-clock deadline (in
 # bash SECONDS). Portable: macOS has no coreutils `timeout` by default, and
 # ssh's own timeouts do not bound the EICE ProxyCommand. Prints stdout.
-# ssh is started directly (not through a function), so the background PID is
-# ssh itself; SIGTERM makes ssh exit and terminate its ProxyCommand child.
+# Signalling ssh alone is not enough: OpenSSH leaves its ProxyCommand (the
+# EICE open-tunnel) running when it is terminated. So the probe runs in its own
+# process group (job control) and the whole group is signalled.
+PROBE_PGID=""
+
+kill_probe_group() {
+  [[ -n "$PROBE_PGID" ]] || return 0
+  kill -TERM -- "-$PROBE_PGID" 2>/dev/null || true
+  wait "$PROBE_PGID" 2>/dev/null || true
+  PROBE_PGID=""
+}
+
 remote_until() {
   local deadline="$1" out pid
   shift
   out="$(mktemp "$WORK_DIR/probe.XXXXXX")"
+  set -m
   ssh -F "$WORK_DIR/ssh_config" sensor "$@" >"$out" 2>/dev/null &
   pid=$!
+  set +m
+  PROBE_PGID="$pid"
   while kill -0 "$pid" 2>/dev/null; do
     if (( SECONDS >= deadline )); then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+      kill_probe_group
       rm -f "$out"
       return 124
     fi
@@ -98,6 +110,8 @@ remote_until() {
   done
   local rc=0
   wait "$pid" || rc=$?
+  # A finished ssh can still leave its ProxyCommand behind.
+  kill_probe_group
   cat "$out"
   rm -f "$out"
   return "$rc"
@@ -121,6 +135,7 @@ close_egress() {
 on_exit() {
   local rc=$?
   trap - EXIT INT TERM HUP
+  kill_probe_group
   close_egress || rc=3
   [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
   exit "$rc"

@@ -85,8 +85,12 @@ EOF" ;;
             exit 255 ;;
           *boot_id*)
             if [[ -f "$STUB_STATE/rebooted" ]]; then
-              # exec: the hanging process is the "ssh" PID the wrapper holds.
-              [[ -n "${STUB_PROBE_HANG:-}" ]] && exec sleep "$STUB_PROBE_HANG"
+              if [[ -n "${STUB_PROBE_HANG:-}" ]]; then
+                # A proxy-like descendant (like ssh's ProxyCommand), then hang.
+                sleep 42.42 &
+                echo $! > "$STUB_STATE/proxy.pid"
+                exec sleep "$STUB_PROBE_HANG"
+              fi
               echo "boot-b"
             else
               echo "boot-a"
@@ -277,10 +281,13 @@ class PatchSensorTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("did not complete a reboot", proc.stderr)
         self.assertLess(elapsed, 15)
-        # The timed-out probe process must not survive the wrapper.
+        # Neither the timed-out probe nor its proxy-like descendant may survive.
         time.sleep(0.3)
         leftover = subprocess.run(["pgrep", "-f", "sleep 31.37"], capture_output=True, text=True)
         self.assertEqual(leftover.stdout.strip(), "", "a timed-out probe is still running")
+        proxy_pid = int((self.state / "proxy.pid").read_text().strip())
+        with self.assertRaises(ProcessLookupError, msg="proxy-like descendant survived"):
+            os.kill(proxy_pid, 0)
 
     def test_each_service_is_checked_separately(self) -> None:
         proc = self.run_script(STUB_HTTP_COLLECTOR_RC="3")
