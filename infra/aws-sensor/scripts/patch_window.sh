@@ -10,6 +10,7 @@
 # Usage (as root, over an EICE operator session):
 #   patch_window.sh resolve   # print mirror /32s for terraform patch_egress_cidrs
 #   patch_window.sh run       # open, patch, close; detached from the SSH session
+#   patch_window.sh install PKG=VERSION...  # same window, install/downgrade pinned packages
 #   patch_window.sh cleanup   # force-restore the persisted firewall
 #   patch_window.sh status    # show the last recorded result
 #
@@ -17,7 +18,10 @@
 #   - The temporary rule allows only TCP/80 to resolved mirror IPv4s, carries a
 #     fixed comment tag, and lives only in memory (a reboot also removes it).
 #   - Cleanup always runs: on exit, on signals, and from an independent
-#     systemd timer if the patch unit is killed or hangs.
+#     systemd timer if the patch unit is killed or hangs. Cleanup also ends any
+#     TCP/80 connection to the window addresses, because the persisted ruleset
+#     accepts established flows.
+#   - Only one window runs at a time (flock).
 #   - The run is a transient systemd unit, so an SSH or EICE tunnel drop
 #     cannot interrupt dpkg halfway.
 #   - apt verifies the signed InRelease files, so plain HTTP mirrors are fine.
@@ -41,7 +45,9 @@ require_root() {
   [[ "$(id -u)" == "0" ]] || die "must run as root"
 }
 
-# Hostnames from deb822 (*.sources) and one-line (sources.list) apt sources.
+# Hostnames from deb822 (*.sources) and one-line (*.list) apt sources. deb822
+# URIs may list several values and continue on indented lines; stanzas with
+# "Enabled: no" are skipped.
 mirror_hosts() {
   local files=()
   shopt -s nullglob
@@ -50,8 +56,22 @@ mirror_hosts() {
   local f
   for f in "${files[@]}"; do
     [[ -f "$f" ]] || continue
-    grep -hoE '^(URIs:[[:space:]]*|deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?)https?://[^/[:space:]]+' "$f" || true
-  done | sed -E 's#^.*https?://##; s#:[0-9]+$##' | tr '[:upper:]' '[:lower:]' | sort -u
+    if [[ "$f" == *.sources ]]; then
+      awk '
+        function flush() { if (enabled) for (i = 1; i <= n; i++) print uris[i]; n = 0; enabled = 1; inuris = 0 }
+        BEGIN { enabled = 1; n = 0 }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { flush(); next }
+        /^[Ee]nabled:[[:space:]]*[Nn]o[[:space:]]*$/ { enabled = 0; inuris = 0; next }
+        /^URIs:/ { inuris = 1; for (i = 2; i <= NF; i++) uris[++n] = $i; next }
+        /^[[:space:]]/ { if (inuris) for (i = 1; i <= NF; i++) uris[++n] = $i; next }
+        { inuris = 0 }
+        END { flush() }
+      ' "$f"
+    else
+      sed -E -n 's/^[[:space:]]*deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?([^[:space:]]+).*/\3/p' "$f"
+    fi
+  done | grep -E '^https?://' | sed -E 's#^https?://##; s#[/:].*$##' | tr '[:upper:]' '[:lower:]' | sort -u
 }
 
 is_ipv4() {
@@ -62,19 +82,25 @@ is_ipv4() {
   done
 }
 
-# Public unicast only: never open egress to private, loopback, link-local
-# (instance metadata), CGNAT, multicast, or reserved ranges.
+# Globally reachable unicast only: never open egress to private, loopback,
+# link-local (instance metadata), CGNAT, IETF protocol assignments,
+# documentation, benchmarking, multicast, or reserved ranges (IANA IPv4
+# special-purpose registry).
 is_public_ipv4() {
   local ip="$1"
   is_ipv4 "$ip" || return 1
-  local a b
-  IFS=. read -r a b _ _ <<<"$ip"
-  a=$((10#$a)); b=$((10#$b))
+  local a b c
+  IFS=. read -r a b c _ <<<"$ip"
+  a=$((10#$a)); b=$((10#$b)); c=$((10#$c))
   (( a == 0 || a == 10 || a == 127 || a >= 224 )) && return 1
   (( a == 169 && b == 254 )) && return 1
   (( a == 172 && b >= 16 && b <= 31 )) && return 1
   (( a == 192 && b == 168 )) && return 1
   (( a == 100 && b >= 64 && b <= 127 )) && return 1
+  (( a == 192 && b == 0 && (c == 0 || c == 2) )) && return 1   # 192.0.0.0/24, 192.0.2.0/24
+  (( a == 198 && (b == 18 || b == 19) )) && return 1           # 198.18.0.0/15
+  (( a == 198 && b == 51 && c == 100 )) && return 1            # 198.51.100.0/24
+  (( a == 203 && b == 0 && c == 113 )) && return 1             # 203.0.113.0/24
   return 0
 }
 
@@ -103,6 +129,27 @@ patch_rule_present() {
   nft list chain inet attackarium output 2>/dev/null | grep -q "$RULE_TAG"
 }
 
+WINDOW_ADDRS_FILE="$STATE_DIR/window-addrs"
+
+# The persisted ruleset accepts established flows, so removing the rule alone
+# would let a TCP/80 connection opened during the window keep running.
+end_window_flows() {
+  [[ -f "$WINDOW_ADDRS_FILE" ]] || return 0
+  local addr leftover=""
+  while read -r addr; do
+    is_ipv4 "$addr" || continue
+    ss -K -tn dst "$addr" dport = :80 >/dev/null 2>&1 || true
+    if ss -Htn state established state syn-sent dst "$addr" dport = :80 | grep -q .; then
+      leftover+=" $addr"
+    fi
+  done <"$WINDOW_ADDRS_FILE"
+  if [[ -n "$leftover" ]]; then
+    log "ERROR: TCP/80 connections still open to:$leftover" >&2
+    return 1
+  fi
+  rm -f "$WINDOW_ADDRS_FILE"
+}
+
 restore_firewall() {
   # The persisted ruleset never contains the patch rule; reloading it is the
   # single source of truth and also removes any partially added rule.
@@ -116,7 +163,8 @@ restore_firewall() {
     log "ERROR: temporary patch rule still present after restoring $NFT_CONF" >&2
     return 1
   fi
-  log "firewall restored from $NFT_CONF (no temporary egress rule)"
+  end_window_flows || return 1
+  log "firewall restored from $NFT_CONF (no temporary egress rule, no window flows)"
 }
 
 write_result() {
@@ -141,7 +189,11 @@ write_result() {
   fi
 }
 
+PACKAGE_PIN_RE='^[a-z0-9][a-z0-9+.-]*=[A-Za-z0-9.+~:-]+$'
+
 inner_run() {
+  local mode="$1"
+  shift
   require_root
   # Globals, not locals: the EXIT trap also fires after this function returns.
   status="failure"
@@ -172,25 +224,51 @@ inner_run() {
   local set_expr
   set_expr="$(paste -sd, - <<<"$addrs" | sed 's/,/, /g')"
   log "opening temporary TCP/80 egress to $count mirror address(es): $set_expr"
+  install -d -m 0755 "$STATE_DIR"
+  printf '%s\n' "$addrs" >"$WINDOW_ADDRS_FILE"
   nft insert rule inet attackarium output ip daddr "{ $set_expr }" tcp dport 80 accept comment "\"$RULE_TAG\""
 
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
   detail="apt-get update failed"
-  apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-  detail="unattended-upgrade failed"
-  # Security origins only, with the host's existing unattended-upgrades policy
-  # (it keeps modified conffiles such as /etc/nftables.conf).
-  unattended-upgrade -v
-  detail="security updates applied"
+  # Error-Mode=any: a partially failed refresh (for example a mirror address
+  # outside the window) must fail instead of silently keeping stale lists.
+  apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+    -o APT::Update::Error-Mode=any update
+  if [[ "$mode" == "install" ]]; then
+    detail="apt-get install failed"
+    apt-get -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confold \
+      -y --allow-downgrades install "$@"
+    detail="installed: $*"
+  else
+    detail="unattended-upgrade failed"
+    # Security origins only, with the host's existing unattended-upgrades policy
+    # (it keeps modified conffiles such as /etc/nftables.conf).
+    unattended-upgrade -v
+    detail="security updates applied"
+  fi
   status="success"
 }
 
 cmd_run() {
+  local mode="$1"
+  shift
   require_root
+  if [[ "$mode" == "install" ]]; then
+    (( $# > 0 )) || die "install needs at least one PKG=VERSION"
+    local pin
+    for pin in "$@"; do
+      [[ "$pin" =~ $PACKAGE_PIN_RE ]] || die "invalid package pin: $pin (expected PKG=VERSION)"
+    done
+  fi
   if [[ "${PATCH_WINDOW_NO_DETACH:-0}" == "1" ]]; then
-    inner_run
+    inner_run "$mode" "$@"
     return
   fi
+  # One window at a time: a second wrapper would share the cleanup timer and
+  # could remove the other run's rule mid-update.
+  install -d -m 0755 "$STATE_DIR"
+  exec 9>"$STATE_DIR/run.lock"
+  flock -n 9 || die "another patch window is already running"
   if systemctl is-active --quiet "$UNIT_NAME"; then
     die "$UNIT_NAME is already running"
   fi
@@ -205,12 +283,12 @@ cmd_run() {
   systemd-run --unit="$UNIT_NAME" --collect --wait \
     --property=RuntimeMaxSec="$MAX_RUNTIME_SECONDS" \
     --setenv=PATCH_WINDOW_NO_DETACH=1 \
-    "$SELF" run || true
+    "$SELF" "$mode" "$@" || true
   systemctl stop "$CLEANUP_UNIT.timer" 2>/dev/null || true
   # The unit's journal holds the full apt output.
   journalctl -u "$UNIT_NAME" --since "-$((MAX_RUNTIME_SECONDS / 60 + 5))min" --no-pager -o cat | tail -n 40 || true
-  if patch_rule_present; then
-    log "temporary rule still present; restoring now"
+  if patch_rule_present || [[ -f "$WINDOW_ADDRS_FILE" ]]; then
+    log "temporary rule or window flows still present; restoring now"
     restore_firewall || die "firewall restore failed; run: $SELF cleanup"
   fi
   cmd_status
@@ -231,15 +309,19 @@ cmd_status() {
   else
     echo "temporary_rule=absent"
   fi
+  if [[ -f "$WINDOW_ADDRS_FILE" ]]; then
+    echo "window_flows=UNVERIFIED (run cleanup)"
+  fi
 }
 
 main() {
   case "${1:-}" in
     resolve) resolve_mirrors | sed 's#$#/32#' ;;
-    run) cmd_run ;;
+    run) cmd_run run ;;
+    install) shift; cmd_run install "$@" ;;
     cleanup) require_root; restore_firewall || exit 1 ;;
     status) cmd_status ;;
-    *) echo "usage: $0 {resolve|run|cleanup|status}" >&2; exit 2 ;;
+    *) echo "usage: $0 {resolve|run|install PKG=VERSION...|cleanup|status}" >&2; exit 2 ;;
   esac
 }
 

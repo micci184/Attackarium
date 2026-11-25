@@ -45,6 +45,14 @@ STUBS = {
         [[ -n "${STUB_APT_SLEEP:-}" ]] && sleep "$STUB_APT_SLEEP"
         exit "${STUB_APT_RC:-0}"
     """,
+    "ss": """
+        #!/usr/bin/env bash
+        echo "ss $*" >> "$STUB_LOG"
+        if [[ "$1" == "-Htn" && "${STUB_SS_LEFTOVER:-0}" == "1" ]]; then
+          echo "ESTAB 0 0 10.42.0.10:40000 91.189.91.81:80"
+        fi
+        true
+    """,
     "unattended-upgrade": """
         #!/usr/bin/env bash
         echo "unattended-upgrade $* rule_present=$([[ -f $STUB_STATE/rule ]] && echo yes || echo no)" >> "$STUB_LOG"
@@ -135,6 +143,12 @@ class PatchWindowTest(unittest.TestCase):
             "91.189.91.81",
             "169.254.169.254",  # instance metadata
             "10.0.0.5",
+            "192.0.0.9",
+            "192.0.2.10",
+            "198.18.0.1",
+            "198.19.255.1",
+            "198.51.100.7",
+            "203.0.113.7",
             "127.0.0.1",
             "100.64.1.1",
             "172.16.9.9",
@@ -152,11 +166,31 @@ class PatchWindowTest(unittest.TestCase):
             "# comment http://ignored.example.invalid/\n"
             "deb [arch=amd64 signed-by=/k.gpg] http://Mirror.Example.invalid:80/ubuntu noble main\n"
         )
-        self.set_dns("mirror.example.invalid", "203.0.113.7")
+        self.set_dns("mirror.example.invalid", "45.33.10.7")
         proc = self.run_script("resolve")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.split(), ["203.0.113.7/32"])
+        self.assertEqual(proc.stdout.split(), ["45.33.10.7/32"])
         self.assertNotIn("ignored.example.invalid", self.log.read_text())
+
+    def test_resolve_reads_every_deb822_uri_and_skips_disabled_stanzas(self) -> None:
+        (self.apt / "sources.list.d" / "ubuntu.sources").write_text(
+            "Types: deb\n"
+            "URIs: http://mirror-a.example.invalid/ubuntu http://mirror-b.example.invalid/ubuntu\n"
+            "  https://mirror-c.example.invalid/ubuntu\n"
+            "Suites: noble\n"
+            "\n"
+            "# a comment between stanzas\n"
+            "Types: deb\n"
+            "Enabled: no\n"
+            "URIs: http://disabled.example.invalid/ubuntu\n"
+            "Suites: noble\n"
+        )
+        for host, addr in (("mirror-a", "45.33.1.1"), ("mirror-b", "45.33.1.2"), ("mirror-c", "45.33.1.3"), ("disabled", "45.33.1.4")):
+            self.set_dns(f"{host}.example.invalid", addr)
+        proc = self.run_script("resolve")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split(), ["45.33.1.1/32", "45.33.1.2/32", "45.33.1.3/32"])
+        self.assertNotIn("disabled.example.invalid", self.log.read_text())
 
     # --- run: happy path ---------------------------------------------------
 
@@ -180,6 +214,39 @@ class PatchWindowTest(unittest.TestCase):
         self.assertFalse(self.rule_present())
         self.assertEqual(self.result()["result"], "success")
         self.assertTrue((self.tmp / "result" / "last-success").exists())
+        update = next(c for c in calls if c.startswith("apt-get") and "update" in c)
+        self.assertIn("APT::Update::Error-Mode=any", update)
+        # Window flows are ended for every window address after the reload.
+        for addr in ("185.125.190.82", "91.189.91.81", "91.189.91.83"):
+            self.assertIn(f"ss -K -tn dst {addr} dport = :80", calls)
+        self.assertLess(order.index("nft -f"), order.index("ss"))
+        self.assertFalse((self.tmp / "result" / "window-addrs").exists())
+
+    def test_open_window_flow_after_cleanup_is_a_failure(self) -> None:
+        proc = self.run_script("run", STUB_SS_LEFTOVER="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.result()["result"], "failure")
+        self.assertIn("firewall restore failed", self.result()["detail"])
+        self.assertIn("TCP/80 connections still open", proc.stderr)
+        self.assertTrue((self.tmp / "result" / "window-addrs").exists())
+
+    def test_install_mode_pins_packages_inside_the_same_window(self) -> None:
+        proc = self.run_script("install", "openssl=3.0.13-0ubuntu3.15", "libssl3t64=3.0.13-0ubuntu3.15")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self.calls()
+        install = [c for c in calls if c.startswith("apt-get") and " install " in c]
+        self.assertEqual(len(install), 1)
+        self.assertIn("--allow-downgrades install openssl=3.0.13-0ubuntu3.15 libssl3t64=3.0.13-0ubuntu3.15", install[0])
+        self.assertIn("rule_present=yes", install[0])
+        self.assertFalse(any(c.startswith("unattended-upgrade") for c in calls))
+        self.assertFalse(self.rule_present())
+        self.assertEqual(self.result()["result"], "success")
+
+    def test_install_mode_rejects_unpinned_or_option_like_arguments(self) -> None:
+        for args in ((), ("openssl",), ("-o=APT::x",), ("openssl=1;reboot",), ("--reinstall",)):
+            proc = self.run_script("install", *args)
+            self.assertNotEqual(proc.returncode, 0, args)
+        self.assertEqual(self.calls(), [])
 
     # --- run: unhappy paths ------------------------------------------------
 
@@ -209,7 +276,7 @@ class PatchWindowTest(unittest.TestCase):
         self.assertEqual(self.result()["detail"], "no public mirror addresses resolved")
 
     def test_too_many_addresses_is_refused(self) -> None:
-        self.set_dns("archive.ubuntu.com", *[f"198.51.100.{i}" for i in range(1, 34)])
+        self.set_dns("archive.ubuntu.com", *[f"185.125.1.{i}" for i in range(1, 34)])
         proc = self.run_script("run")
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(any(c.startswith("nft insert") for c in self.calls()))

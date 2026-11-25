@@ -193,7 +193,7 @@ reboot also discards the in-memory rule.
 5. Immediately set `patch_egress_cidrs = []` and apply again. Confirm with
    `terraform plan` (no changes).
 6. On the host: `sudo /usr/local/sbin/patch_window.sh status` must show
-   `temporary_rule=absent`. Run `scripts/verify_egress.sh` (all checks pass),
+   `temporary_rule=absent` and no `window_flows` line. Run `scripts/verify_egress.sh` (all checks pass),
    then check `systemctl is-active opencanary http-collector attackarium-shipper`
    and a fresh heartbeat on `/sensors`.
 7. If `reboot_required=yes`, reboot over EICE (`sudo systemctl reboot`), and
@@ -203,9 +203,17 @@ reboot also discards the in-memory rule.
    below.
 
 Rollback: if a service fails after the upgrade, check its journal first.
-Package downgrades need the mirrors again, so repeat steps 2–5 with
-`apt-get install <package>=<previous-version>` instead of `run`, or use the
-offline root-volume procedure above.
+Package downgrades need the mirrors again, so repeat steps 2–6 with
+`sudo /usr/local/sbin/patch_window.sh install <package>=<previous-version> ...`
+instead of `run`. It opens the same mirror-only host rule, installs only the
+pinned versions (`--allow-downgrades`), and cleans up the same way. If that is
+not possible, use the offline root-volume procedure above.
+
+Cleanup also ends any TCP/80 connection to the window addresses, because the
+persisted ruleset accepts established flows. `status` reports
+`window_flows=UNVERIFIED` if that step did not complete; run
+`sudo /usr/local/sbin/patch_window.sh cleanup` until it succeeds. Only one
+window can run at a time.
 
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
