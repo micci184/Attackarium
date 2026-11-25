@@ -30,6 +30,7 @@ MAX_DETECTIONS_PER_EVENT = 10
 
 VALID_CLASSIFICATIONS = frozenset({"indicator_match", "candidate_cve"})
 VALID_MATCH_STRENGTHS = frozenset({"high", "medium", "low"})
+VALID_RULE_LOCATIONS = frozenset({"url", "body"})
 CVE_ID_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -98,6 +99,28 @@ _PHP_CGI_DANGEROUS_DIRECTIVE_RE = re.compile(
     r"(?:allow_url_include|auto_prepend_file)"
 )
 
+# 8. Path-only probes (applied to the request path only; see SignatureRule.locations).
+# All patterns are anchored and linear (no nested quantifiers).
+_ABSOLUTE_FORM_PREFIX_RE = re.compile(r"^[a-z][a-z0-9+.-]{0,16}://[^/?#]{0,255}")
+_SAP_METADATA_UPLOADER_RE = re.compile(r"^/developmentserver/metadatauploader/?$")
+_DOTENV_PATH_RE = re.compile(r"(?:^|/)\.env(?:\.[a-z0-9_-]{1,32})?$")
+_VCS_METADATA_PATH_RE = re.compile(r"(?:^|/)\.(?:git|svn|hg)/")
+_SECRET_FILE_PATH_RE = re.compile(
+    r"(?:^|/)(?:"
+    r"(?:secrets?|credentials)\.(?:json|ya?ml|env|txt)"
+    r"|terraform\.tfstate(?:\.backup)?"
+    r"|\.aws/credentials"
+    r"|id_(?:rsa|ed25519|ecdsa)"
+    r"|\.bash_history"
+    r"|wp-config\.(?:php(?:\.bak|\.old|\.save|\.txt|\.swp|~)|old|bak|txt)"
+    r")$"
+)
+_MCP_ENDPOINT_PATH_RE = re.compile(r"^(?:/api)?/(?:mcp|sse)/?$")
+_SPRING_ACTUATOR_PATH_RE = re.compile(r"^/actuator(?:/[a-z0-9_-]{1,32}){0,2}/?$")
+_PHP_INFO_PATH_RE = re.compile(r"(?:^|/)(?:php)?info\.php$|^/phpinfo/?$")
+_SERVER_STATUS_PATH_RE = re.compile(r"^/server-(?:status|info)/?$")
+_DEBUG_PANEL_PATH_RE = re.compile(r"^/(?:debug/default/view|_profiler|telescope|_debugbar)(?:/|$)")
+
 # Redaction helpers to strip attacker-controlled expressions/URLs from stored metadata.
 _JNDI_EXPRESSION_RE = re.compile(r"\$\{[^\r\n]{0,512}\}")
 _JNDI_PROTOCOL_URI_RE = re.compile(
@@ -154,6 +177,7 @@ class SignatureMatch:
     evidence: dict[str, Any]
     references: tuple[str, ...]
     summary: str
+    affects_attack_category: bool = True
 
     @property
     def candidate_cve(self) -> str | None:
@@ -186,8 +210,22 @@ class SignatureRule:
     match_text: Callable[[NormalizedText], RuleHit | None]
     candidate_cves: tuple[str, ...] = ()
     references: tuple[str, ...] = ()
+    # None = inspect every location (url, headers, body). Path-only rules use
+    # ("url",) so a Referer or body that merely mentions a path cannot match.
+    locations: tuple[str, ...] | None = None
+    # Reconnaissance rules record detections but must not turn a path probe
+    # into web_attack_attempt (that would change aggregate semantics).
+    affects_attack_category: bool = True
 
     def __post_init__(self) -> None:
+        if self.locations is not None and (
+            not self.locations or any(loc not in VALID_RULE_LOCATIONS for loc in self.locations)
+        ):
+            raise ValueError(f"Rule {self.signature_id} has invalid locations: {self.locations}")
+        if self.classification == "candidate_cve" and not self.affects_attack_category:
+            raise ValueError(
+                f"Rule {self.signature_id}: candidate_cve rules must mark the event as a suspected CVE probe"
+            )
         if self.classification not in VALID_CLASSIFICATIONS:
             raise ValueError(f"Invalid classification: {self.classification}")
         if self.classification == "candidate_cve" and not self.candidate_cves:
@@ -465,6 +503,97 @@ def _match_php_cgi_arg_injection(normalized: NormalizedText) -> RuleHit | None:
     return None
 
 
+def _request_path(normalized: NormalizedText) -> str:
+    """Return the decoded, lowercased path of a request target (no query/fragment)."""
+    text = _ABSOLUTE_FORM_PREFIX_RE.sub("", normalized.text, count=1)
+    return text.split("?", 1)[0].split("#", 1)[0]
+
+
+def _match_sap_metadata_uploader(normalized: NormalizedText) -> RuleHit | None:
+    if _SAP_METADATA_UPLOADER_RE.search(_request_path(normalized)):
+        return RuleHit(
+            match_strength="medium",
+            confidence=0.7,
+            indicator="sap_visual_composer_metadatauploader_path",
+            summary=(
+                "Suspected CVE-2025-31324 (SAP NetWeaver Visual Composer Metadata Uploader) probe "
+                "based on the request path only; candidate hypothesis only, not confirmed exploitation."
+            ),
+        )
+    return None
+
+
+def _match_sensitive_file_probe(normalized: NormalizedText) -> RuleHit | None:
+    path = _request_path(normalized)
+    if _DOTENV_PATH_RE.search(path):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.9,
+            indicator="dotenv_file_path",
+            summary=(
+                "Observed request for a .env environment file; reconnaissance for exposed "
+                "secrets, no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    if _VCS_METADATA_PATH_RE.search(path):
+        return RuleHit(
+            match_strength="high",
+            confidence=0.9,
+            indicator="vcs_metadata_path",
+            summary=(
+                "Observed request for version-control metadata (.git/.svn/.hg); reconnaissance "
+                "for exposed source, no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    if _SECRET_FILE_PATH_RE.search(path):
+        return RuleHit(
+            match_strength="medium",
+            confidence=0.8,
+            indicator="secret_or_backup_file_path",
+            summary=(
+                "Observed request for a credentials, state, or config backup file; reconnaissance "
+                "for exposed secrets, no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    return None
+
+
+def _match_mcp_endpoint_probe(normalized: NormalizedText) -> RuleHit | None:
+    if _MCP_ENDPOINT_PATH_RE.search(_request_path(normalized)):
+        return RuleHit(
+            match_strength="medium",
+            confidence=0.6,
+            indicator="mcp_endpoint_path",
+            summary=(
+                "Observed request for a Model Context Protocol (MCP) endpoint path; discovery of "
+                "exposed AI agent servers, no specific CVE inferred and exploitation outcome is unknown."
+            ),
+        )
+    return None
+
+
+def _match_debug_endpoint_probe(normalized: NormalizedText) -> RuleHit | None:
+    path = _request_path(normalized)
+    checks = (
+        (_SPRING_ACTUATOR_PATH_RE, "spring_actuator_path", "a Spring Boot Actuator endpoint"),
+        (_PHP_INFO_PATH_RE, "php_info_page_path", "a phpinfo page"),
+        (_SERVER_STATUS_PATH_RE, "server_status_path", "an Apache server-status/server-info page"),
+        (_DEBUG_PANEL_PATH_RE, "framework_debug_panel_path", "a framework debug panel"),
+    )
+    for pattern, indicator, what in checks:
+        if pattern.search(path):
+            return RuleHit(
+                match_strength="medium",
+                confidence=0.75,
+                indicator=indicator,
+                summary=(
+                    f"Observed request for {what}; reconnaissance for information disclosure, "
+                    "no specific CVE inferred and exploitation outcome is unknown."
+                ),
+            )
+    return None
+
+
 # Registry of versioned HTTP signature rules.
 # Add future attack-technique or CVE rules here without modifying collector.py.
 SIGNATURE_RULES: tuple[SignatureRule, ...] = (
@@ -534,6 +663,46 @@ SIGNATURE_RULES: tuple[SignatureRule, ...] = (
         references=("https://owasp.org/www-community/attacks/Command_Injection",),
         match_text=_match_command_injection,
     ),
+    SignatureRule(
+        signature_id="http-sap-netweaver-cve-2025-31324",
+        rule_version="1.0.0",
+        attack_technique="unauthenticated_file_upload",
+        classification="candidate_cve",
+        candidate_cves=("CVE-2025-31324",),
+        references=("https://nvd.nist.gov/vuln/detail/CVE-2025-31324",),
+        match_text=_match_sap_metadata_uploader,
+        locations=("url",),
+    ),
+    SignatureRule(
+        signature_id="http-sensitive-file-probe",
+        rule_version="1.0.0",
+        attack_technique="sensitive_file_discovery",
+        classification="indicator_match",
+        references=("https://owasp.org/www-project-web-security-testing-guide/",),
+        match_text=_match_sensitive_file_probe,
+        locations=("url",),
+        affects_attack_category=False,
+    ),
+    SignatureRule(
+        signature_id="http-mcp-endpoint-probe",
+        rule_version="1.0.0",
+        attack_technique="ai_agent_endpoint_discovery",
+        classification="indicator_match",
+        references=("https://modelcontextprotocol.io/specification",),
+        match_text=_match_mcp_endpoint_probe,
+        locations=("url",),
+        affects_attack_category=False,
+    ),
+    SignatureRule(
+        signature_id="http-debug-endpoint-probe",
+        rule_version="1.0.0",
+        attack_technique="information_disclosure",
+        classification="indicator_match",
+        references=("https://owasp.org/www-project-web-security-testing-guide/",),
+        match_text=_match_debug_endpoint_probe,
+        locations=("url",),
+        affects_attack_category=False,
+    ),
 )
 
 
@@ -541,6 +710,8 @@ def derive_signature_attack_category(detections: Iterable[SignatureMatch]) -> st
     """Map detections to existing attack_category values without claiming exploitation."""
     has_indicator = False
     for match in detections:
+        if not match.affects_attack_category:
+            continue
         if match.classification == "candidate_cve":
             return "suspected_cve_probe"
         if match.classification == "indicator_match":
@@ -587,6 +758,8 @@ def inspect_http_request(
 
     for location, normalized in targets:
         for rule in active_rules:
+            if rule.locations is not None and location not in rule.locations:
+                continue
             hit = rule.match_text(normalized)
             if hit is None:
                 continue
@@ -610,6 +783,7 @@ def inspect_http_request(
                     },
                     references=rule.references,
                     summary=hit.summary,
+                    affects_attack_category=rule.affects_attack_category,
                 )
             )
             if len(matches) >= MAX_DETECTIONS_PER_EVENT:

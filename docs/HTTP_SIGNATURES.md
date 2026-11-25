@@ -32,10 +32,29 @@ feeds downstream persistence and on-demand NVD caching in `jobs/cve-matching`.
 | `http-sqli-attempt` | `1.0.0` | `indicator_match` | `sql_injection` | *(none)* | `UNION [ALL] SELECT` (incl. `/**/` comments), `SLEEP`/`BENCHMARK`/`WAITFOR DELAY`, `INFORMATION_SCHEMA` tables/columns, or boolean tautology `' OR '1'='1'--` | [OWASP SQL Injection](https://owasp.org/www-community/attacks/SQL_Injection) |
 | `http-path-traversal-attempt` | `1.0.0` | `indicator_match` | `path_traversal` | *(none)* | 2+ `../`/`..\` segments targeting common system files (`/etc/passwd`, `win.ini`, `/proc/self/`), or 3+ repeated parent-directory segments | [OWASP Path Traversal](https://owasp.org/www-community/attacks/Path_Traversal) |
 | `http-cmd-injection-attempt` | `1.0.0` | `indicator_match` | `command_injection` | *(none)* | Shell metacharacter (`;`, `|`, `&&`, `||`, `` ` ``, `$(`) followed by a delimited OS command token (`id`, `uname`, `whoami`, `wget`, `curl`, `sh`, etc.) | [OWASP Command Injection](https://owasp.org/www-community/attacks/Command_Injection) |
+| `http-sap-netweaver-cve-2025-31324` | `1.0.0` | `candidate_cve` | `unauthenticated_file_upload` | `CVE-2025-31324` | **URL path only:** `/developmentserver/metadatauploader` (SAP NetWeaver Visual Composer Metadata Uploader). Path-based, so medium strength / 0.7 confidence | [NVD CVE-2025-31324](https://nvd.nist.gov/vuln/detail/CVE-2025-31324) |
+| `http-sensitive-file-probe` | `1.0.0` | `indicator_match` | `sensitive_file_discovery` | *(none)* | **URL path only, category-neutral:** `.env*` files, `.git/` / `.svn/` / `.hg/` metadata, credential/state/backup files (`secrets.*`, `credentials.*`, `terraform.tfstate`, `.aws/credentials`, SSH private key names, `.bash_history`, `wp-config` backups) | [OWASP WSTG](https://owasp.org/www-project-web-security-testing-guide/) |
+| `http-mcp-endpoint-probe` | `1.0.0` | `indicator_match` | `ai_agent_endpoint_discovery` | *(none)* | **URL path only, category-neutral:** `/mcp`, `/api/mcp`, `/sse` (Model Context Protocol server discovery) | [MCP specification](https://modelcontextprotocol.io/specification) |
+| `http-debug-endpoint-probe` | `1.0.0` | `indicator_match` | `information_disclosure` | *(none)* | **URL path only, category-neutral:** Spring Boot `/actuator/*`, `phpinfo` pages, Apache `/server-status` / `/server-info`, framework debug panels (`/debug/default/view`, `/_profiler`, `/telescope`, `/_debugbar`) | [OWASP WSTG](https://owasp.org/www-project-web-security-testing-guide/) |
+
+### Path-only and category-neutral rules
+
+- `SignatureRule.locations=("url",)` restricts a rule to the request path, after
+  bounded URL decoding and dropping the absolute-form scheme/host, query, and
+  fragment. A `Referer`, `User-Agent`, or body that merely mentions such a path
+  never matches.
+- `affects_attack_category=False` marks reconnaissance rules. They are recorded in
+  `metadata.signature_detections` and persisted as `detections` rows, but the event
+  keeps its existing category (`http_path_probe`), so aggregate semantics do not
+  change. Candidate-CVE rules must affect the category (`suspected_cve_probe`).
+- These rules come from paths observed from multiple sources on the live sensor
+  (2026-11-21 to 11-25): `.env*` / `.git/` probes were the most common recurring
+  paths, and `/developmentserver/metadatauploader` and `/mcp` probes arrived from
+  several sources.
 
 ## Persistence
 
-`jobs/cve-matching` does not inspect requests again. It accepts a stored detection
+`jobs/cve-matching` reads events categorized `suspected_cve_probe`, `web_attack_attempt`, or `http_path_probe` that carry `signature_detections`. It does not inspect requests again. It accepts a stored detection
 only when `signature_id`, `rule_version`, and `evidence.indicator` match the catalog
 above. Confidence, summary, technique, and candidate CVEs are copied from that
 catalog, not from the stored object. `indicator_match` rules create a `detections`
