@@ -1,0 +1,11 @@
+// Attackarium sensor: automatic security updates (ADR-027).
+// Package lists refresh daily over the permanent Canonical-only TCP/80 egress.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+
+// Reboot automatically when an update requires it (kernel, libc), at a fixed
+// quiet time (host clock is UTC). A reboot takes about a minute; a stop longer
+// than 15 minutes is recorded as a coverage gap.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";

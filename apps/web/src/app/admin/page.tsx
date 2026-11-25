@@ -6,6 +6,7 @@ import {
 } from "@/lib/admin-auth";
 import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import {
+  PATCH_DUE_AFTER_DAYS,
   PATCH_OVERDUE_AFTER_DAYS,
   type PatchFreshnessState,
   withPatchFreshness,
@@ -223,10 +224,12 @@ export default async function AdminConsolePage() {
           Sensor OS patch freshness
         </h2>
         <p className="mt-1 text-xs text-slate-500">
-          Last successful patch window as reported by each sensor over signed
-          ingest. Patch monthly; alert after {PATCH_OVERDUE_AFTER_DAYS} days.
-          Procedure: <code className="font-mono">docs/RUNBOOK.md</code> (OS
-          security patch window).
+          Last verified security update (daily automatic updates or a manual
+          patch window), as reported by each sensor over signed ingest. Due
+          after {PATCH_DUE_AFTER_DAYS} days means the automation needs a look;
+          overdue after {PATCH_OVERDUE_AFTER_DAYS} days. Procedure:{" "}
+          <code className="font-mono">docs/RUNBOOK.md</code> (OS security
+          updates).
         </p>
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-left text-xs">

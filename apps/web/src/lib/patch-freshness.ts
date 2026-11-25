@@ -1,8 +1,10 @@
 // Operator-only OS patch freshness for sensors (#94). Pure logic so it can be
 // unit-tested without the admin console's auth and database dependencies.
 
-export const PATCH_DUE_AFTER_DAYS = 30;
-export const PATCH_OVERDUE_AFTER_DAYS = 35;
+// Automatic updates run daily (ADR-027), so anything older than a few days
+// means the automation is broken (mirror moved, egress changed, apt error).
+export const PATCH_DUE_AFTER_DAYS = 3;
+export const PATCH_OVERDUE_AFTER_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -17,9 +19,9 @@ export interface PatchFreshness {
 
 /**
  * Classify a sensor's last successful patch window.
- * - current: within the monthly cadence (<= 30 days)
- * - due:     the monthly window is due (30–35 days)
- * - overdue: past the 35-day alert threshold in docs/SECURITY.md
+ * - current: updated within the last 3 days (daily automatic updates)
+ * - due:     3–7 days: automation is likely failing; investigate
+ * - overdue: more than 7 days (the alert threshold in docs/SECURITY.md)
  * - unknown: never reported, unparsable, or in the future (clock skew)
  */
 export function classifyPatchFreshness(

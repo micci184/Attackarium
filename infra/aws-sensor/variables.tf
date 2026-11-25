@@ -87,6 +87,19 @@ variable "enable_bootstrap_egress" {
   default     = false
 }
 
+variable "os_update_egress_cidrs" {
+  description = "Permanent plain-HTTP (TCP/80) egress for automatic OS security updates (ADR-027): Canonical-owned Ubuntu archive ranges only (AS41231). apt verifies signed InRelease files."
+  type        = list(string)
+  default     = ["91.189.88.0/21", "185.125.188.0/22"]
+
+  validation {
+    condition = length(var.os_update_egress_cidrs) <= 8 && alltrue([
+      for c in var.os_update_egress_cidrs : can(cidrhost(c, 0)) && tonumber(split("/", c)[1]) >= 16
+    ])
+    error_message = "os_update_egress_cidrs must be at most 8 explicit IPv4 CIDRs of /16 or narrower (never 0.0.0.0/0)."
+  }
+}
+
 variable "patch_egress_cidrs" {
   description = "TEMPORARY patch-window egress (#94): Ubuntu mirror /32s printed by `scripts/patch_window.sh resolve`, allowed on TCP/80 only. Keep empty outside a patch window."
   type        = list(string)
