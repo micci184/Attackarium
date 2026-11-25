@@ -864,6 +864,24 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         for rec in self._read_records():
             self.assertNotIn("signature_detections", rec["metadata"], rec["http_path"])
 
+    def test_absolute_form_query_or_fragment_mentions_do_not_match(self) -> None:
+        def ids(path: str) -> list[str]:
+            return [m.signature_id for m in inspect_http_request(
+                InspectionInput(method="GET", raw_path=path, headers=(), body_bytes=b""))]
+
+        for path in (
+            "http://example.invalid?next=/developmentserver/metadatauploader",
+            "http://example.invalid#/developmentserver/metadatauploader",
+            "http://example.invalid#/.env",
+            "https://h.invalid?x=/mcp",
+            "https://h.invalid?redirect=%2Factuator%2Fenv",
+        ):
+            self.assertEqual(ids(path), [], path)
+        # A real absolute-form path still matches.
+        self.assertEqual(ids("http://example.invalid/developmentserver/metadatauploader"),
+                         ["http-sap-netweaver-cve-2025-31324"])
+        self.assertEqual(ids("http://example.invalid/.env?a=1"), ["http-sensitive-file-probe"])
+
     def test_path_rule_registry_invariants(self) -> None:
         for rule in SIGNATURE_RULES:
             if rule.classification == "candidate_cve":

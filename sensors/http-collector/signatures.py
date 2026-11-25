@@ -101,7 +101,7 @@ _PHP_CGI_DANGEROUS_DIRECTIVE_RE = re.compile(
 
 # 8. Path-only probes (applied to the request path only; see SignatureRule.locations).
 # All patterns are anchored and linear (no nested quantifiers).
-_ABSOLUTE_FORM_PREFIX_RE = re.compile(r"^[a-z][a-z0-9+.-]{0,16}://[^/]{0,255}")
+_ABSOLUTE_FORM_PREFIX_RE = re.compile(r"^[a-z][a-z0-9+.-]{0,16}://[^/?#]{0,255}")
 _SAP_METADATA_UPLOADER_RE = re.compile(r"^/developmentserver/metadatauploader/?$")
 _DOTENV_PATH_RE = re.compile(r"(?:^|/)\.env(?:\.[a-z0-9_-]{1,32})?$")
 _VCS_METADATA_PATH_RE = re.compile(r"(?:^|/)\.(?:git|svn|hg)/")
