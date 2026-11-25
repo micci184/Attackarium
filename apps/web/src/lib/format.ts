@@ -24,30 +24,47 @@ export function formatCount(value: number): string {
   return NUMBER_FORMATTER.format(value);
 }
 
+/**
+ * Normalize PostgreSQL-style timestamps for `Date` parsing: a bare `±HH`
+ * offset (as psql prints `+00`) becomes `±HH:00`, and a space separator
+ * becomes `T`. `2026-01-01T12:00:00+00` is otherwise an Invalid Date in V8.
+ */
+export function normalizeTimestamp(isoString: string): string {
+  return isoString
+    .trim()
+    .replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:)/, "$1T$2")
+    .replace(/([+-]\d{2})$/, "$1:00");
+}
+
+/** Parse a timestamp string into a Date (possibly invalid). */
+export function parseTimestamp(isoString: string): Date {
+  return new Date(normalizeTimestamp(isoString));
+}
+
 export function formatUtcDateTime(isoString: string | null | undefined): string {
   if (!isoString) return "—";
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
 export function formatUtcShort(isoString: string | null | undefined): string {
   if (!isoString) return "—";
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   return `${date.toISOString().slice(5, 16).replace("T", " ")} UTC`;
 }
 
 export function formatJstDateTime(isoString: string | null | undefined): string {
   if (!isoString) return "—";
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   return `${JST_DATETIME_FORMATTER.format(date)} JST`;
 }
 
 export function formatJstShort(isoString: string | null | undefined): string {
   if (!isoString) return "—";
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   return `${JST_SHORT_FORMATTER.format(date)} JST`;
 }
@@ -74,7 +91,7 @@ export function formatCvss(score: number | null | undefined): string {
 export function formatUtcDate(isoString: string | null | undefined): string {
   if (!isoString) return "—";
   if (/^\d{4}-\d{2}-\d{2}$/.test(isoString)) return isoString;
-  const date = new Date(isoString);
+  const date = parseTimestamp(isoString);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toISOString().slice(0, 10);
 }
