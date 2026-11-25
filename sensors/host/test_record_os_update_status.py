@@ -143,6 +143,11 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
         for bad in (
             RUN_DAY1 + "2026-11-26 06:39:41,000 ERROR Installing the upgrades failed!\n",
             RUN_DAY1 + "Traceback (most recent call last):\n",
+            RUN_DAY1.replace(
+                "All upgrades installed",
+                "Package openssh-server has conffile prompt and needs to be upgraded manually",
+            )
+            + "2026-11-26 06:39:40,600 INFO All upgrades installed\n",
             RUN_DAY1 + "2026-11-26 06:40:00,000 INFO Starting unattended upgrades script\n",
             "",
         ):

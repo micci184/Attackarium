@@ -84,6 +84,12 @@ cmd_record() {
     log "last unattended-upgrades run reported errors; not marking success"
     return 1
   fi
+  # A security update held back because a locally modified conffile needs a
+  # prompt is NOT installed, although the run still logs a completion line.
+  if grep -q -E 'conffile prompt|needs to be upgraded manually' <<<"$last_run"; then
+    log "last unattended-upgrades run held back a package (conffile prompt); not marking success"
+    return 1
+  fi
   completion="$(grep -E 'All upgrades installed|No packages found that can be upgraded unattended' <<<"$last_run" | tail -n 1)"
   if [[ -z "$completion" ]]; then
     log "last unattended-upgrades run did not complete; not marking success"

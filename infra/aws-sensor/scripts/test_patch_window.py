@@ -7,6 +7,7 @@ command is a stub on PATH that records its arguments.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -346,6 +347,27 @@ class PatchWindowTest(unittest.TestCase):
         self.assertFalse(self.rule_present())
         self.assertEqual(self.result()["detail"], "interrupted")
         self.assertFalse(any(c.startswith("unattended-upgrade") for c in self.calls()))
+
+    @unittest.skipUnless(shutil.which("flock"), "flock (util-linux) not installed")
+    def test_patch_unit_itself_holds_the_lock_while_running(self) -> None:
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), "run"],
+            env=self.env(STUB_APT_SLEEP="2"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        lock = self.tmp / "result" / "run.lock"
+        deadline = time.monotonic() + 10
+        while not self.rule_present() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.rule_present())
+        probe = subprocess.run(["flock", "-n", str(lock), "true"])
+        self.assertNotEqual(probe.returncode, 0, "run.lock must be held by the patch run itself")
+        proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 0)
+        probe = subprocess.run(["flock", "-n", str(lock), "true"])
+        self.assertEqual(probe.returncode, 0, "run.lock must be released when the run exits")
 
     def test_requires_root(self) -> None:
         proc = self.run_script("run", STUB_UID="1000")

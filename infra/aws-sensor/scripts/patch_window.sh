@@ -199,6 +199,15 @@ inner_run() {
   local mode="$1"
   shift
   require_root
+  # The process that changes the firewall and writes the status holds the
+  # lock for its whole life (released only when it exits), so the automatic
+  # update recorder can never interleave with it, even if the wrapper that
+  # started this unit has died.
+  install -d -m 0755 "$STATE_DIR"
+  if command -v flock >/dev/null 2>&1; then
+    exec 8>"$STATE_DIR/run.lock"
+    flock -w 120 8 || die "could not acquire $STATE_DIR/run.lock"
+  fi
   # Globals, not locals: the EXIT trap also fires after this function returns.
   status="failure"
   detail="started"
@@ -278,17 +287,21 @@ cmd_run() {
     inner_run "$mode" "$@"
     return
   fi
-  # One window at a time: a second wrapper would share the cleanup timer and
-  # could remove the other run's rule mid-update.
+  # One window at a time. The patch unit itself holds run.lock (see
+  # inner_run); here we only fail fast if a window or the recorder holds it,
+  # and the fixed transient unit names make a second concurrent start fail.
   install -d -m 0755 "$STATE_DIR"
   exec 9>"$STATE_DIR/run.lock"
-  flock -n 9 || die "another patch window is already running"
+  flock -n 9 || die "another patch window (or the update recorder) holds the lock"
+  exec 9>&-
   if systemctl is-active --quiet "$UNIT_NAME"; then
     die "$UNIT_NAME is already running"
   fi
+  if systemctl is-active --quiet "$CLEANUP_UNIT.timer"; then
+    die "a cleanup timer is still armed (another window, or a wrapper that died); wait for it or run: $SELF cleanup && systemctl stop $CLEANUP_UNIT.timer"
+  fi
   # A stale result must never be read as this run's outcome.
   rm -f "$STATE_DIR/last-result"
-  systemctl stop "$CLEANUP_UNIT.timer" 2>/dev/null || true
   # Independent safety net: restore the firewall even if the patch unit is
   # killed or hangs past its runtime limit.
   systemd-run --unit="$CLEANUP_UNIT" --collect \
