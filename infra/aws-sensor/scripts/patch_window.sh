@@ -135,11 +135,15 @@ WINDOW_ADDRS_FILE="$STATE_DIR/window-addrs"
 # would let a TCP/80 connection opened during the window keep running.
 end_window_flows() {
   [[ -f "$WINDOW_ADDRS_FILE" ]] || return 0
-  local addr leftover=""
+  local addr out leftover=""
   while read -r addr; do
     is_ipv4 "$addr" || continue
+    # A failed kill is not fatal by itself; the query below decides.
     ss -K -tn dst "$addr" dport = :80 >/dev/null 2>&1 || true
-    if ss -Htn state established state syn-sent dst "$addr" dport = :80 | grep -q .; then
+    # Only a successful, empty query proves the flows are gone.
+    if ! out="$(ss -Htn state established state syn-sent dst "$addr" dport = :80)"; then
+      leftover+=" $addr(query-failed)"
+    elif [[ -n "$out" ]]; then
       leftover+=" $addr"
     fi
   done <"$WINDOW_ADDRS_FILE"
@@ -202,7 +206,8 @@ inner_run() {
     local rc=$?
     trap - EXIT INT TERM HUP
     if ! restore_firewall; then
-      status="failure"; detail="firewall restore failed; run: $SELF cleanup"
+      # Keep the original reason; append the restore failure.
+      status="failure"; detail="$detail; firewall restore failed; run: $SELF cleanup"
       rc=1
     fi
     write_result "$status" "$detail"
@@ -211,6 +216,13 @@ inner_run() {
   }
   trap finish EXIT
   trap 'detail="interrupted"; exit 1' INT TERM HUP
+
+  # A previous window whose flows could not be verified must be cleaned up
+  # first; otherwise overwriting window-addrs would stop tracking it.
+  if [[ -f "$WINDOW_ADDRS_FILE" ]]; then
+    log "cleaning up a previous window before opening a new one"
+    end_window_flows || { detail="previous window flows not cleaned up; run: $SELF cleanup"; exit 1; }
+  fi
 
   local addrs
   addrs="$(resolve_mirrors)"

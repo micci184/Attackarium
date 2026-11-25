@@ -48,8 +48,9 @@ STUBS = {
     "ss": """
         #!/usr/bin/env bash
         echo "ss $*" >> "$STUB_LOG"
-        if [[ "$1" == "-Htn" && "${STUB_SS_LEFTOVER:-0}" == "1" ]]; then
-          echo "ESTAB 0 0 10.42.0.10:40000 91.189.91.81:80"
+        if [[ "$1" == "-Htn" ]]; then
+          [[ "${STUB_SS_QUERY_FAIL:-0}" == "1" ]] && exit 1
+          [[ "${STUB_SS_LEFTOVER:-0}" == "1" ]] && echo "ESTAB 0 0 10.42.0.10:40000 91.189.91.81:80"
         fi
         true
     """,
@@ -229,6 +230,34 @@ class PatchWindowTest(unittest.TestCase):
         self.assertIn("firewall restore failed", self.result()["detail"])
         self.assertIn("TCP/80 connections still open", proc.stderr)
         self.assertTrue((self.tmp / "result" / "window-addrs").exists())
+
+    def test_failed_flow_query_is_a_failure_and_keeps_tracking(self) -> None:
+        proc = self.run_script("run", STUB_SS_QUERY_FAIL="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.result()["result"], "failure")
+        self.assertIn("query-failed", proc.stderr)
+        self.assertTrue((self.tmp / "result" / "window-addrs").exists())
+
+    def test_unverified_previous_window_blocks_a_new_window(self) -> None:
+        (self.tmp / "result").mkdir()
+        (self.tmp / "result" / "window-addrs").write_text("45.33.9.9\n")
+        proc = self.run_script("run", STUB_SS_LEFTOVER="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(any(c.startswith("nft insert") for c in self.calls()))
+        self.assertIn("previous window flows not cleaned up", self.result()["detail"])
+        self.assertIn("45.33.9.9", (self.tmp / "result" / "window-addrs").read_text())
+
+    def test_verified_previous_window_is_cleared_then_run_proceeds(self) -> None:
+        (self.tmp / "result").mkdir()
+        (self.tmp / "result" / "window-addrs").write_text("45.33.9.9\n")
+        proc = self.run_script("run")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        calls = self.calls()
+        self.assertLess(
+            calls.index("ss -K -tn dst 45.33.9.9 dport = :80"),
+            next(i for i, c in enumerate(calls) if c.startswith("nft insert")),
+        )
+        self.assertEqual(self.result()["result"], "success")
 
     def test_install_mode_pins_packages_inside_the_same_window(self) -> None:
         proc = self.run_script("install", "openssl=3.0.13-0ubuntu3.15", "libssl3t64=3.0.13-0ubuntu3.15")
