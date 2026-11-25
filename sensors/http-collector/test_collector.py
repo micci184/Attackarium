@@ -13,6 +13,7 @@ from pathlib import Path
 import collector
 from collector import CollectorConfig, classify_host_header, create_server, prune_temp_jsonl
 from signatures import (
+    SIGNATURE_RULES,
     InspectionInput,
     RuleHit,
     SignatureRule,
@@ -803,6 +804,89 @@ class HttpCollectorSecurityTests(unittest.TestCase):
             self.assertEqual(det["candidate_cve"], expected_single)
             self.assertTrue(len(det["references"]) >= 1)
             self.assertIn("not confirmed exploitation", det["summary"])
+
+    def test_path_rules_detect_recon_without_changing_attack_category(self) -> None:
+        cases = [
+            ("/developmentserver/metadatauploader?CONTENTTYPE=MODEL&CLIENT=1",
+             "http-sap-netweaver-cve-2025-31324", "sap_visual_composer_metadatauploader_path", "suspected_cve_probe"),
+            ("/.env", "http-sensitive-file-probe", "dotenv_file_path", None),
+            ("/admin/.env.production", "http-sensitive-file-probe", "dotenv_file_path", None),
+            ("/.git/config", "http-sensitive-file-probe", "vcs_metadata_path", None),
+            ("/terraform.tfstate", "http-sensitive-file-probe", "secret_or_backup_file_path", None),
+            ("/wp-config.php.bak", "http-sensitive-file-probe", "secret_or_backup_file_path", None),
+            ("/api/mcp", "http-mcp-endpoint-probe", "mcp_endpoint_path", None),
+            ("/sse", "http-mcp-endpoint-probe", "mcp_endpoint_path", None),
+            ("/actuator/env", "http-debug-endpoint-probe", "spring_actuator_path", None),
+            ("/phpinfo.php", "http-debug-endpoint-probe", "php_info_page_path", None),
+            ("/server-status", "http-debug-endpoint-probe", "server_status_path", None),
+            ("/debug/default/view", "http-debug-endpoint-probe", "framework_debug_panel_path", None),
+            ("/%2e%65nv", "http-sensitive-file-probe", "dotenv_file_path", None),
+        ]
+        for path, *_ in cases:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request("GET", path)
+            conn.getresponse().read()
+            conn.close()
+
+        records = self._read_records()
+        self.assertEqual(len(records), len(cases))
+        for rec, (path, sig, indicator, category) in zip(records, cases):
+            dets = rec["metadata"]["signature_detections"]
+            self.assertEqual([d["signature_id"] for d in dets], [sig], path)
+            self.assertEqual(dets[0]["evidence"]["indicator"], indicator, path)
+            self.assertEqual(dets[0]["matched_location"], "url", path)
+            self.assertIn("not confirmed exploitation" if category else "exploitation outcome is unknown", dets[0]["summary"])
+            if category is None:
+                # Reconnaissance stays a path probe; aggregate semantics are unchanged.
+                self.assertNotIn("attack_category", rec, path)
+            else:
+                self.assertEqual(rec["attack_category"], category)
+                self.assertEqual(dets[0]["candidate_cves"], ["CVE-2025-31324"])
+
+    def test_path_rules_ignore_headers_body_and_lookalike_paths(self) -> None:
+        self.server.config = dataclasses.replace(self.server.config, max_body_bytes=256)
+        requests = [
+            ("GET", "/", {"Referer": "https://ref.example/.env", "User-Agent": "scan /.git/config /mcp"}, None),
+            ("POST", "/upload", {}, b"/developmentserver/metadatauploader /actuator/env"),
+            ("GET", "/environment", {}, None),
+            ("GET", "/developmentserver/metadatauploaderx", {}, None),
+            ("GET", "/mcpx", {}, None),
+            ("GET", "/docs/mcp", {}, None),
+            ("GET", "/git/config", {}, None),
+            ("GET", "/wp-config.php", {}, None),
+            ("GET", "/debugger", {}, None),
+        ]
+        for method, path, headers, body in requests:
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+            conn.request(method, path, body=body, headers=headers)
+            conn.getresponse().read()
+            conn.close()
+        for rec in self._read_records():
+            self.assertNotIn("signature_detections", rec["metadata"], rec["http_path"])
+
+    def test_path_rule_registry_invariants(self) -> None:
+        for rule in SIGNATURE_RULES:
+            if rule.classification == "candidate_cve":
+                self.assertTrue(rule.affects_attack_category, rule.signature_id)
+        with self.assertRaises(ValueError):
+            SignatureRule(
+                signature_id="bad-location", rule_version="1.0.0", attack_technique="x",
+                classification="indicator_match", match_text=lambda n: None, locations=("header",),
+            )
+        with self.assertRaises(ValueError):
+            SignatureRule(
+                signature_id="neutral-cve", rule_version="1.0.0", attack_technique="x",
+                classification="candidate_cve", candidate_cves=("CVE-2025-31324",),
+                match_text=lambda n: None, affects_attack_category=False,
+            )
+
+    def test_path_rules_stay_fast_on_adversarial_paths(self) -> None:
+        paths = ["/" + "a/" * 900 + ".env", "/" + ".git/" * 400, "/actuator" + "/a" * 900,
+                 "/" + "%2e" * 600 + "env", "/" + "secrets." * 200 + "yaml"]
+        start = time.perf_counter()
+        for path in paths:
+            inspect_http_request(InspectionInput(method="GET", raw_path=path, headers=(), body_bytes=b""))
+        self.assertLess(time.perf_counter() - start, 0.5)
 
     def test_benign_requests_do_not_trigger_false_positives(self) -> None:
         benign_paths = [

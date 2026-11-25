@@ -46,7 +46,25 @@ const EXPECTED: Record<string, { rules: string[]; cves: string[] }> = {
   spring4shell_body: { rules: ["http-spring4shell-cve-2022-22965"], cves: ["CVE-2022-22965"] },
   php_cgi_soft_hyphen: { rules: ["http-php-cgi-arg-injection-cve-2024-4577"], cves: ["CVE-2024-4577"] },
   sqli_technique_only: { rules: ["http-sqli-attempt"], cves: [] },
+  // Path-only rules (url location). Reconnaissance stays category-neutral.
+  sap_metadatauploader: { rules: ["http-sap-netweaver-cve-2025-31324"], cves: ["CVE-2025-31324"] },
+  dotenv_recon: { rules: ["http-sensitive-file-probe"], cves: [] },
+  mcp_discovery: { rules: ["http-mcp-endpoint-probe"], cves: [] },
   benign: { rules: [], cves: [] },
+};
+
+// Expected stored attack_category per probe (ingest derives http_path_probe when
+// the collector leaves it unset for category-neutral reconnaissance rules).
+const EXPECTED_CATEGORY: Record<string, string> = {
+  log4shell_user_agent: "suspected_cve_probe",
+  apache_traversal: "suspected_cve_probe",
+  spring4shell_body: "suspected_cve_probe",
+  php_cgi_soft_hyphen: "suspected_cve_probe",
+  sqli_technique_only: "web_attack_attempt",
+  sap_metadatauploader: "suspected_cve_probe",
+  dotenv_recon: "http_path_probe",
+  mcp_discovery: "http_path_probe",
+  benign: "http_path_probe",
 };
 
 class InMemoryIngestRepo implements IngestRepository {
@@ -265,11 +283,9 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
       .flatMap((event) => (event.metadata.signature_detections as Array<{ signature_id: string }>).map((d) => d.signature_id))
       .sort();
     assert.deepEqual(storedRules, expectedRules);
-    for (const event of detected) {
-      assert.ok(
-        event.attack_category === "suspected_cve_probe" || event.attack_category === "web_attack_attempt",
-        `unexpected attack_category ${event.attack_category}`,
-      );
+    for (const [label, category] of Object.entries(EXPECTED_CATEGORY)) {
+      const event = ingestRepo.events.get(sensorSummary.probe_event_ids[label] ?? "");
+      assert.equal(event?.attack_category, category, `attack_category for probe ${label}`);
     }
   });
 

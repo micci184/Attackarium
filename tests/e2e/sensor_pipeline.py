@@ -67,6 +67,9 @@ PROBES: list[tuple[str, str, str, dict[str, str], bytes | None]] = [
         {},
         None,
     ),
+    ("sap_metadatauploader", "GET", "/developmentserver/metadatauploader", {}, None),
+    ("dotenv_recon", "GET", "/.env", {}, None),
+    ("mcp_discovery", "GET", "/mcp", {}, None),
     ("benign", "GET", "/index.html", {"User-Agent": "Mozilla/5.0"}, None),
 ]
 
