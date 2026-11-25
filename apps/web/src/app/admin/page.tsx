@@ -12,6 +12,8 @@ import {
 } from "@/lib/patch-freshness";
 import { reviewDailyReportAction, updateEntitlementAction } from "./actions";
 
+const SENSOR_PATCH_ROW_LIMIT = 500;
+
 const PATCH_STATE_CLASS: Record<PatchFreshnessState, string> = {
   current: "text-emerald-700",
   due: "font-medium text-amber-700",
@@ -117,9 +119,13 @@ export default async function AdminConsolePage() {
     // Operator-only host status (#94); never exposed through public views.
     client
       .from("sensors")
-      .select("id, is_active, last_heartbeat_at, last_patch_success_at")
+      .select("id, is_active, last_heartbeat_at, last_patch_success_at", {
+        count: "exact",
+      })
+      // Active sensors first, so an inactive backlog never hides a live one.
+      .order("is_active", { ascending: false })
       .order("id", { ascending: true })
-      .limit(50),
+      .limit(SENSOR_PATCH_ROW_LIMIT),
   ]);
 
   const entitlements = entitlementsRes.data ?? [];
@@ -136,6 +142,7 @@ export default async function AdminConsolePage() {
   const mcpEnabledCount = mcpEnabledCountRes.count ?? 0;
   const suspendedCount = suspendedCountRes.count ?? 0;
   const sensorPatchRows = withPatchFreshness(sensorsRes.data ?? []);
+  const sensorTotal = sensorsRes.count ?? sensorPatchRows.length;
 
   return (
     <div className="space-y-6">
@@ -270,6 +277,12 @@ export default async function AdminConsolePage() {
             </tbody>
           </table>
         </div>
+        {sensorTotal > sensorPatchRows.length ? (
+          <p role="status" className="mt-2 text-xs font-medium text-amber-700">
+            Showing {sensorPatchRows.length} of {sensorTotal} sensors (active
+            first). Check the remaining sensors in the database.
+          </p>
+        ) : null}
       </section>
 
       {/* 1. MCP Entitlements */}

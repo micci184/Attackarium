@@ -55,8 +55,8 @@ begin
   ) then
     raise exception 'implausibly old patch report was accepted';
   end if;
-  if public.record_sensor_patch_status('sensor-patch-01', null, now()) then
-    raise exception 'null patch report was accepted';
+  if public.record_sensor_patch_status('sensor-patch-01', now(), null) then
+    raise exception 'report without a receive time was accepted';
   end if;
   if public.record_sensor_patch_status(
     'sensor-unknown', timestamptz '2026-11-25 00:00:00+00', timestamptz '2026-11-25 00:01:00+00'
@@ -66,6 +66,23 @@ begin
   select last_patch_success_at into v from public.sensors where id = 'sensor-patch-01';
   if v is distinct from timestamptz '2026-10-01 00:00:00+00' then
     raise exception 'rejected report changed the stored value, got %', v;
+  end if;
+end $$;
+
+-- 2b. An explicit NULL (no recorded success, e.g. restored pre-patch host) clears it
+do $$
+declare
+  v timestamptz;
+begin
+  if not public.record_sensor_patch_status('sensor-patch-01', null, timestamptz '2026-11-26 00:00:00+00') then
+    raise exception 'null report did not clear the stored value';
+  end if;
+  select last_patch_success_at into v from public.sensors where id = 'sensor-patch-01';
+  if v is not null then
+    raise exception 'value not cleared, got %', v;
+  end if;
+  if public.record_sensor_patch_status('sensor-patch-01', null, timestamptz '2026-11-26 00:05:00+00') then
+    raise exception 'repeated null report should be a no-op';
   end if;
 end $$;
 

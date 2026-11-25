@@ -60,10 +60,13 @@ URLs, follow redirects, or pass payloads to a shell.
    anti-enumeration errors, replaces `src_ip` with a keyed HMAC and discards the address, and
    commits rate-limit check + anti-replay receipt + idempotent upsert + sensor
    heartbeat inside a single atomic PostgreSQL transaction (`commit_ingest_batch`).
-   An optional `sensor_status.patch_last_success_at` (strict UTC timestamp) is
+   An optional `sensor_status.patch_last_success_at` (strict UTC timestamp, or
+   `null` when the sensor has no recorded successful window, which clears the
+   stored value, for example after a restore from a pre-patch snapshot) is
    recorded afterwards for the operator console (`record_sensor_patch_status`,
-   best effort, never in public views). A shipper whose `sensor_status` is
-   rejected stops sending it and resends the same events without it.
+   best effort, never in public views). An absent `sensor_status` changes
+   nothing. If only the status block is rejected, the shipper stops sending it
+   and resends the same events without it.
 5. Background jobs roll up hourly/daily aggregates, record observed patterns and
    sensor coverage gaps, enforce configurable retention on detailed records, and
    (Phase 2) enrich events with deterministic rules and CVE/KEV/EPSS context.

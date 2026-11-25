@@ -78,8 +78,13 @@ STUBS = {
 STATUS_OK_PLACEHOLDER
 EOF" ;;
           *verify_egress.sh*) exit "${STUB_VERIFY_RC:-0}" ;;
+          *"systemctl is-active --quiet http-collector"*) exit "${STUB_HTTP_COLLECTOR_RC:-0}" ;;
           *"systemctl is-active"*) exit 0 ;;
-          *"systemctl reboot"*) touch "$STUB_STATE/rebooted"; exit 255 ;;
+          *"systemctl reboot"*)
+            [[ "${STUB_REBOOT_NOOP:-0}" == "1" ]] || touch "$STUB_STATE/rebooted"
+            exit 255 ;;
+          *boot_id*)
+            if [[ -f "$STUB_STATE/rebooted" ]]; then echo "boot-b"; else echo "boot-a"; fi ;;
           true) exit 0 ;;
           *) exit 0 ;;
         esac
@@ -117,7 +122,7 @@ class PatchSensorTest(unittest.TestCase):
             "STUB_LOG": str(self.log),
             "STUB_STATE": str(self.state),
             "PATCH_SENSOR_TF_DIR": str(self.tmp),
-            "PATCH_SENSOR_SLEEP_SECONDS": "0",
+            "PATCH_SENSOR_SLEEP_SECONDS": "0.05",
             "PATCH_SENSOR_REBOOT_WAIT_SECONDS": "1",
         }
         env.update(extra)
@@ -251,6 +256,18 @@ class PatchSensorTest(unittest.TestCase):
         reboot = self.index("systemctl reboot")
         self.assertGreater(reboot, self.index("patch_egress_cidrs=[]"))
         self.assertTrue(any("patch_window.sh status" in c for c in calls[reboot:]))
+
+    def test_reboot_that_did_not_happen_is_detected(self) -> None:
+        proc = self.run_script(STUB_REBOOT_REQUIRED="yes", STUB_REBOOT_NOOP="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("did not complete a reboot", proc.stderr)
+
+    def test_each_service_is_checked_separately(self) -> None:
+        proc = self.run_script(STUB_HTTP_COLLECTOR_RC="3")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("sensor service http-collector is not active", proc.stderr)
+        units = [c for c in self.calls() if "systemctl is-active" in c]
+        self.assertTrue(all(len(c.split("--quiet ")[1].split()) == 1 for c in units))
 
     def test_reboot_never_skips_reboot(self) -> None:
         proc = self.run_script("--reboot", "never", STUB_REBOOT_REQUIRED="yes")

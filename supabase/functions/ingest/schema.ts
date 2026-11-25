@@ -31,8 +31,32 @@ const ISO_UTC_SECONDS_REGEX =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
 
 export interface SensorStatusReport {
-  /** ISO timestamp of the last successful OS patch window, or null when not reported. */
+  /** False when the batch carried no sensor_status (older shippers): change nothing. */
+  reported: boolean;
+  /**
+   * ISO timestamp of the last successful OS patch window. null with
+   * reported=true means the sensor has no recorded success (for example after
+   * a restore from a pre-patch snapshot) and clears the stored value.
+   */
   patchLastSuccessAt: string | null;
+}
+
+/** True only for a real UTC calendar date/time (rejects 2026-02-30 and similar). */
+function isRealUtcTimestamp(value: string): boolean {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return false;
+  const d = new Date(ms);
+  const [datePart, timePart] = value.slice(0, 19).split("T");
+  const [y, mo, day] = datePart.split("-").map(Number);
+  const [h, mi, sec] = timePart.split(":").map(Number);
+  return (
+    d.getUTCFullYear() === y &&
+    d.getUTCMonth() + 1 === mo &&
+    d.getUTCDate() === day &&
+    d.getUTCHours() === h &&
+    d.getUTCMinutes() === mi &&
+    d.getUTCSeconds() === sec
+  );
 }
 
 /**
@@ -44,7 +68,7 @@ export function validateSensorStatus(
   payload: unknown,
 ): ValidationResult<SensorStatusReport> {
   if (!isPlainObject(payload) || !("sensor_status" in payload)) {
-    return { ok: true, value: { patchLastSuccessAt: null } };
+    return { ok: true, value: { reported: false, patchLastSuccessAt: null } };
   }
   const raw = payload.sensor_status;
   if (!isPlainObject(raw)) {
@@ -55,21 +79,27 @@ export function validateSensorStatus(
       return { ok: false, error: `sensor_status contains unexpected field: ${key}` };
     }
   }
+  if (!("patch_last_success_at" in raw)) {
+    return { ok: false, error: "sensor_status.patch_last_success_at is required" };
+  }
   const value = raw.patch_last_success_at;
-  if (value === undefined || value === null) {
-    return { ok: true, value: { patchLastSuccessAt: null } };
+  if (value === null) {
+    return { ok: true, value: { reported: true, patchLastSuccessAt: null } };
   }
   if (
     typeof value !== "string" ||
     !ISO_UTC_SECONDS_REGEX.test(value) ||
-    Number.isNaN(Date.parse(value))
+    !isRealUtcTimestamp(value)
   ) {
     return {
       ok: false,
       error: "sensor_status.patch_last_success_at must be a UTC ISO timestamp",
     };
   }
-  return { ok: true, value: { patchLastSuccessAt: new Date(value).toISOString() } };
+  return {
+    ok: true,
+    value: { reported: true, patchLastSuccessAt: new Date(value).toISOString() },
+  };
 }
 
 export const ATTACK_CATEGORIES = [

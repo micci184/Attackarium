@@ -71,12 +71,12 @@ class InMemoryIngestRepo implements IngestRepository {
     return { status: "ok", inserted };
   }
 
-  patchStatus = new Map<string, { patchLastSuccessAtIso: string; receivedAtIso: string }>();
+  patchStatus = new Map<string, { patchLastSuccessAtIso: string | null; receivedAtIso: string }>();
   failStatus = false;
 
   async recordSensorStatus(params: {
     sensorId: string;
-    patchLastSuccessAtIso: string;
+    patchLastSuccessAtIso: string | null;
     receivedAtIso: string;
   }): Promise<void> {
     if (this.failStatus) throw new Error("Simulated status RPC failure");
@@ -687,6 +687,10 @@ describe("ingest sensor_status (patch freshness, #94)", () => {
       { patch_last_success_at: "2026-11-20T07:00:17+09:00" },
       { patch_last_success_at: 1764000000 },
       { patch_last_success_at: PATCHED_AT, kernel: "7.0.0" },
+      {},
+      { patch_last_success_at: "2026-02-30T07:00:17Z" },
+      { patch_last_success_at: "2026-11-25T24:00:00Z" },
+      { patch_last_success_at: "2025-02-29T00:00:00Z" },
     ];
     for (const [i, status] of bad.entries()) {
       const repo = new InMemoryIngestRepo();
@@ -699,6 +703,27 @@ describe("ingest sensor_status (patch freshness, #94)", () => {
       assert.equal(repo.receipts.size, 0);
       assert.equal(repo.patchStatus.size, 0);
     }
+  });
+
+  it("accepts a real leap day", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: { patch_last_success_at: "2024-02-29T12:00:00Z" } }),
+      requestId: "req-status-leap",
+    });
+    assert.equal((await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS)).status, 200);
+    assert.equal(repo.patchStatus.get("sensor-dev-01")?.patchLastSuccessAtIso, "2024-02-29T12:00:00.000Z");
+  });
+
+  it("an explicit null clears the stored value (restored pre-patch host)", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: { patch_last_success_at: null } }),
+      requestId: "req-status-null",
+    });
+    assert.equal((await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS)).status, 200);
+    assert.equal(repo.patchStatus.has("sensor-dev-01"), true);
+    assert.equal(repo.patchStatus.get("sensor-dev-01")?.patchLastSuccessAtIso, null);
   });
 
   it("does not record status for a replayed request", async () => {

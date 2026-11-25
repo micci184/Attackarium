@@ -210,8 +210,11 @@ verify_host() {
   grep -qx 'temporary_rule=absent' <<<"$status" || die "temporary rule still present on the host"
   ! grep -q '^window_flows=' <<<"$status" || die "window flows not verified; run patch_window.sh cleanup"
   remote 'sudo /usr/local/sbin/verify_egress.sh' >/dev/null || die "verify_egress.sh failed"
-  remote 'systemctl is-active --quiet opencanary http-collector attackarium-shipper' \
-    || die "a sensor service is not active"
+  # One unit per call: with several units, is-active succeeds if ANY is active.
+  local unit
+  for unit in opencanary http-collector attackarium-shipper; do
+    remote "systemctl is-active --quiet $unit" || die "sensor service $unit is not active"
+  done
   log "host verified: rule absent, egress locked down, services active"
   REBOOT_REQUIRED="$(sed -n 's/^reboot_required=//p' <<<"$status")"
 }
@@ -222,16 +225,20 @@ maybe_reboot() {
     log "reboot required but --reboot never was given; reboot manually soon"
     return 0
   fi
+  local before after="" deadline=$((SECONDS + REBOOT_WAIT_SECONDS))
+  before="$(remote 'cat /proc/sys/kernel/random/boot_id')" || die "could not read the boot id"
+  [[ -n "$before" ]] || die "empty boot id"
   log "rebooting the sensor (reboot required)"
+  # The connection usually drops during the reboot, so the exit status is not
+  # meaningful; a changed boot id is the proof that the reboot happened.
   remote 'sudo systemctl reboot' || true
-  local waited=0
-  sleep "$SLEEP_SECONDS"
-  until remote true 2>/dev/null; do
-    (( waited >= REBOOT_WAIT_SECONDS )) && die "sensor did not come back within ${REBOOT_WAIT_SECONDS}s"
+  while :; do
     sleep "$SLEEP_SECONDS"
-    waited=$((waited + SLEEP_SECONDS))
+    after="$(remote 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    [[ -n "$after" && "$after" != "$before" ]] && break
+    (( SECONDS >= deadline )) && die "sensor did not complete a reboot within ${REBOOT_WAIT_SECONDS}s"
   done
-  log "sensor is back"
+  log "sensor is back (new boot id)"
   verify_host
 }
 

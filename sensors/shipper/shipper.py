@@ -491,24 +491,38 @@ class EventShipper:
         now_sec: int | None = None,
     ) -> tuple[str, int | None, float | None]:
         """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
-        patched_at = None if self._patch_status_disabled else self._read_patch_last_success_at()
-        result = self._send_body(events, patched_at, now_sec)
-        if result[0] == "permanent_400" and patched_at is not None:
+        include_status = (
+            self.config.patch_status_path is not None and not self._patch_status_disabled
+        )
+        # When enabled, status is always sent, with null when no successful
+        # window is recorded (for example after restoring a pre-patch
+        # snapshot), so the console never keeps showing an older success.
+        patched_at = self._read_patch_last_success_at() if include_status else None
+        result = self._send_body(events, include_status, patched_at, now_sec)
+        if result[0] == "permanent_400" and include_status:
             # Never let the optional status block turn real events into poison
-            # pills: stop sending it and retry the same events without it.
-            self._patch_status_disabled = True
-            sys.stderr.write("ingest rejected sensor_status; patch status reporting disabled\n")
-            result = self._send_body(events, None, now_sec)
+            # pills: retry the same events without it.
+            retry = self._send_body(events, False, None, now_sec)
+            if retry[0] != "permanent_400":
+                # Only the status block was rejected (an ingest without #94).
+                self._patch_status_disabled = True
+                sys.stderr.write(
+                    "ingest rejected sensor_status; patch status reporting disabled\n"
+                )
+            # Otherwise an event is the problem: keep status enabled and let
+            # poison-pill isolation handle the event.
+            result = retry
         return result
 
     def _send_body(
         self,
         events: list[dict[str, Any]],
+        include_status: bool,
         patched_at: str | None,
         now_sec: int | None,
     ) -> tuple[str, int | None, float | None]:
         body: dict[str, Any] = {"events": events}
-        if patched_at is not None:
+        if include_status:
             body["sensor_status"] = {"patch_last_success_at": patched_at}
         raw_body = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         timestamp = str(int(now_sec if now_sec is not None else time.time()))

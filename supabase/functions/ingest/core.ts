@@ -45,7 +45,8 @@ export interface IngestRepository {
    */
   recordSensorStatus?(params: {
     sensorId: string;
-    patchLastSuccessAtIso: string;
+    /** null clears the stored value (no recorded successful window). */
+    patchLastSuccessAtIso: string | null;
     receivedAtIso: string;
   }): Promise<void>;
 }
@@ -299,7 +300,7 @@ export async function handleIngestRequest(
   }
 
   const patchLastSuccessAtIso = statusValidation.value.patchLastSuccessAt;
-  if (patchLastSuccessAtIso && repo.recordSensorStatus) {
+  if (statusValidation.value.reported && repo.recordSensorStatus) {
     // Best effort: host status must never cost observation data, and the
     // shipper must not retry a committed batch because of it.
     try {
