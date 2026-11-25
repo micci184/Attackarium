@@ -9,6 +9,10 @@ describe("timestamp parsing for PostgreSQL shapes", () => {
     assert.equal(normalizeTimestamp("2026-01-01T12:00:00-05"), "2026-01-01T12:00:00-05:00");
     assert.equal(normalizeTimestamp("2026-01-01T12:00:00+00:00"), "2026-01-01T12:00:00+00:00");
     assert.equal(normalizeTimestamp("2026-01-01T12:00:00Z"), "2026-01-01T12:00:00Z");
+    assert.equal(normalizeTimestamp("2026-01-01T12:00:00.5+00"), "2026-01-01T12:00:00.5+00:00");
+    // Date-only values are not offsets.
+    assert.equal(normalizeTimestamp("2026-01-01"), "2026-01-01");
+    assert.notEqual(formatUtcDateTime("2026-01-01"), "—");
   });
 
   it("formats every shape PostgreSQL/PostgREST can return", () => {

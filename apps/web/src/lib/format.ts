@@ -33,7 +33,9 @@ export function normalizeTimestamp(isoString: string): string {
   return isoString
     .trim()
     .replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:)/, "$1T$2")
-    .replace(/([+-]\d{2})$/, "$1:00");
+    // Only a time-bearing value can carry an offset; "2026-01-01" must not
+    // be read as a "-01" offset.
+    .replace(/(T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)([+-]\d{2})$/, "$1$2:00");
 }
 
 /** Parse a timestamp string into a Date (possibly invalid). */
