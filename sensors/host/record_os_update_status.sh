@@ -64,6 +64,19 @@ if [[ ! "$completion" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\ ([0-9]{2}:[0-9]{2}:[0-9]
 fi
 finished_at="${BASH_REMATCH[1]}T${BASH_REMATCH[2]}Z"
 
+# Serialize with the manual patch window (patch_window.sh holds the same lock
+# for its whole run), so the read-compare-replace below cannot overwrite a
+# newer manual result. If a window is running, skip: the next daily run
+# records again.
+install -d -m 0755 "$STATE_DIR"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$STATE_DIR/run.lock"
+  if ! flock -w "${OS_UPDATE_LOCK_WAIT_SECONDS:-60}" 9; then
+    log "a patch window holds the lock; leaving status unchanged"
+    exit 0
+  fi
+fi
+
 # Never move the status backwards (for example after a newer manual window).
 if [[ -f "$STATE_DIR/last-success" ]]; then
   previous="$(sed -n 's/^finished_at=//p' "$STATE_DIR/last-success" | head -n 1)"
@@ -73,7 +86,6 @@ if [[ -f "$STATE_DIR/last-success" ]]; then
   fi
 fi
 
-install -d -m 0755 "$STATE_DIR"
 tmp="$(mktemp "$STATE_DIR/.last-success.XXXXXX")"
 {
   printf 'finished_at=%s\n' "$finished_at"

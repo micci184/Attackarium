@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +34,13 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
     def tearDown(self) -> None:
         subprocess.run(["rm", "-rf", str(self.tmp)], check=False)
 
-    def run_script(self, *, stamp_age: int | None = 3600, log: str | None = OK_UPGRADE):
+    def run_script(
+        self,
+        *,
+        stamp_age: int | None = 3600,
+        log: str | None = OK_UPGRADE,
+        extra_env: dict[str, str] | None = None,
+    ):
         if stamp_age is not None:
             self.stamp.touch()
             os.utime(self.stamp, (NOW - stamp_age, NOW - stamp_age))
@@ -44,6 +52,7 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
             "OS_UPDATE_LIST_STAMP": str(self.stamp),
             "OS_UPDATE_UU_LOG": str(self.log),
             "OS_UPDATE_NOW": str(NOW),
+            **(extra_env or {}),
         }
         return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
 
@@ -120,6 +129,22 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
         later = OK_UPGRADE + OK_NOTHING.replace("2026-11-26", "2026-11-27")
         self.assertEqual(self.run_script(log=later).returncode, 0)
         self.assertEqual(self.recorded()["finished_at"], "2026-11-27T06:39:21Z")
+
+    @unittest.skipUnless(shutil.which("flock"), "flock (util-linux) not installed")
+    def test_waits_out_or_skips_while_a_patch_window_holds_the_lock(self) -> None:
+        self.state.mkdir()
+        holder = subprocess.Popen(
+            ["flock", str(self.state / "run.lock"), "sleep", "3"],
+        )
+        try:
+            time.sleep(0.3)
+            env_extra = {"OS_UPDATE_LOCK_WAIT_SECONDS": "1"}
+            proc = self.run_script(extra_env=env_extra)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("holds the lock", proc.stderr)
+            self.assertIsNone(self.recorded())
+        finally:
+            holder.wait(timeout=10)
 
     def test_failure_keeps_an_older_success_untouched(self) -> None:
         self.state.mkdir()

@@ -184,12 +184,13 @@ If it reports a problem:
 3. Patch manually in the meantime with `scripts/patch_sensor.sh` (below).
 
 Enabling it on a host created before ADR-027 (user data is not re-rendered),
-over an EICE session, keeping the existing session open:
-1. Run `terraform plan` and review it. It must contain **only** the
-   `aws_vpc_security_group_egress_rule.os_update_http` additions (one per CIDR);
-   stop and investigate if anything else changes. Then apply that reviewed
-   plan (`terraform plan -out=os-update.tfplan` and
-   `terraform apply os-update.tfplan`).
+over an EICE session, keeping the existing session open. This is a production
+change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
+1. Save a plan with `terraform plan -out=os-update.tfplan`, then review that
+   saved plan with `terraform show os-update.tfplan`. It must contain **only**
+   the `aws_vpc_security_group_egress_rule.os_update_http` additions (one per
+   CIDR); stop and investigate if anything else changes. Apply exactly that
+   file: `terraform apply os-update.tfplan`.
 2. Print the configured ranges with
    `terraform console <<< 'var.os_update_egress_cidrs'` and add exactly those to
    the `output` chain in `/etc/nftables.conf`, for example with the defaults:
