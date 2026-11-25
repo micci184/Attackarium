@@ -90,7 +90,19 @@ REMOTE_OUT=""
 
 kill_probe_group() {
   [[ -n "$PROBE_PGID" ]] || return 0
-  kill -TERM -- "-$PROBE_PGID" 2>/dev/null || true
+  # Re-signal until the group is gone: a signal that lands before the child
+  # has exec'd ssh can be absorbed, and ssh may still be starting its proxy.
+  local tries=0
+  while kill -0 -- "-$PROBE_PGID" 2>/dev/null; do
+    if (( tries < 20 )); then
+      kill -TERM -- "-$PROBE_PGID" 2>/dev/null || true
+    else
+      kill -KILL -- "-$PROBE_PGID" 2>/dev/null || true
+    fi
+    (( tries >= 30 )) && break
+    tries=$((tries + 1))
+    sleep 0.1
+  done
   wait "$PROBE_PGID" 2>/dev/null || true
   PROBE_PGID=""
 }

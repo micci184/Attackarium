@@ -314,6 +314,46 @@ class PatchSensorTest(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(proxy_pid, 0)
 
+    def test_signal_in_the_fork_interval_still_kills_the_probe_group(self) -> None:
+        """Signal injected right after the fork, before PROBE_PGID is recorded.
+
+        Uses a disposable copy of the script with one injected line; the
+        production script has no test hook.
+        """
+        source = SCRIPT.read_text()
+        marker = "  pid=$!\n"
+        self.assertEqual(source.count(marker), 1)
+        # Fire only for the boot-id probe, whose stub hangs and spawns a
+        # proxy-like descendant; a quick probe would prove nothing.
+        injected = source.replace(
+            marker, marker + '  [[ "$*" != *boot_id* ]] || kill -TERM "$$"\n', 1
+        )
+        copy = self.tmp / "patch_sensor_injected.sh"
+        copy.write_text(injected)
+        # The copy lives outside scripts/, so point it at the real helpers.
+        for helper in ("patch_window.sh", "verify_egress.sh"):
+            (self.tmp / helper).write_text("#!/bin/sh\n")
+        proc = subprocess.run(
+            ["bash", str(copy), "--key", str(self.key), "--yes"],
+            env=self.env(
+                STUB_REBOOT_REQUIRED="yes", STUB_PROBE_HANG="27.27", PATCH_SENSOR_REBOOT_WAIT_SECONDS="60"
+            ),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 130, proc.stdout + proc.stderr)
+        time.sleep(0.5)
+        leftover = subprocess.run(["pgrep", "-f", "sleep 27.27"], capture_output=True, text=True)
+        self.assertEqual(leftover.stdout.strip(), "", "probe group survived a fork-interval signal")
+        if (self.state / "proxy.pid").exists():
+            proxy_pid = int((self.state / "proxy.pid").read_text().strip())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(proxy_pid, 0)
+        self.assertTrue(any("boot_id" in c for c in self.calls()))
+        # Egress was opened earlier in the run, and the close still happened.
+        self.assertIn("patch_egress_cidrs=[]", self.applies()[-1])
+
     def test_each_service_is_checked_separately(self) -> None:
         proc = self.run_script(STUB_HTTP_COLLECTOR_RC="3")
         self.assertNotEqual(proc.returncode, 0)
