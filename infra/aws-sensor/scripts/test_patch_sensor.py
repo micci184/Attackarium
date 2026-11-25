@@ -289,6 +289,31 @@ class PatchSensorTest(unittest.TestCase):
         with self.assertRaises(ProcessLookupError, msg="proxy-like descendant survived"):
             os.kill(proxy_pid, 0)
 
+    def test_sigterm_during_reboot_probe_kills_the_probe_group(self) -> None:
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), "--key", str(self.key), "--yes"],
+            env=self.env(
+                STUB_REBOOT_REQUIRED="yes", STUB_PROBE_HANG="29.29", PATCH_SENSOR_REBOOT_WAIT_SECONDS="60"
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not (self.state / "proxy.pid").exists():
+            time.sleep(0.05)
+        self.assertTrue((self.state / "proxy.pid").exists())
+        time.sleep(0.2)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        time.sleep(0.3)
+        leftover = subprocess.run(["pgrep", "-f", "sleep 29.29"], capture_output=True, text=True)
+        self.assertEqual(leftover.stdout.strip(), "", "probe survived SIGTERM to the wrapper")
+        proxy_pid = int((self.state / "proxy.pid").read_text().strip())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(proxy_pid, 0)
+
     def test_each_service_is_checked_separately(self) -> None:
         proc = self.run_script(STUB_HTTP_COLLECTOR_RC="3")
         self.assertNotEqual(proc.returncode, 0)

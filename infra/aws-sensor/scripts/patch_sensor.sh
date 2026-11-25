@@ -79,10 +79,14 @@ remote() { ssh -F "$WORK_DIR/ssh_config" sensor "$@"; }
 # Run a remote command, but never past the given wall-clock deadline (in
 # bash SECONDS). Portable: macOS has no coreutils `timeout` by default, and
 # ssh's own timeouts do not bound the EICE ProxyCommand. Prints stdout.
+# Output goes to REMOTE_OUT (not stdout), so callers never run this in a
+# command-substitution subshell: the probe group must stay visible to the
+# parent's EXIT/INT/TERM cleanup.
 # Signalling ssh alone is not enough: OpenSSH leaves its ProxyCommand (the
 # EICE open-tunnel) running when it is terminated. So the probe runs in its own
 # process group (job control) and the whole group is signalled.
 PROBE_PGID=""
+REMOTE_OUT=""
 
 kill_probe_group() {
   [[ -n "$PROBE_PGID" ]] || return 0
@@ -94,9 +98,11 @@ kill_probe_group() {
 remote_until() {
   local deadline="$1" out pid
   shift
+  REMOTE_OUT=""
   out="$(mktemp "$WORK_DIR/probe.XXXXXX")"
   set -m
-  ssh -F "$WORK_DIR/ssh_config" sensor "$@" >"$out" 2>/dev/null &
+  # -n: stdin from /dev/null, so the background job never reads the terminal.
+  ssh -n -F "$WORK_DIR/ssh_config" sensor "$@" >"$out" 2>/dev/null &
   pid=$!
   set +m
   PROBE_PGID="$pid"
@@ -112,7 +118,7 @@ remote_until() {
   wait "$pid" || rc=$?
   # A finished ssh can still leave its ProxyCommand behind.
   kill_probe_group
-  cat "$out"
+  REMOTE_OUT="$(cat "$out")"
   rm -f "$out"
   return "$rc"
 }
@@ -273,10 +279,13 @@ maybe_reboot() {
   log "rebooting the sensor (reboot required)"
   # The connection usually drops during the reboot, so the exit status is not
   # meaningful; a changed boot id is the proof that the reboot happened.
-  remote_until "$deadline" 'sudo systemctl reboot' >/dev/null || true
+  remote_until "$deadline" 'sudo systemctl reboot' || true
   while :; do
     sleep "$SLEEP_SECONDS"
-    after="$(remote_until "$deadline" 'cat /proc/sys/kernel/random/boot_id' || true)"
+    after=""
+    if remote_until "$deadline" 'cat /proc/sys/kernel/random/boot_id'; then
+      after="$REMOTE_OUT"
+    fi
     [[ -n "$after" && "$after" != "$before" ]] && break
     (( SECONDS >= deadline )) && die "sensor did not complete a reboot within ${REBOOT_WAIT_SECONDS}s"
   done
