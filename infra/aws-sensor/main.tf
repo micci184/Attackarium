@@ -234,6 +234,20 @@ resource "aws_vpc_security_group_egress_rule" "bootstrap_http" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# Patch window (#94): Ubuntu mirrors only, plain HTTP (apt verifies signed
+# InRelease files). The host nftables rule is added in memory by
+# scripts/patch_window.sh and is never persisted. Empty list = no rules.
+resource "aws_vpc_security_group_egress_rule" "patch_http" {
+  for_each = toset(var.patch_egress_cidrs)
+
+  security_group_id = aws_security_group.sensor.id
+  description       = "TEMPORARY patch-window HTTP egress to an Ubuntu mirror (clear patch_egress_cidrs after the window)"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  cidr_ipv4         = each.value
+}
+
 # -----------------------------------------------------------------------------
 # EC2 Sensor Host (ADR-019: t3a.small, standard credits, gp3 20 GiB encrypted, no IAM role)
 # -----------------------------------------------------------------------------

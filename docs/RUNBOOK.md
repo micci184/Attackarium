@@ -161,6 +161,52 @@ Changing host firewall rules (`/etc/nftables.conf`):
      snapshot, and deregister any AMI **and delete its EBS snapshots**. They
      contain the shipper HMAC secret.
 
+## OS security patch window (ADR-026, #94)
+
+The host firewall blocks Ubuntu mirrors, so `unattended-upgrades` cannot refresh
+its package lists on its own. Patch through a short, self-reverting window
+instead: at least **monthly**, and **within days** of a critical fix for OpenSSL,
+OpenSSH, Python, or the kernel. Every window needs explicit operator approval.
+
+`infra/aws-sensor/scripts/patch_window.sh` opens TCP/80 only to the IPv4
+addresses that the configured apt mirrors resolve to, runs `apt-get update`
+and `unattended-upgrade` (security origins, existing conffiles kept), and then
+reloads `/etc/nftables.conf`, which never contains the temporary rule. The run
+is a transient systemd unit, so an EICE tunnel drop cannot interrupt `dpkg`. A
+separate timer restores the firewall if the unit is killed or hangs, and a
+reboot also discards the in-memory rule.
+
+1. Copy the script to the host (see the code deployment procedure above) and
+   install it as `root:root 0755` in `/usr/local/sbin/patch_window.sh`.
+2. On the host, print the mirror addresses:
+   `sudo /usr/local/sbin/patch_window.sh resolve`.
+3. Locally, set `patch_egress_cidrs` in `terraform.tfvars` to exactly those
+   `/32` entries. Review `terraform plan` (only `patch_http` rules are added),
+   then apply. The variable rejects anything other than up to 32 `/32` entries.
+4. On the host: `sudo /usr/local/sbin/patch_window.sh run`. It prints the apt
+   output and the result (`/var/lib/attackarium-patch/last-result`).
+   - If the result is `failure` with `apt-get update failed`, mirrors probably
+     rotated. Repeat from step 2 once; do not widen the CIDRs.
+   - The Ubuntu mirrors currently sit behind shared Cloudflare addresses, so the
+     window allows plain HTTP to anything on those IPs, not only Ubuntu (ADR-026).
+     Keep the window short.
+5. Immediately set `patch_egress_cidrs = []` and apply again. Confirm with
+   `terraform plan` (no changes).
+6. On the host: `sudo /usr/local/sbin/patch_window.sh status` must show
+   `temporary_rule=absent`. Run `scripts/verify_egress.sh` (all checks pass),
+   then check `systemctl is-active opencanary http-collector attackarium-shipper`
+   and a fresh heartbeat on `/sensors`.
+7. If `reboot_required=yes`, reboot over EICE (`sudo systemctl reboot`), and
+   repeat the step 6 checks after it comes back. A normal reboot takes under a
+   minute; a stop longer than 15 minutes is recorded as a coverage gap.
+8. Record the date, result, and whether a reboot happened in the drills record
+   below.
+
+Rollback: if a service fails after the upgrade, check its journal first.
+Package downgrades need the mirrors again, so repeat steps 2–5 with
+`apt-get install <package>=<previous-version>` instead of `run`, or use the
+offline root-volume procedure above.
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):

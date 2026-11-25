@@ -42,9 +42,14 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 9. **LLM safety:** summaries only from sanitized aggregates and redacted evidence; attack payloads
    are prompt-injection vectors, not authoritative instructions. Never permit LLM-driven commands,
    network calls, unsupported exploit assertions, or automated X posting.
-10. **Incident response:** abuse contact, AWS Budgets/cost alerts, sensor shutdown runbook, and
+10. **OS patching:** the sensor cannot reach package mirrors in normal operation, so security
+    updates are applied in a short, self-reverting patch window (TCP/80 to resolved Ubuntu mirror
+    `/32`s only, in both the Security Group and in-memory `nftables`; ADR-026). Run it at least
+    monthly and within days of a critical OpenSSL/OpenSSH/Python/kernel fix. Enabling new
+    Internet-facing parsers (for example TLS on 443, #93) requires a completed window first.
+11. **Incident response:** abuse contact, AWS Budgets/cost alerts, sensor shutdown runbook, and
     log/secret rotation plan; never run real malware or attacker commands on the sensor.
-11. **Remote MCP auth & authz (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1):**
+12. **Remote MCP auth & authz (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1):**
     - Use OAuth 2.1 Authorization Code + PKCE and publish RFC 9728 OAuth Protected Resource Metadata.
     - Verify JWT/access token signature (JWKS), issuer (`iss`), audience (`aud`), expiry (`exp`), and scopes.
     - Enforce all 5 gates server-side on every request: (1) Google/GitHub sign-in, (2) current Terms
@@ -56,14 +61,14 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
       `get_attack_patterns`, `get_observation_summary`), with per-user rate limits. Never expose raw
       logs, secrets, DB writes, admin tools, or a general-purpose public REST API.
     - Never log user prompts/questions or auth tokens; store aggregated usage metrics only.
-12. **Operator-only Admin Console & APIs:**
+13. **Operator-only Admin Console & APIs:**
     - Default-deny for all non-operator users; never rely on a DB `is_admin` flag alone or
       frontend-only hiding.
     - Require server-side operator user ID allowlist (`ADMIN_ALLOWED_USER_IDS`), mandatory MFA (`aal2`),
       server-side authorization on every admin API route, and append-only audit logs.
     - MCP Usage analytics are strictly admin-only; never expose usage count dashboards to general users.
     - Optional additional edge protection (e.g., Cloudflare Access) may be layered in front of admin routes.
-13. **Data minimization & anti-tampering:**
+14. **Data minimization & anti-tampering:**
     - Do not collect custom profile PII (name/address/phone) or copy Supabase Auth user tables.
     - Do not store raw source IPs, raw HTTP payloads, passwords, or `Authorization`/`Cookie`
       values in Supabase. Keep `src_ip_hash` as a non-public keyed HMAC (ADR-022).
@@ -82,6 +87,7 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 | AWS monthly spend | AWS Budgets threshold (e.g., 50% / 80% / 100%) | Review traffic/egress; shut down EC2 sensor if cap approached |
 | Abnormal egress | Any outbound connection outside allowlist | Block, inspect, rotate sensor credentials |
 | Ingest rejects | Sustained 401/413/429/400 failures | Investigate key abuse, gateway throttling, or format regression |
+| OS patch freshness | No successful patch window in 35 days, or a critical OpenSSL/OpenSSH/Python/kernel fix is published | Run the patch window in `docs/RUNBOOK.md`; check `patch_window.sh status` |
 | HTTP body sampling | Max size crossed or concurrency shed (503) | Truncate/shed cleanly; never unbounded buffer |
 
 ## Publication ethics

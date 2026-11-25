@@ -18,6 +18,7 @@ Terraform configuration for the single isolated Attackarium honeypot sensor host
 
 - Hosted Supabase Edge Functions (`https://<project>.supabase.co`) sit behind Cloudflare anycast IPs rather than a single static IP. Set `ingest_egress_cidrs` to the published Cloudflare IPv4 CIDRs (or a narrower proxy CIDR if used later) so outbound traffic stays restricted to TCP/443 on approved ranges while surviving DNS rotation.
 - For initial OS/package installation (`apt` / `pip`), `/etc/nftables.conf` always stays locked down so temporary egress can never be persisted on disk. Temporarily set `enable_bootstrap_egress = true` and apply (opens SG Layer 1), add an ephemeral in-memory rule on the host (`sudo nft add rule inet attackarium output tcp dport '{ 80, 443 }' accept`), install packages, immediately restore host rules with `sudo nft -f /etc/nftables.conf`, then set `enable_bootstrap_egress = false` and re-apply. Verify lockdown with `scripts/verify_egress.sh`.
+- Routine OS security updates do **not** use bootstrap egress. Use the patch window (`scripts/patch_window.sh` and `patch_egress_cidrs`, TCP/80 to resolved Ubuntu mirror `/32`s only); see "OS security patch window" in `docs/RUNBOOK.md`.
 
 ## Usage (manual apply only)
 
