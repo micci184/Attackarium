@@ -49,13 +49,28 @@ describe("fetchSensorPatchRows", () => {
       seen = { url: String(input), headers: new Headers(init?.headers) };
       return new Response(JSON.stringify([{ id: "a", is_active: true, last_patch_success_at: null }]), {
         status: 200,
+        headers: { "content-range": "0-0/1" },
       });
     }) as typeof fetch;
     const rows = await fetchSensorPatchRows("https://example.supabase.co", "svc-key", fakeFetch);
     assert.deepEqual(rows, [{ id: "a", is_active: true, last_patch_success_at: null }]);
     assert.ok(seen);
-    assert.match(seen!.url, /\/rest\/v1\/sensors\?select=id%2Cis_active%2Clast_patch_success_at$/);
+    assert.match(seen!.url, /\/rest\/v1\/sensors\?select=id%2Cis_active%2Clast_patch_success_at&is_active=eq.true$/);
     assert.equal(seen!.headers.get("apikey"), "svc-key");
+    assert.equal(seen!.headers.get("prefer"), "count=exact");
+  });
+
+  it("throws when the response may be truncated or the count is missing", async () => {
+    const rows = JSON.stringify([{ id: "a", is_active: true, last_patch_success_at: null }]);
+    for (const range of ["0-0/2", "0-0/*", ""]) {
+      const fakeFetch = (async () =>
+        new Response(rows, { status: 200, headers: range ? { "content-range": range } : {} })) as typeof fetch;
+      await assert.rejects(
+        fetchSensorPatchRows("https://example.supabase.co", "k", fakeFetch),
+        /truncated/,
+        range,
+      );
+    }
   });
 
   it("throws on HTTP errors instead of reporting success", async () => {

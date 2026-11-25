@@ -50,6 +50,12 @@ export function evaluatePatchFreshness(
   };
 }
 
+/**
+ * Active sensors only, with an exact count. PostgREST caps responses at
+ * max_rows (1,000 in supabase/config.toml); a truncated response must fail the
+ * check rather than silently skip a stale sensor. Supported fleet size: up to
+ * 1,000 active sensors (Attackarium runs one).
+ */
 export async function fetchSensorPatchRows(
   supabaseUrl: string,
   serviceRoleKey: string,
@@ -57,11 +63,13 @@ export async function fetchSensorPatchRows(
 ): Promise<SensorPatchRow[]> {
   const url = new URL("/rest/v1/sensors", supabaseUrl);
   url.searchParams.set("select", "id,is_active,last_patch_success_at");
+  url.searchParams.set("is_active", "eq.true");
   const response = await fetchFn(url, {
     headers: {
       apikey: serviceRoleKey,
       authorization: `Bearer ${serviceRoleKey}`,
       accept: "application/json",
+      prefer: "count=exact",
     },
     signal: AbortSignal.timeout(20_000),
   });
@@ -71,6 +79,12 @@ export async function fetchSensorPatchRows(
   const body: unknown = await response.json();
   if (!Array.isArray(body)) {
     throw new Error("sensors query returned an unexpected shape");
+  }
+  // Content-Range: "0-0/1" (or "*/0" when empty). The total must be known and
+  // must equal what was returned.
+  const total = Number((response.headers.get("content-range") ?? "").split("/")[1]);
+  if (!Number.isInteger(total) || total !== body.length) {
+    throw new Error("sensors query response may be truncated; refusing to report success");
   }
   return body.map((row) => {
     const r = row as Record<string, unknown>;

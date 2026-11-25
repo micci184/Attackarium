@@ -60,7 +60,8 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
         assert rec is not None
         self.assertEqual(rec["result"], "success")
         self.assertEqual(rec["detail"], "unattended-upgrades")
-        self.assertRegex(rec["finished_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        # The run's own completion time, not "now".
+        self.assertEqual(rec["finished_at"], "2026-11-26T06:39:40Z")
 
     def test_records_success_when_nothing_to_upgrade(self) -> None:
         proc = self.run_script(log=OK_NOTHING)
@@ -96,6 +97,29 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
             proc = self.run_script(log=bad)
             self.assertNotEqual(proc.returncode, 0, bad)
             self.assertIsNone(self.recorded(), bad)
+
+    def test_skipped_run_does_not_advance_the_status(self) -> None:
+        self.assertEqual(self.run_script().returncode, 0)
+        first = (self.state / "last-success").read_text()
+        # apt-daily-upgrade skipped unattended-upgrade: same log, fresh lists.
+        proc = self.run_script(stamp_age=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("no newer completed run", proc.stderr)
+        self.assertEqual((self.state / "last-success").read_text(), first)
+
+    def test_newer_manual_window_is_not_overwritten_by_an_older_run(self) -> None:
+        self.state.mkdir()
+        newer = "finished_at=2026-11-27T00:00:00Z\nresult=success\ndetail=security updates applied\n"
+        (self.state / "last-success").write_text(newer)
+        proc = self.run_script()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((self.state / "last-success").read_text(), newer)
+
+    def test_a_newer_completed_run_advances_the_status(self) -> None:
+        self.assertEqual(self.run_script().returncode, 0)
+        later = OK_UPGRADE + OK_NOTHING.replace("2026-11-26", "2026-11-27")
+        self.assertEqual(self.run_script(log=later).returncode, 0)
+        self.assertEqual(self.recorded()["finished_at"], "2026-11-27T06:39:21Z")
 
     def test_failure_keeps_an_older_success_untouched(self) -> None:
         self.state.mkdir()

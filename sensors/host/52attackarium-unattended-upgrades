@@ -3,6 +3,12 @@
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 
+// Fail the whole refresh if ANY index (including -security) cannot be
+// fetched. Without this, apt still runs Post-Invoke-Success after a partial
+// refresh, which touches update-success-stamp, and the recorder could mark a
+// host with stale security indexes as up to date.
+APT::Update::Error-Mode "any";
+
 // Reboot automatically when an update requires it (kernel, libc), at a fixed
 // quiet time (host clock is UTC). A reboot takes about a minute; a stop longer
 // than 15 minutes is recorded as a coverage gap.

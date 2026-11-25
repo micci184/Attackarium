@@ -94,9 +94,10 @@ variable "os_update_egress_cidrs" {
 
   validation {
     condition = length(var.os_update_egress_cidrs) <= 8 && alltrue([
-      for c in var.os_update_egress_cidrs : can(cidrhost(c, 0)) && tonumber(split("/", c)[1]) >= 16
+      # cidrnetmask accepts IPv4 only (cidrhost would also accept IPv6).
+      for c in var.os_update_egress_cidrs : try(can(cidrnetmask(c)) && tonumber(split("/", c)[1]) >= 16, false)
     ])
-    error_message = "os_update_egress_cidrs must be at most 8 explicit IPv4 CIDRs of /16 or narrower (never 0.0.0.0/0)."
+    error_message = "os_update_egress_cidrs must be at most 8 explicit IPv4 CIDRs of /16 or narrower (no IPv6, never 0.0.0.0/0)."
   }
 }
 

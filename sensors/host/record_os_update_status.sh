@@ -9,6 +9,11 @@
 #   - the latest unattended-upgrades run finished cleanly.
 # Otherwise it leaves the file alone, so /admin ages to Due/Overdue and the
 # weekly freshness check fails loudly instead of showing a stale "Current".
+#
+# The recorded time is the completion time logged by that unattended-upgrades
+# run, not "now": a skipped apt-daily-upgrade invocation re-reads the same old
+# run and cannot advance the status. The stamp is trustworthy because
+# 52attackarium-unattended-upgrades sets APT::Update::Error-Mode "any".
 set -euo pipefail
 
 STATE_DIR="${OS_UPDATE_STATE_DIR:-/var/lib/attackarium-patch}"
@@ -47,15 +52,31 @@ if grep -q -E '(^| )(ERROR|CRITICAL)( |:)|Traceback' <<<"$last_run"; then
   log "last unattended-upgrades run reported errors; not marking success"
   exit 1
 fi
-if ! grep -q -E 'All upgrades installed|No packages found that can be upgraded unattended' <<<"$last_run"; then
+completion="$(grep -E 'All upgrades installed|No packages found that can be upgraded unattended' <<<"$last_run" | tail -n 1)"
+if [[ -z "$completion" ]]; then
   log "last unattended-upgrades run did not complete; not marking success"
   exit 1
+fi
+# Log lines start with "YYYY-MM-DD HH:MM:SS,mmm" in host time (UTC).
+if [[ ! "$completion" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\ ([0-9]{2}:[0-9]{2}:[0-9]{2}) ]]; then
+  log "unexpected unattended-upgrades log format; not marking success"
+  exit 1
+fi
+finished_at="${BASH_REMATCH[1]}T${BASH_REMATCH[2]}Z"
+
+# Never move the status backwards (for example after a newer manual window).
+if [[ -f "$STATE_DIR/last-success" ]]; then
+  previous="$(sed -n 's/^finished_at=//p' "$STATE_DIR/last-success" | head -n 1)"
+  if [[ -n "$previous" && ! "$finished_at" > "$previous" ]]; then
+    log "no newer completed run since $previous; leaving status unchanged"
+    exit 0
+  fi
 fi
 
 install -d -m 0755 "$STATE_DIR"
 tmp="$(mktemp "$STATE_DIR/.last-success.XXXXXX")"
 {
-  printf 'finished_at=%s\n' "$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$NOW" +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'finished_at=%s\n' "$finished_at"
   printf 'result=success\n'
   printf 'detail=unattended-upgrades\n'
   if [[ -f /var/run/reboot-required ]]; then

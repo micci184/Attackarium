@@ -185,10 +185,18 @@ If it reports a problem:
 
 Enabling it on a host created before ADR-027 (user data is not re-rendered),
 over an EICE session, keeping the existing session open:
-1. `terraform apply` (adds only the two `os_update_http` Security Group rules).
-2. Add `ip daddr { 91.189.88.0/21, 185.125.188.0/22 } tcp dport 80 accept`
-   to the `output` chain in `/etc/nftables.conf`, check with
-   `nft -c -f /etc/nftables.conf`, and apply with `nft -f /etc/nftables.conf`.
+1. Run `terraform plan` and review it. It must contain **only** the
+   `aws_vpc_security_group_egress_rule.os_update_http` additions (one per CIDR);
+   stop and investigate if anything else changes. Then apply that reviewed
+   plan (`terraform plan -out=os-update.tfplan` and
+   `terraform apply os-update.tfplan`).
+2. Print the configured ranges with
+   `terraform console <<< 'var.os_update_egress_cidrs'` and add exactly those to
+   the `output` chain in `/etc/nftables.conf`, for example with the defaults:
+   `ip daddr { 91.189.88.0/21, 185.125.188.0/22 } tcp dport 80 accept`.
+   Check with `nft -c -f /etc/nftables.conf` and apply with
+   `nft -f /etc/nftables.conf`. The Security Group and host rule must list the
+   same CIDRs.
 3. Install `sensors/host/record_os_update_status.sh` as
    `/usr/local/sbin/record_os_update_status.sh` (`root:root 0755`),
    `sensors/host/52attackarium-unattended-upgrades` in `/etc/apt/apt.conf.d/`
