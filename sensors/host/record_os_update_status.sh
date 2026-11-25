@@ -5,19 +5,26 @@
 # /var/lib/attackarium-patch/last-success (the same file and format as
 # patch_window.sh), which the shipper reports as sensor_status. It writes ONLY
 # when the evidence says the host is up to date:
-#   - the package lists were refreshed recently (update-success-stamp), and
+#   - the package lists were COMPLETELY refreshed recently, and since the last
+#     recorded success (update-stamp), and
 #   - the latest unattended-upgrades run finished cleanly.
 # Otherwise it leaves the file alone, so /admin ages to Due/Overdue and the
 # weekly freshness check fails loudly instead of showing a stale "Current".
 #
 # The recorded time is the completion time logged by that unattended-upgrades
 # run, not "now": a skipped apt-daily-upgrade invocation re-reads the same old
-# run and cannot advance the status. The stamp is trustworthy because
-# 52attackarium-unattended-upgrades sets APT::Update::Error-Mode "any".
+# run and cannot advance the status.
+#
+# Why update-stamp and not update-success-stamp: apt runs Post-Invoke-Success
+# (which touches update-success-stamp) even when some indexes failed, while
+# apt.systemd.daily touches update-stamp only when `apt-get update` exits 0.
+# With APT::Update::Error-Mode "any" (52attackarium-unattended-upgrades) a
+# partial refresh exits non-zero, so update-stamp proves a complete refresh.
+# Verified on Ubuntu 24.04 (apt 2.8.4) with one unreachable source.
 set -euo pipefail
 
 STATE_DIR="${OS_UPDATE_STATE_DIR:-/var/lib/attackarium-patch}"
-STAMP="${OS_UPDATE_LIST_STAMP:-/var/lib/apt/periodic/update-success-stamp}"
+STAMP="${OS_UPDATE_LIST_STAMP:-/var/lib/apt/periodic/update-stamp}"
 UU_LOG="${OS_UPDATE_UU_LOG:-/var/log/unattended-upgrades/unattended-upgrades.log}"
 MAX_LIST_AGE_SECONDS="${OS_UPDATE_MAX_LIST_AGE_SECONDS:-93600}" # 26 hours
 NOW="${OS_UPDATE_NOW:-$(date -u +%s)}"
@@ -26,6 +33,11 @@ log() { printf 'record_os_update_status: %s\n' "$*" >&2; }
 
 file_mtime() {
   stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+}
+
+# "YYYY-MM-DDTHH:MM:SSZ" -> epoch seconds (GNU date, then BSD date).
+iso_to_epoch() {
+  date -u -d "$1" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s
 }
 
 if [[ ! -f "$STAMP" ]]; then
@@ -83,6 +95,14 @@ if [[ -f "$STATE_DIR/last-success" ]]; then
   if [[ -n "$previous" && ! "$finished_at" > "$previous" ]]; then
     log "no newer completed run since $previous; leaving status unchanged"
     exit 0
+  fi
+  # The lists must have been completely refreshed after the last recorded
+  # success; an older (still "fresh") stamp means the latest refresh failed.
+  if [[ -n "$previous" ]] && previous_epoch="$(iso_to_epoch "$previous")"; then
+    if (( $(file_mtime "$STAMP") <= previous_epoch )); then
+      log "package lists not refreshed since $previous; not marking success"
+      exit 1
+    fi
   fi
 fi
 

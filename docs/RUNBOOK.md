@@ -167,8 +167,10 @@ The sensor installs security updates by itself: `unattended-upgrades` runs
 daily over permanent TCP/80 egress to the Canonical-owned archive ranges
 (`os_update_egress_cidrs`), and reboots at 04:00 UTC when an update requires
 it. After each `apt-daily-upgrade` run, `/usr/local/sbin/record_os_update_status.sh`
-records a success only if the package lists are fresh and the latest run
-finished without errors; the shipper reports it to `/admin` (Current within
+records a success only if the package lists were completely refreshed
+(`update-stamp`, which `apt.systemd.daily` touches only when `apt-get update`
+exits 0; `APT::Update::Error-Mode "any"` makes a partial refresh fail) since
+the last recorded success, and the latest run finished without errors; the shipper reports it to `/admin` (Current within
 3 days, Due after 3, Overdue after 7). The `sensor-patch-freshness-weekly`
 GitHub Actions workflow fails (and GitHub emails the maintainer) when an
 active sensor is not current. Its public logs print counts only.
@@ -186,13 +188,16 @@ If it reports a problem:
 Enabling it on a host created before ADR-027 (user data is not re-rendered),
 over an EICE session, keeping the existing session open. This is a production
 change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
-1. Save a plan with `terraform plan -out=os-update.tfplan`, then review that
+1. **On the operator machine** (not over EICE: the sensor has no AWS
+   credentials), from `infra/aws-sensor` after `aws login`, save a plan with
+   `terraform plan -out=os-update.tfplan`, then review that
    saved plan with `terraform show os-update.tfplan`. It must contain **only**
    the `aws_vpc_security_group_egress_rule.os_update_http` additions (one per
    CIDR); stop and investigate if anything else changes. Apply exactly that
    file: `terraform apply os-update.tfplan`.
-2. Print the configured ranges with
-   `terraform console <<< 'var.os_update_egress_cidrs'` and add exactly those to
+2. Still locally, print the configured ranges with
+   `terraform console <<< 'var.os_update_egress_cidrs'`. Then, in the EICE
+   session on the host, add exactly those to
    the `output` chain in `/etc/nftables.conf`, for example with the defaults:
    `ip daddr { 91.189.88.0/21, 185.125.188.0/22 } tcp dport 80 accept`.
    Check with `nft -c -f /etc/nftables.conf` and apply with

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "record_os_update_status.sh"
-NOW = 1_795_640_000  # fixed "now" for the script
+NOW = 1_795_762_800  # 2026-11-27T07:00:00Z, after the fixture runs
 
 OK_UPGRADE = (
     "2026-11-26 06:39:21,276 INFO Starting unattended upgrades script\n"
@@ -27,7 +27,7 @@ OK_NOTHING = (
 class RecordOsUpdateStatusTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
-        self.stamp = self.tmp / "update-success-stamp"
+        self.stamp = self.tmp / "update-stamp"
         self.log = self.tmp / "unattended-upgrades.log"
         self.state = self.tmp / "state"
 
@@ -133,18 +133,53 @@ class RecordOsUpdateStatusTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("flock"), "flock (util-linux) not installed")
     def test_waits_out_or_skips_while_a_patch_window_holds_the_lock(self) -> None:
         self.state.mkdir()
+        acquired = self.tmp / "acquired"
+        release = self.tmp / "release"
+        # The holder signals once it owns the lock and keeps it until released.
         holder = subprocess.Popen(
-            ["flock", str(self.state / "run.lock"), "sleep", "3"],
+            [
+                "flock",
+                str(self.state / "run.lock"),
+                "sh",
+                "-c",
+                f'touch "{acquired}"; while [ ! -f "{release}" ]; do sleep 0.05; done',
+            ]
         )
         try:
-            time.sleep(0.3)
-            env_extra = {"OS_UPDATE_LOCK_WAIT_SECONDS": "1"}
-            proc = self.run_script(extra_env=env_extra)
+            deadline = time.monotonic() + 10
+            while not acquired.exists():
+                self.assertLess(time.monotonic(), deadline, "lock holder never started")
+                time.sleep(0.02)
+            proc = self.run_script(extra_env={"OS_UPDATE_LOCK_WAIT_SECONDS": "1"})
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("holds the lock", proc.stderr)
             self.assertIsNone(self.recorded())
         finally:
+            release.touch()
             holder.wait(timeout=10)
+
+    def test_failed_refresh_with_a_still_fresh_older_stamp_blocks_success(self) -> None:
+        # Day 1: complete refresh + clean run recorded at 2026-11-26 06:39:40Z.
+        self.assertEqual(self.run_script().returncode, 0)
+        first = (self.state / "last-success").read_text()
+        # Day 2: the refresh failed (update-stamp unchanged and older than the
+        # last success, though under 26 h old), but the upgrade run completed.
+        day1_success = 1_795_675_180  # 2026-11-26T06:39:40Z
+        self.stamp.touch()
+        os.utime(self.stamp, (day1_success - 600, day1_success - 600))
+        later = OK_UPGRADE + OK_NOTHING.replace("2026-11-26", "2026-11-27")
+        self.log.write_text(later)
+        env = {
+            **os.environ,
+            "OS_UPDATE_STATE_DIR": str(self.state),
+            "OS_UPDATE_LIST_STAMP": str(self.stamp),
+            "OS_UPDATE_UU_LOG": str(self.log),
+            "OS_UPDATE_NOW": str(day1_success + 3600),
+        }
+        proc = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not refreshed since", proc.stderr)
+        self.assertEqual((self.state / "last-success").read_text(), first)
 
     def test_failure_keeps_an_older_success_untouched(self) -> None:
         self.state.mkdir()
