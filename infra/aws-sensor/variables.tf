@@ -87,6 +87,19 @@ variable "enable_bootstrap_egress" {
   default     = false
 }
 
+variable "patch_egress_cidrs" {
+  description = "TEMPORARY patch-window egress (#94): Ubuntu mirror /32s printed by `scripts/patch_window.sh resolve`, allowed on TCP/80 only. Keep empty outside a patch window."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = length(var.patch_egress_cidrs) <= 32 && alltrue([
+      for c in var.patch_egress_cidrs : can(cidrhost(c, 0)) && endswith(c, "/32")
+    ])
+    error_message = "patch_egress_cidrs must be at most 32 single-host IPv4 /32 entries (never a range such as 0.0.0.0/0)."
+  }
+}
+
 variable "enable_termination_protection" {
   description = "Protect the EC2 instance against accidental termination so incident evidence is preserved (ADR-021: stop, do not terminate)."
   type        = bool

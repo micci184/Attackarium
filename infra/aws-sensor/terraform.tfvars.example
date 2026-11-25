@@ -7,5 +7,7 @@ admin_ssh_cidrs     = []
 ssh_public_key      = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceWithOperatorPublicKey operator@example"
 ingest_egress_cidrs = ["198.51.100.0/24"]
 enable_https_decoy  = false
+# Patch window only (#94, docs/RUNBOOK.md): mirror /32s from patch_window.sh resolve.
+patch_egress_cidrs = []
 monthly_budget_usd  = 40
 budget_alert_emails = ["operator@example.com"]

@@ -161,6 +161,71 @@ Changing host firewall rules (`/etc/nftables.conf`):
      snapshot, and deregister any AMI **and delete its EBS snapshots**. They
      contain the shipper HMAC secret.
 
+## OS security patch window (ADR-026, #94)
+
+The host firewall blocks Ubuntu mirrors, so `unattended-upgrades` cannot refresh
+its package lists on its own. Patch through a short, self-reverting window
+instead: at least **monthly**, and **within days** of a critical fix for OpenSSL,
+OpenSSH, Python, or the kernel. Every window needs explicit operator approval.
+
+`infra/aws-sensor/scripts/patch_window.sh` opens TCP/80 only to the IPv4
+addresses that the configured apt mirrors resolve to, runs `apt-get update`
+and `unattended-upgrade` (security origins, existing conffiles kept), and then
+reloads `/etc/nftables.conf`, which never contains the temporary rule. The run
+is a transient systemd unit, so an EICE tunnel drop cannot interrupt `dpkg`. A
+separate timer restores the firewall if the unit is killed or hangs, and a
+reboot also discards the in-memory rule.
+
+1. Copy `infra/aws-sensor/scripts/patch_window.sh` and
+   `infra/aws-sensor/scripts/verify_egress.sh` to the host (see the code
+   deployment procedure above) and install both as `root:root 0755` in
+   `/usr/local/sbin/`.
+   Then take a **pre-patch snapshot** of the sensor root volume and record its
+   ID: `aws ec2 create-snapshot --region us-east-1 --volume-id <root-volume-id>
+   --description "attackarium pre-patch <date>"`. It is the rollback path for a
+   package that cannot be downgraded. It contains the shipper HMAC secret, so
+   delete it after the rollback window (7 days), with any AMI made from it.
+2. On the host, print the mirror addresses:
+   `sudo /usr/local/sbin/patch_window.sh resolve`.
+3. Locally, set `patch_egress_cidrs` in `terraform.tfvars` to exactly those
+   `/32` entries. Review `terraform plan` (only `patch_http` rules are added),
+   then apply. The variable rejects anything other than up to 32 `/32` entries.
+4. On the host: `sudo /usr/local/sbin/patch_window.sh run`. It prints the apt
+   output and the result (`/var/lib/attackarium-patch/last-result`).
+   - If the result is `failure` with `apt-get update failed`, mirrors probably
+     rotated. Repeat from step 2 once; do not widen the CIDRs.
+   - The Ubuntu mirrors currently sit behind shared Cloudflare addresses, so the
+     window allows plain HTTP to anything on those IPs, not only Ubuntu (ADR-026).
+     Keep the window short.
+5. Immediately set `patch_egress_cidrs = []` and apply again. Confirm with
+   `terraform plan` (no changes).
+6. On the host: `sudo /usr/local/sbin/patch_window.sh status` must show
+   `temporary_rule=absent` and no `window_flows` line. Run
+   `sudo /usr/local/sbin/verify_egress.sh` (all checks pass),
+   then check `systemctl is-active opencanary http-collector attackarium-shipper`
+   and a fresh heartbeat on `/sensors`.
+7. If `reboot_required=yes`, reboot over EICE (`sudo systemctl reboot`), and
+   repeat the step 6 checks after it comes back. A normal reboot takes under a
+   minute; a stop longer than 15 minutes is recorded as a coverage gap.
+8. Record the date, result, and whether a reboot happened in the drills record
+   below.
+
+Rollback: if a service fails after the upgrade, check its journal first.
+Package downgrades need the mirrors again, so repeat steps 2–6 with
+`sudo /usr/local/sbin/patch_window.sh install <package>=<previous-version> ...`
+instead of `run`. It opens the same mirror-only host rule, installs only the
+pinned versions (`--allow-downgrades`), and cleans up the same way. If a
+package cannot be downgraded, restore from the step 1 pre-patch snapshot
+(create a volume from it and swap it in as the root device with the steps of
+the offline procedure above). The offline procedure by itself only restores
+access; it does not restore packages.
+
+Cleanup also ends any TCP/80 connection to the window addresses, because the
+persisted ruleset accepts established flows. `status` reports
+`window_flows=UNVERIFIED` if that step did not complete; run
+`sudo /usr/local/sbin/patch_window.sh cleanup` until it succeeds. Only one
+window can run at a time.
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):
