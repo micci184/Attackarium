@@ -176,6 +176,32 @@ is a transient systemd unit, so an EICE tunnel drop cannot interrupt `dpkg`. A
 separate timer restores the firewall if the unit is killed or hangs, and a
 reboot also discards the in-memory rule.
 
+**Recommended: one command from the operator machine** (Terraform state, AWS
+credentials, and the operator key; after `aws login`):
+
+```bash
+eval "$(aws configure export-credentials --format env)"
+infra/aws-sensor/scripts/patch_sensor.sh --key ~/.ssh/<operator-key>
+```
+
+`patch_sensor.sh` performs the manual steps below in order: preflight (no
+Terraform drift, `patch_egress_cidrs` empty), pre-patch snapshot (tagged
+`DeleteAfter` = today + 7 days), script install, mirror resolution, a
+Terraform apply **targeted at the `patch_http` rules only** (it prompts unless
+`--yes`), the patch run, and the close. **The close always runs** once the open
+has started, including on errors and Ctrl-C, and is verified with a full
+`terraform plan`. It then verifies the host, reboots if the host requires it
+(`--reboot never` to skip), and lists expired pre-patch snapshots
+(`--delete-expired-snapshots` deletes them). If it prints `CLOSE FAILED`, run
+the printed Terraform command immediately.
+
+Patch freshness is visible on `/admin` ("Sensor OS patch freshness"): the
+sensor reports its last successful window with every signed batch and
+heartbeat. Patch when it shows **Due** (30 days); **Overdue** (35 days) is the
+alert threshold.
+
+Manual procedure (what the script does, and the fallback):
+
 1. Copy `infra/aws-sensor/scripts/patch_window.sh` and
    `infra/aws-sensor/scripts/verify_egress.sh` to the host (see the code
    deployment procedure above) and install both as `root:root 0755` in

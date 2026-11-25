@@ -24,7 +24,83 @@ export type AllowedProtocol =
   | "https"
   | "other";
 
-const ALLOWED_TOP_LEVEL_KEYS = new Set(["events"]);
+const ALLOWED_TOP_LEVEL_KEYS = new Set(["events", "sensor_status"]);
+const ALLOWED_SENSOR_STATUS_KEYS = new Set(["patch_last_success_at"]);
+// Strict UTC ISO-8601 (what the shipper emits), e.g. 2026-11-25T07:00:17Z.
+const ISO_UTC_SECONDS_REGEX =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
+export interface SensorStatusReport {
+  /** False when the batch carried no sensor_status (older shippers): change nothing. */
+  reported: boolean;
+  /**
+   * ISO timestamp of the last successful OS patch window. null with
+   * reported=true means the sensor has no recorded success (for example after
+   * a restore from a pre-patch snapshot) and clears the stored value.
+   */
+  patchLastSuccessAt: string | null;
+}
+
+/** True only for a real UTC calendar date/time (rejects 2026-02-30 and similar). */
+function isRealUtcTimestamp(value: string): boolean {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return false;
+  const d = new Date(ms);
+  const [datePart, timePart] = value.slice(0, 19).split("T");
+  const [y, mo, day] = datePart.split("-").map(Number);
+  const [h, mi, sec] = timePart.split(":").map(Number);
+  return (
+    d.getUTCFullYear() === y &&
+    d.getUTCMonth() + 1 === mo &&
+    d.getUTCDate() === day &&
+    d.getUTCHours() === h &&
+    d.getUTCMinutes() === mi &&
+    d.getUTCSeconds() === sec
+  );
+}
+
+/**
+ * Optional, operator-only host status carried next to `events`.
+ * Absent means "not reported"; anything malformed rejects the whole batch,
+ * like every other schema violation.
+ */
+export function validateSensorStatus(
+  payload: unknown,
+): ValidationResult<SensorStatusReport> {
+  if (!isPlainObject(payload) || !("sensor_status" in payload)) {
+    return { ok: true, value: { reported: false, patchLastSuccessAt: null } };
+  }
+  const raw = payload.sensor_status;
+  if (!isPlainObject(raw)) {
+    return { ok: false, error: "'sensor_status' must be an object" };
+  }
+  for (const key of Object.keys(raw)) {
+    if (!ALLOWED_SENSOR_STATUS_KEYS.has(key)) {
+      return { ok: false, error: `sensor_status contains unexpected field: ${key}` };
+    }
+  }
+  if (!("patch_last_success_at" in raw)) {
+    return { ok: false, error: "sensor_status.patch_last_success_at is required" };
+  }
+  const value = raw.patch_last_success_at;
+  if (value === null) {
+    return { ok: true, value: { reported: true, patchLastSuccessAt: null } };
+  }
+  if (
+    typeof value !== "string" ||
+    !ISO_UTC_SECONDS_REGEX.test(value) ||
+    !isRealUtcTimestamp(value)
+  ) {
+    return {
+      ok: false,
+      error: "sensor_status.patch_last_success_at must be a UTC ISO timestamp",
+    };
+  }
+  return {
+    ok: true,
+    value: { reported: true, patchLastSuccessAt: new Date(value).toISOString() },
+  };
+}
 
 export const ATTACK_CATEGORIES = [
   "port_scan",

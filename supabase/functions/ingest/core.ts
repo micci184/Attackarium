@@ -5,6 +5,7 @@
 import {
   type NormalizedAttackEvent,
   validateBatchPayload,
+  validateSensorStatus,
 } from "./schema.ts";
 
 const SENSOR_ID_REGEX = /^[a-z0-9][a-z0-9_-]{1,63}$/;
@@ -38,6 +39,16 @@ export interface IngestRepository {
     rateLimitPerMinute: number;
     events: NormalizedAttackEvent[];
   }): Promise<CommitBatchResult>;
+  /**
+   * Operator-only host status (#94). Called only after a batch commits, so a
+   * replayed or rate-limited request can never change it.
+   */
+  recordSensorStatus?(params: {
+    sensorId: string;
+    /** null clears the stored value (no recorded successful window). */
+    patchLastSuccessAtIso: string | null;
+    receivedAtIso: string;
+  }): Promise<void>;
 }
 
 const encoder = new TextEncoder();
@@ -244,6 +255,10 @@ export async function handleIngestRequest(
   if (!validation.ok) {
     return jsonResponse(400, { error: validation.error });
   }
+  const statusValidation = validateSensorStatus(parsedJson);
+  if (!statusValidation.ok) {
+    return jsonResponse(400, { error: statusValidation.error });
+  }
 
   // Data minimization: derive a keyed HMAC, then drop the plaintext address.
   // There is no option to persist src_ip. raw_object_key is not an accepted field.
@@ -282,6 +297,17 @@ export async function handleIngestRequest(
       { error: "Per-sensor ingest rate limit exceeded" },
       { "retry-after": "60" },
     );
+  }
+
+  const patchLastSuccessAtIso = statusValidation.value.patchLastSuccessAt;
+  if (statusValidation.value.reported && repo.recordSensorStatus) {
+    // Best effort: host status must never cost observation data, and the
+    // shipper must not retry a committed batch because of it.
+    try {
+      await repo.recordSensorStatus({ sensorId, patchLastSuccessAtIso, receivedAtIso });
+    } catch {
+      console.error("record_sensor_patch_status failed");
+    }
   }
 
   return jsonResponse(200, {

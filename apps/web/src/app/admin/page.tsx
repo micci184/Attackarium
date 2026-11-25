@@ -4,7 +4,22 @@ import {
   getAdminServiceClient,
   requireOperatorAdmin,
 } from "@/lib/admin-auth";
+import { formatUtcDateTime } from "@/lib/format";
+import {
+  PATCH_OVERDUE_AFTER_DAYS,
+  type PatchFreshnessState,
+  withPatchFreshness,
+} from "@/lib/patch-freshness";
 import { reviewDailyReportAction, updateEntitlementAction } from "./actions";
+
+const SENSOR_PATCH_ROW_LIMIT = 500;
+
+const PATCH_STATE_CLASS: Record<PatchFreshnessState, string> = {
+  current: "text-emerald-700",
+  due: "font-medium text-amber-700",
+  overdue: "font-semibold text-red-700",
+  unknown: "font-medium text-amber-700",
+};
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +79,7 @@ export default async function AdminConsolePage() {
     termsAcceptedCountRes,
     mcpEnabledCountRes,
     suspendedCountRes,
+    sensorsRes,
   ] = await Promise.all([
     client
       .from("user_mcp_entitlements")
@@ -100,6 +116,16 @@ export default async function AdminConsolePage() {
       .from("user_mcp_entitlements")
       .select("user_id", { count: "exact", head: true })
       .eq("is_suspended", true),
+    // Operator-only host status (#94); never exposed through public views.
+    client
+      .from("sensors")
+      .select("id, is_active, last_heartbeat_at, last_patch_success_at", {
+        count: "exact",
+      })
+      // Active sensors first, so an inactive backlog never hides a live one.
+      .order("is_active", { ascending: false })
+      .order("id", { ascending: true })
+      .limit(SENSOR_PATCH_ROW_LIMIT),
   ]);
 
   const entitlements = entitlementsRes.data ?? [];
@@ -115,6 +141,8 @@ export default async function AdminConsolePage() {
   const termsAcceptedCount = termsAcceptedCountRes.count ?? 0;
   const mcpEnabledCount = mcpEnabledCountRes.count ?? 0;
   const suspendedCount = suspendedCountRes.count ?? 0;
+  const sensorPatchRows = withPatchFreshness(sensorsRes.data ?? []);
+  const sensorTotal = sensorsRes.count ?? sensorPatchRows.length;
 
   return (
     <div className="space-y-6">
@@ -182,6 +210,80 @@ export default async function AdminConsolePage() {
           </p>
         </div>
       </dl>
+
+      {/* Sensor OS patch freshness (#94) */}
+      <section
+        aria-labelledby="sensor-patch-heading"
+        className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs"
+      >
+        <h2
+          id="sensor-patch-heading"
+          className="text-base font-semibold text-slate-900"
+        >
+          Sensor OS patch freshness
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Last successful patch window as reported by each sensor over signed
+          ingest. Patch monthly; alert after {PATCH_OVERDUE_AFTER_DAYS} days.
+          Procedure: <code className="font-mono">docs/RUNBOOK.md</code> (OS
+          security patch window).
+        </p>
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th scope="col" className="px-3 py-2 font-medium">Sensor</th>
+                <th scope="col" className="px-3 py-2 font-medium">Status</th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Last patch (UTC)
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Last heartbeat (UTC)
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {sensorsRes.error ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-4 text-red-700">
+                    Could not load sensor status.
+                  </td>
+                </tr>
+              ) : sensorPatchRows.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-4 text-slate-500">
+                    No sensors registered.
+                  </td>
+                </tr>
+              ) : (
+                sensorPatchRows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-3 py-2 font-mono text-slate-800">
+                      {row.id}
+                      {row.is_active ? "" : " (inactive)"}
+                    </td>
+                    <td className={`px-3 py-2 ${PATCH_STATE_CLASS[row.freshness.state]}`}>
+                      {row.freshness.label}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-slate-600">
+                      {formatUtcDateTime(row.last_patch_success_at)}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-slate-600">
+                      {formatUtcDateTime(row.last_heartbeat_at)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        {sensorTotal > sensorPatchRows.length ? (
+          <p role="status" className="mt-2 text-xs font-medium text-amber-700">
+            Showing {sensorPatchRows.length} of {sensorTotal} sensors (active
+            first). Check the remaining sensors in the database.
+          </p>
+        ) : null}
+      </section>
 
       {/* 1. MCP Entitlements */}
       <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs">
