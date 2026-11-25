@@ -40,6 +40,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/rls_test.sql
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/rollup_test.sql
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/metadata_sanitization_test.sql
+          psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/sensor_patch_status_test.sql
 
   ingest-tests:
     name: Ingest Edge Function Security & Idempotency Tests
@@ -140,6 +141,7 @@ jobs:
       - name: Lint patch window script
         run: |
           bash -n scripts/patch_window.sh
-          shellcheck scripts/patch_window.sh
-      - name: Run patch window tests (stubbed nft/apt, no host changes)
+          bash -n scripts/patch_sensor.sh
+          shellcheck scripts/patch_window.sh scripts/patch_sensor.sh
+      - name: Run patch window and operator wrapper tests (stubbed nft/apt/terraform/aws/ssh)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v

@@ -28,6 +28,8 @@ class MockIngestState:
         self.received_event_ids: set[str] = set()
         self.received_request_ids: set[str] = set()
         self.signature_failures = 0
+        self.reject_sensor_status = False
+        self.received_sensor_status: list[dict] = []
 
 
 class MockIngestHandler(http.server.BaseHTTPRequestHandler):
@@ -74,6 +76,12 @@ class MockIngestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         payload = json.loads(raw_body)
+        if "sensor_status" in payload and self.state.reject_sensor_status:
+            self.send_response(400)
+            self.end_headers()
+            return
+        if "sensor_status" in payload:
+            self.state.received_sensor_status.append(payload["sensor_status"])
         if any(ev["id"] in self.state.reject_event_ids for ev in payload.get("events", [])):
             self.send_response(400)
             self.end_headers()
@@ -599,6 +607,82 @@ class ShipperIntegrationTests(unittest.TestCase):
         finally:
             shipper.close()
 
+
+
+    # --- patch freshness (#94) ------------------------------------------------
+
+    def _patch_shipper(self, status_text: str | None) -> EventShipper:
+        status_path = Path(self.tmpdir.name) / "last-success"
+        if status_text is not None:
+            status_path.write_text(status_text, encoding="ascii")
+        return EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=1,
+                patch_status_path=status_path,
+            )
+        )
+
+    _EVENT_LINE = json.dumps(
+        {
+            "source": "http_collector",
+            "id": "33333333-3333-4333-8333-333333333333",
+            "observed_at": "2026-11-21T10:00:00Z",
+            "protocol": "http",
+            "dst_port": 80,
+            "event_type": "http_probe",
+            "http_method": "GET",
+            "http_path": "/.env",
+        }
+    )
+
+    def test_heartbeat_and_batches_carry_patch_last_success_at(self) -> None:
+        shipper = self._patch_shipper(
+            "finished_at=2026-11-25T07:00:17Z\nresult=success\ndetail=security updates applied\nreboot_required=no\n"
+        )
+        try:
+            self.assertTrue(shipper.flush_once())  # idle heartbeat
+            shipper.ingest_jsonl_lines([self._EVENT_LINE])
+            self.assertTrue(shipper.flush_once())  # event batch
+        finally:
+            shipper.close()
+        self.assertEqual(
+            self.state.received_sensor_status,
+            [{"patch_last_success_at": "2026-11-25T07:00:17Z"}] * 2,
+        )
+
+    def test_missing_failed_or_malformed_status_is_not_reported(self) -> None:
+        cases = [
+            None,
+            "finished_at=2026-11-25T07:00:17Z\nresult=failure\n",
+            "finished_at=2026-13-45T99:00:00Z\nresult=success\n",
+            "finished_at=2026-11-25 07:00:17\nresult=success\n",
+            "finished_at=2026-11-25T07:00:17Z\nresult=success\n" + "x" * 5000,
+        ]
+        for text in cases:
+            self.state.received_sensor_status.clear()
+            shipper = self._patch_shipper(text)
+            try:
+                self.assertTrue(shipper.flush_once())
+            finally:
+                shipper.close()
+            self.assertEqual(self.state.received_sensor_status, [], repr(text)[:80])
+            (Path(self.tmpdir.name) / "last-success").unlink(missing_ok=True)
+
+    def test_ingest_rejecting_status_never_drops_events(self) -> None:
+        self.state.reject_sensor_status = True
+        shipper = self._patch_shipper("finished_at=2026-11-25T07:00:17Z\nresult=success\n")
+        try:
+            shipper.ingest_jsonl_lines([self._EVENT_LINE])
+            self.assertTrue(shipper.flush_once())
+            self.assertEqual(shipper.spool.count(), 0)
+        finally:
+            shipper.close()
+        self.assertIn("33333333-3333-4333-8333-333333333333", self.state.received_event_ids)
+        self.assertEqual(shipper.metrics.events_delivered, 1)
 
 if __name__ == "__main__":
     unittest.main()

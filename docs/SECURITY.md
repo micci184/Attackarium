@@ -87,7 +87,7 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 | AWS monthly spend | AWS Budgets threshold (e.g., 50% / 80% / 100%) | Review traffic/egress; shut down EC2 sensor if cap approached |
 | Abnormal egress | Any outbound connection outside allowlist | Block, inspect, rotate sensor credentials |
 | Ingest rejects | Sustained 401/413/429/400 failures | Investigate key abuse, gateway throttling, or format regression |
-| OS patch freshness | No successful patch window in 35 days, or a critical OpenSSL/OpenSSH/Python/kernel fix is published | Run the patch window in `docs/RUNBOOK.md`; check `patch_window.sh status` |
+| OS patch freshness | No successful patch window in 35 days, or a critical OpenSSL/OpenSSH/Python/kernel fix is published | `/admin` shows Due/Overdue. Run `scripts/patch_sensor.sh` (`docs/RUNBOOK.md`) |
 | HTTP body sampling | Max size crossed or concurrency shed (503) | Truncate/shed cleanly; never unbounded buffer |
 
 ## Publication ethics

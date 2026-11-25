@@ -70,6 +70,21 @@ class InMemoryIngestRepo implements IngestRepository {
     this.heartbeats.set(params.sensorId, params.receivedAtIso);
     return { status: "ok", inserted };
   }
+
+  patchStatus = new Map<string, { patchLastSuccessAtIso: string; receivedAtIso: string }>();
+  failStatus = false;
+
+  async recordSensorStatus(params: {
+    sensorId: string;
+    patchLastSuccessAtIso: string;
+    receivedAtIso: string;
+  }): Promise<void> {
+    if (this.failStatus) throw new Error("Simulated status RPC failure");
+    this.patchStatus.set(params.sensorId, {
+      patchLastSuccessAtIso: params.patchLastSuccessAtIso,
+      receivedAtIso: params.receivedAtIso,
+    });
+  }
 }
 
 const TEST_SECRET = "test-sensor-hmac-secret-at-least-32-chars";
@@ -634,5 +649,92 @@ describe("ingest Edge Function core security & idempotency", () => {
     assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1")?.attack_category, "port_scan");
     assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2")?.attack_category, null);
     assert.equal(repo.events.get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3")?.attack_category, "auth_attempt");
+  });
+});
+
+describe("ingest sensor_status (patch freshness, #94)", () => {
+  const PATCHED_AT = "2026-11-20T07:00:17Z";
+
+  it("records patch_last_success_at from a signed heartbeat after the batch commits", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: { patch_last_success_at: PATCHED_AT } }),
+      requestId: "req-status-001",
+    });
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    assert.deepEqual(repo.patchStatus.get("sensor-dev-01"), {
+      patchLastSuccessAtIso: "2026-11-20T07:00:17.000Z",
+      receivedAtIso: new Date(BASE_NOW_MS).toISOString(),
+    });
+  });
+
+  it("keeps working without sensor_status (older shippers)", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: generateSyntheticBatch(BASE_NOW_MS, 2) }),
+      requestId: "req-status-002",
+    });
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    assert.equal(repo.patchStatus.size, 0);
+  });
+
+  it("rejects malformed or unexpected sensor_status fields without committing", async () => {
+    const bad: unknown[] = [
+      "2026-11-20",
+      { patch_last_success_at: "yesterday" },
+      { patch_last_success_at: "2026-11-20T07:00:17+09:00" },
+      { patch_last_success_at: 1764000000 },
+      { patch_last_success_at: PATCHED_AT, kernel: "7.0.0" },
+    ];
+    for (const [i, status] of bad.entries()) {
+      const repo = new InMemoryIngestRepo();
+      const req = await makeSignedRequest({
+        body: JSON.stringify({ events: [], sensor_status: status }),
+        requestId: `req-status-bad-${i}`,
+      });
+      const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+      assert.equal(res.status, 400, JSON.stringify(status));
+      assert.equal(repo.receipts.size, 0);
+      assert.equal(repo.patchStatus.size, 0);
+    }
+  });
+
+  it("does not record status for a replayed request", async () => {
+    const repo = new InMemoryIngestRepo();
+    const body = JSON.stringify({ events: [], sensor_status: { patch_last_success_at: PATCHED_AT } });
+    const first = await makeSignedRequest({ body, requestId: "req-status-replay" });
+    assert.equal((await handleIngestRequest(first, makeConfig(), repo, BASE_NOW_MS)).status, 200);
+    repo.patchStatus.clear();
+    const again = await makeSignedRequest({ body, requestId: "req-status-replay" });
+    assert.equal((await handleIngestRequest(again, makeConfig(), repo, BASE_NOW_MS)).status, 409);
+    assert.equal(repo.patchStatus.size, 0);
+  });
+
+  it("does not record status for an unauthenticated request", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: { patch_last_success_at: PATCHED_AT } }),
+      requestId: "req-status-badsig",
+      secret: "wrong-secret-value-that-is-long-enough-123",
+    });
+    assert.equal((await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS)).status, 401);
+    assert.equal(repo.patchStatus.size, 0);
+  });
+
+  it("a status RPC failure never fails the committed batch", async () => {
+    const repo = new InMemoryIngestRepo();
+    repo.failStatus = true;
+    const req = await makeSignedRequest({
+      body: JSON.stringify({
+        events: generateSyntheticBatch(BASE_NOW_MS, 1),
+        sensor_status: { patch_last_success_at: PATCHED_AT },
+      }),
+      requestId: "req-status-rpcfail",
+    });
+    const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 200);
+    assert.equal(repo.events.size, 1);
   });
 });

@@ -93,6 +93,16 @@ function createSupabaseRepository(): IngestRepository {
       }
       throw new Error("Unexpected response from commit_ingest_batch");
     },
+    async recordSensorStatus(params): Promise<void> {
+      const { error } = await supabase.rpc("record_sensor_patch_status", {
+        p_sensor_id: params.sensorId,
+        p_patch_last_success_at: params.patchLastSuccessAtIso,
+        p_received_at: params.receivedAtIso,
+      });
+      if (error) {
+        throw new Error(`record_sensor_patch_status failed: ${error.code ?? "db_error"}`);
+      }
+    },
   };
 }
 

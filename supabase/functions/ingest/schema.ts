@@ -24,7 +24,53 @@ export type AllowedProtocol =
   | "https"
   | "other";
 
-const ALLOWED_TOP_LEVEL_KEYS = new Set(["events"]);
+const ALLOWED_TOP_LEVEL_KEYS = new Set(["events", "sensor_status"]);
+const ALLOWED_SENSOR_STATUS_KEYS = new Set(["patch_last_success_at"]);
+// Strict UTC ISO-8601 (what the shipper emits), e.g. 2026-11-25T07:00:17Z.
+const ISO_UTC_SECONDS_REGEX =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
+export interface SensorStatusReport {
+  /** ISO timestamp of the last successful OS patch window, or null when not reported. */
+  patchLastSuccessAt: string | null;
+}
+
+/**
+ * Optional, operator-only host status carried next to `events`.
+ * Absent means "not reported"; anything malformed rejects the whole batch,
+ * like every other schema violation.
+ */
+export function validateSensorStatus(
+  payload: unknown,
+): ValidationResult<SensorStatusReport> {
+  if (!isPlainObject(payload) || !("sensor_status" in payload)) {
+    return { ok: true, value: { patchLastSuccessAt: null } };
+  }
+  const raw = payload.sensor_status;
+  if (!isPlainObject(raw)) {
+    return { ok: false, error: "'sensor_status' must be an object" };
+  }
+  for (const key of Object.keys(raw)) {
+    if (!ALLOWED_SENSOR_STATUS_KEYS.has(key)) {
+      return { ok: false, error: `sensor_status contains unexpected field: ${key}` };
+    }
+  }
+  const value = raw.patch_last_success_at;
+  if (value === undefined || value === null) {
+    return { ok: true, value: { patchLastSuccessAt: null } };
+  }
+  if (
+    typeof value !== "string" ||
+    !ISO_UTC_SECONDS_REGEX.test(value) ||
+    Number.isNaN(Date.parse(value))
+  ) {
+    return {
+      ok: false,
+      error: "sensor_status.patch_last_success_at must be a UTC ISO timestamp",
+    };
+  }
+  return { ok: true, value: { patchLastSuccessAt: new Date(value).toISOString() } };
+}
 
 export const ATTACK_CATEGORIES = [
   "port_scan",

@@ -33,6 +33,8 @@ EVENT_NAMESPACE_UUID = uuid.UUID("7f3d56f8-3d1d-4d0e-942c-0df9b7489f41")
 SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
 SPOOL_ALERT_RATIO = 0.70
 SPOOL_ALERT_REPEAT_SECONDS = 300.0
+PATCH_STATUS_MAX_BYTES = 4096
+PATCH_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
 LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -74,6 +76,9 @@ class ShipperConfig:
     base_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 60.0
     heartbeat_interval_seconds: float = 300.0
+    # Written by infra/aws-sensor/scripts/patch_window.sh after a successful
+    # patch window (#94). None disables the operator-only patch status report.
+    patch_status_path: Path | None = None
 
 
 @dataclass
@@ -407,6 +412,10 @@ class EventShipper:
         self.metrics = ShipperMetrics()
         self.consecutive_failures = 0
         self._last_heartbeat_sec: float | None = None
+        # Set when the ingest rejects the optional sensor_status block (for
+        # example an ingest that predates #94), so events are never dropped
+        # as poison pills because of it.
+        self._patch_status_disabled = False
         self._spool_alert_active = False
         self._spool_notice_at: float | None = None
 
@@ -444,13 +453,64 @@ class EventShipper:
             delay = max(delay, self.metrics.last_retry_after_seconds)
         return min(delay, self.config.max_backoff_seconds)
 
+    def _read_patch_last_success_at(self) -> str | None:
+        """Return the last successful patch time as 'YYYY-MM-DDTHH:MM:SSZ', or None.
+
+        The file is small, root-written, and parsed strictly; anything else is
+        treated as "not reported" so a bad file can never block delivery.
+        """
+        path = self.config.patch_status_path
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as fp:
+                raw = fp.read(PATCH_STATUS_MAX_BYTES + 1)
+        except OSError:
+            return None
+        if len(raw) > PATCH_STATUS_MAX_BYTES:
+            return None
+        values: dict[str, str] = {}
+        for line in raw.decode("ascii", errors="replace").splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                values[key.strip()] = value.strip()
+        if values.get("result") != "success":
+            return None
+        finished = values.get("finished_at", "")
+        if not PATCH_TIMESTAMP_RE.fullmatch(finished):
+            return None
+        try:
+            dt.datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return None
+        return finished
+
     def _send_events(
         self,
         events: list[dict[str, Any]],
         now_sec: int | None = None,
     ) -> tuple[str, int | None, float | None]:
         """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
-        raw_body = json.dumps({"events": events}, ensure_ascii=True, separators=(",", ":"))
+        patched_at = None if self._patch_status_disabled else self._read_patch_last_success_at()
+        result = self._send_body(events, patched_at, now_sec)
+        if result[0] == "permanent_400" and patched_at is not None:
+            # Never let the optional status block turn real events into poison
+            # pills: stop sending it and retry the same events without it.
+            self._patch_status_disabled = True
+            sys.stderr.write("ingest rejected sensor_status; patch status reporting disabled\n")
+            result = self._send_body(events, None, now_sec)
+        return result
+
+    def _send_body(
+        self,
+        events: list[dict[str, Any]],
+        patched_at: str | None,
+        now_sec: int | None,
+    ) -> tuple[str, int | None, float | None]:
+        body: dict[str, Any] = {"events": events}
+        if patched_at is not None:
+            body["sensor_status"] = {"patch_last_success_at": patched_at}
+        raw_body = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         timestamp = str(int(now_sec if now_sec is not None else time.time()))
         request_id = f"req-{uuid.uuid4().hex[:24]}"
         signing_payload = build_signature_payload(
@@ -727,6 +787,13 @@ def main() -> None:
         heartbeat_interval_seconds=float(
             os.environ.get("SHIPPER_HEARTBEAT_INTERVAL_SECONDS", "300")
         ),
+        patch_status_path=Path(
+            os.environ.get(
+                "SHIPPER_PATCH_STATUS_PATH", "/var/lib/attackarium-patch/last-success"
+            )
+        )
+        if os.environ.get("SHIPPER_PATCH_STATUS_PATH", "x") != ""
+        else None,
     )
     metrics_path = Path(
         os.environ.get("SHIPPER_METRICS_PATH", "/var/lib/attackarium/shipper-metrics.json")
