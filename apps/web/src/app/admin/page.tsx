@@ -4,7 +4,7 @@ import {
   getAdminServiceClient,
   requireOperatorAdmin,
 } from "@/lib/admin-auth";
-import { formatUtcDateTime } from "@/lib/format";
+import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import {
   PATCH_OVERDUE_AFTER_DAYS,
   type PatchFreshnessState,
@@ -235,10 +235,10 @@ export default async function AdminConsolePage() {
                 <th scope="col" className="px-3 py-2 font-medium">Sensor</th>
                 <th scope="col" className="px-3 py-2 font-medium">Status</th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  Last patch (UTC)
+                  Last patch (<TimezoneLabel />)
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  Last heartbeat (UTC)
+                  Last heartbeat (<TimezoneLabel />)
                 </th>
               </tr>
             </thead>
@@ -266,10 +266,10 @@ export default async function AdminConsolePage() {
                       {row.freshness.label}
                     </td>
                     <td className="px-3 py-2 tabular-nums text-slate-600">
-                      {formatUtcDateTime(row.last_patch_success_at)}
+                      <FormattedTime iso={row.last_patch_success_at} />
                     </td>
                     <td className="px-3 py-2 tabular-nums text-slate-600">
-                      {formatUtcDateTime(row.last_heartbeat_at)}
+                      <FormattedTime iso={row.last_heartbeat_at} />
                     </td>
                   </tr>
                 ))
@@ -479,7 +479,9 @@ export default async function AdminConsolePage() {
           <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
-                <th className="px-3 py-2 font-medium">Time (UTC)</th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Time (<TimezoneLabel />)
+                </th>
                 <th className="px-3 py-2 font-medium">Actor</th>
                 <th className="px-3 py-2 font-medium">Action</th>
                 <th className="px-3 py-2 font-medium">Target</th>
@@ -496,7 +498,7 @@ export default async function AdminConsolePage() {
                 auditLogs.map((log) => (
                   <tr key={log.id}>
                     <td className="px-3 py-2 font-mono text-slate-600">
-                      {log.created_at}
+                      <FormattedTime iso={log.created_at} />
                     </td>
                     <td className="px-3 py-2 font-mono text-slate-700">
                       {log.actor_user_id}
