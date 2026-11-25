@@ -100,12 +100,18 @@ remote_until() {
   shift
   REMOTE_OUT=""
   out="$(mktemp "$WORK_DIR/probe.XXXXXX")"
+  # Defer INT/TERM/HUP until the group id is recorded, so a signal that lands
+  # between the fork and the assignment cannot orphan the probe group.
+  local pending=""
+  trap 'pending=130' INT TERM HUP
   set -m
   # -n: stdin from /dev/null, so the background job never reads the terminal.
   ssh -n -F "$WORK_DIR/ssh_config" sensor "$@" >"$out" 2>/dev/null &
   pid=$!
-  set +m
   PROBE_PGID="$pid"
+  set +m
+  trap 'exit 130' INT TERM HUP
+  [[ -z "$pending" ]] || exit "$pending"
   while kill -0 "$pid" 2>/dev/null; do
     if (( SECONDS >= deadline )); then
       kill_probe_group
