@@ -941,6 +941,19 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh.close()
 
+    def test_a_looping_symlink_metrics_path_is_skipped_not_fatal(self) -> None:
+        loop = Path(self.tmpdir.name) / "loop.json"
+        loop.symlink_to(loop)
+        sh = self._shipper_with_tls(loop)
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 2, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [2])
+        finally:
+            sh.close()
+
     def test_missing_https_metrics_file_is_skipped(self) -> None:
         sh = self._shipper_with_tls(Path(self.tmpdir.name) / "absent.json")
         try:

@@ -577,13 +577,18 @@ class EventShipper:
         The primary (port 80) collector keeps the original state key, so an
         upgrade neither loses nor re-baselines its snapshot.
         """
+        # Lexical normalization only: no filesystem access, so a broken or
+        # looping symlink can never raise here; the reader skips such a file.
+        def normalized(path: Path) -> str:
+            return os.path.normpath(os.path.abspath(path))
+
         sources: list[tuple[str, Path]] = []
-        seen: set[Path] = set()
+        seen: set[str] = set()
         if self.config.collector_metrics_path is not None:
             sources.append(("collector_snapshot", self.config.collector_metrics_path))
-            seen.add(self.config.collector_metrics_path.resolve(strict=False))
+            seen.add(normalized(self.config.collector_metrics_path))
         for extra in self.config.collector_metrics_extra_paths:
-            resolved = extra.resolve(strict=False)
+            resolved = normalized(extra)
             if resolved in seen:
                 continue  # a file listed twice must not count each increase twice
             seen.add(resolved)
