@@ -246,8 +246,11 @@ change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
    `404  Not Found` for a `.deb` (the archive nodes are briefly out of sync)
    or any other download error, the recorder logs `reported errors` and writes
    nothing. Re-run the three phases after a few minutes; on the daily timer it
-   recovers on the next day without action. Only a failure lasting three days
-   makes `/admin` show Due, and the weekly check fails after that.
+   recovers on the next day without action. `/admin` thresholds are measured
+   from the age of the last recorded success, not from the first failure: the
+   sensor shows Due once that success is more than 3 days old (Overdue after
+   7), and the weekly check fails whenever it is not Current. With daily
+   updates, roughly two consecutive failed days are needed before that.
 
 ## OS security patch window (ADR-026, #94)
 
