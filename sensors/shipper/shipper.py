@@ -34,6 +34,13 @@ SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
 SPOOL_ALERT_RATIO = 0.70
 SPOOL_ALERT_REPEAT_SECONDS = 300.0
 PATCH_STATUS_MAX_BYTES = 4096
+STATUS_REJECT_BACKOFF_SECONDS = 3600.0
+def _iso_seconds(value: str) -> str:
+    """Normalize an ISO UTC timestamp to 'YYYY-MM-DDTHH:MM:SSZ' (ingest format)."""
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 PATCH_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
 LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -79,6 +86,9 @@ class ShipperConfig:
     # Written by infra/aws-sensor/scripts/patch_window.sh after a successful
     # patch window (#94). None disables the operator-only patch status report.
     patch_status_path: Path | None = None
+    # Cumulative overload counters written by the HTTP collector (#95). The
+    # shipper reports the increase since its last delivered report.
+    collector_metrics_path: Path | None = None
 
 
 @dataclass
@@ -92,6 +102,11 @@ class ShipperMetrics:
     last_error: str | None = None
     last_retry_after_seconds: float | None = None
     last_delivery_at: str | None = None
+    # Overload reports whose window start had to be clamped into ingest's
+    # accepted range (delivery delayed > 6 days): timing information was lost.
+    overload_window_clamped: int = 0
+    # Overload reports the ingest rejected (dropped so reporting continues).
+    overload_reports_rejected: int = 0
 
 
 def validate_ingest_url(url: str) -> str:
@@ -305,6 +320,49 @@ class BoundedSqliteSpool:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shipper_state (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
+
+    def get_state(self, key: str) -> Any:
+        row = self.conn.execute(
+            "SELECT value_json FROM shipper_state WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except ValueError:
+            return None
+
+    def set_states(self, values: dict[str, Any]) -> None:
+        """Write several keys in one transaction (None deletes a key)."""
+        with self.conn:  # one commit, or rollback on error
+            for key, value in values.items():
+                if value is None:
+                    self.conn.execute("DELETE FROM shipper_state WHERE key = ?", (key,))
+                else:
+                    self.conn.execute(
+                        "INSERT INTO shipper_state (key, value_json) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                        (key, json.dumps(value, separators=(",", ":"))),
+                    )
+
+    def set_state(self, key: str, value: Any) -> None:
+        if value is None:
+            self.conn.execute("DELETE FROM shipper_state WHERE key = ?", (key,))
+        else:
+            self.conn.execute(
+                "INSERT INTO shipper_state (key, value_json) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                (key, json.dumps(value, separators=(",", ":"))),
+            )
         self.conn.commit()
 
     def get_cursor(self, path: Path) -> tuple[int | None, int]:
@@ -415,7 +473,30 @@ class EventShipper:
         # Set when the ingest rejects the optional sensor_status block (for
         # example an ingest that predates #94), so events are never dropped
         # as poison pills because of it.
-        self._patch_status_disabled = False
+        # Monotonic time until which sensor_status is not sent (after an
+        # ingest that rejects the block, e.g. one that predates #94).
+        self._status_disabled_until = 0.0
+        # Latest collector counters read: (started_at, rejected, deadline_cut,
+        # the file's updated_at). The pending overload is what ingest has not
+        # acknowledged yet. Both persist in the spool database, so a shipper
+        # restart neither loses nor re-baselines an undelivered report.
+        self._collector_snapshot: tuple[str, int, int, str] | None = None
+        self._pending_overload: dict[str, Any] | None = None
+        saved_snapshot = self.spool.get_state("collector_snapshot")
+        if (
+            isinstance(saved_snapshot, list)
+            and len(saved_snapshot) == 4
+            and isinstance(saved_snapshot[0], str)
+            and isinstance(saved_snapshot[1], int)
+            and isinstance(saved_snapshot[2], int)
+            and isinstance(saved_snapshot[3], str)
+        ):
+            self._collector_snapshot = tuple(saved_snapshot)  # type: ignore[assignment]
+        saved_pending = self.spool.get_state("collector_pending")
+        if isinstance(saved_pending, dict) and {
+            "rejected", "deadline_cut", "window_start", "window_end"
+        } <= saved_pending.keys():
+            self._pending_overload = saved_pending
         self._spool_alert_active = False
         self._spool_notice_at: float | None = None
 
@@ -485,30 +566,170 @@ class EventShipper:
             return None
         return finished
 
+    def _read_collector_metrics(self) -> tuple[str, int, int, str] | None:
+        """Strictly parse the collector's cumulative counters, or None."""
+        path = self.config.collector_metrics_path
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as fp:
+                raw = fp.read(PATCH_STATUS_MAX_BYTES + 1)
+            if len(raw) > PATCH_STATUS_MAX_BYTES:
+                return None
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        started = data.get("started_at")
+        updated = data.get("updated_at")
+        rejected = data.get("rejected_overload")
+        cut = data.get("deadline_exceeded")
+        if not (isinstance(started, str) and isinstance(updated, str)):
+            return None
+        if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 2**31 for v in (rejected, cut)):
+            return None
+        try:
+            return (started, rejected, cut, _iso_seconds(updated))
+        except ValueError:
+            return None
+
+    def _collector_status(self) -> dict[str, Any] | None:
+        """Accumulate collector overload into a pending report; return it.
+
+        A window starts at the updated_at of the previous metrics file the
+        shipper saw: every increment in a later file happened after that
+        payload was taken, even if the collector wrote it late or a write
+        failed. The collector rewrites the file at least every minute, so quiet
+        periods do not widen windows. Increases accumulate in a persisted
+        pending report that only a successful delivery clears. A collector
+        restart (new started_at) resets the counters, so the new run's values
+        are the increase.
+        """
+        current = self._read_collector_metrics()
+        if current is not None:
+            started, rejected, cut, observed_at = current
+            new_pending = (
+                dict(self._pending_overload) if self._pending_overload is not None else None
+            )
+            if self._collector_snapshot is not None:
+                snap_started, snap_rejected, snap_cut, snap_at = self._collector_snapshot
+                if started != snap_started:
+                    delta_rejected, delta_cut = rejected, cut
+                    try:
+                        window_start = min(snap_at, _iso_seconds(started))
+                    except ValueError:
+                        window_start = snap_at
+                else:
+                    delta_rejected = max(0, rejected - snap_rejected)
+                    delta_cut = max(0, cut - snap_cut)
+                    window_start = snap_at
+                if delta_rejected > 0 or delta_cut > 0:
+                    window_end = max(observed_at, window_start)
+                    if new_pending is None:
+                        new_pending = {
+                            "rejected": delta_rejected,
+                            "deadline_cut": delta_cut,
+                            "window_start": window_start,
+                            "window_end": window_end,
+                        }
+                    else:
+                        new_pending["rejected"] += delta_rejected
+                        new_pending["deadline_cut"] += delta_cut
+                        new_pending["window_start"] = min(new_pending["window_start"], window_start)
+                        new_pending["window_end"] = max(new_pending["window_end"], window_end)
+            if self._collector_snapshot != current or new_pending != self._pending_overload:
+                # Pending report and snapshot change together or not at all,
+                # so a crash in between can never double-count an increase.
+                self.spool.set_states(
+                    {"collector_pending": new_pending, "collector_snapshot": list(current)}
+                )
+                self._pending_overload = new_pending
+                self._collector_snapshot = current
+        if self._pending_overload is None:
+            return None
+        report = dict(self._pending_overload)
+        # Ingest accepts windows from the last 7 days; never let an old
+        # undelivered report become a permanent 400.
+        oldest = (self._utcnow() - dt.timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if report["window_start"] < oldest:
+            # Timing information is lost: the refusals happened before the
+            # clamped start. Surface it instead of failing the report forever.
+            report["window_start"] = oldest
+            self.metrics.overload_window_clamped += 1
+            sys.stderr.write(
+                "overload report delayed beyond 6 days; window start clamped (timing approximate)\n"
+            )
+        if report["window_end"] < report["window_start"]:
+            report["window_end"] = report["window_start"]
+        report["rejected"] = min(report["rejected"], 10_000_000)
+        report["deadline_cut"] = min(report["deadline_cut"], 10_000_000)
+        return report
+
+    def _acknowledge_overload(self, delivered: dict[str, Any]) -> None:
+        """Subtract only what was delivered; keep any capped remainder pending."""
+        pending = self._pending_overload
+        if pending is None:
+            return
+        remaining = {
+            **pending,
+            "rejected": max(0, pending["rejected"] - delivered["rejected"]),
+            "deadline_cut": max(0, pending["deadline_cut"] - delivered["deadline_cut"]),
+        }
+        new_pending = remaining if remaining["rejected"] > 0 or remaining["deadline_cut"] > 0 else None
+        self.spool.set_state("collector_pending", new_pending)
+        self._pending_overload = new_pending
+
+    @property
+    def _patch_status_disabled(self) -> bool:
+        return time.monotonic() < self._status_disabled_until
+
+    def _utcnow(self) -> dt.datetime:
+        """Wall clock (UTC); a seam for deterministic tests."""
+        return dt.datetime.now(dt.timezone.utc)
+
     def _send_events(
         self,
         events: list[dict[str, Any]],
         now_sec: int | None = None,
     ) -> tuple[str, int | None, float | None]:
         """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
-        include_status = (
-            self.config.patch_status_path is not None and not self._patch_status_disabled
-        )
-        # When enabled, status is always sent, with null when no successful
-        # window is recorded (for example after restoring a pre-patch
-        # snapshot), so the console never keeps showing an older success.
-        patched_at = self._read_patch_last_success_at() if include_status else None
-        result = self._send_body(events, include_status, patched_at, now_sec)
-        if result[0] == "permanent_400" and include_status:
+        status: dict[str, Any] | None = None
+        if not self._patch_status_disabled:
+            status = {}
+            if self.config.patch_status_path is not None:
+                # Always sent when enabled, with null when no successful window
+                # is recorded (for example after restoring a pre-patch
+                # snapshot), so the console never keeps an older success.
+                status["patch_last_success_at"] = self._read_patch_last_success_at()
+            collector_block = self._collector_status()
+            if collector_block is not None:
+                status["http_collector"] = collector_block
+            if not status:
+                status = None
+        result = self._send_body(events, status, now_sec)
+        if result[0] == "ok" and status is not None and "http_collector" in status:
+            self._acknowledge_overload(status["http_collector"])
+        if result[0] == "permanent_400" and status is not None:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.
-            retry = self._send_body(events, False, None, now_sec)
+            retry = self._send_body(events, None, now_sec)
             if retry[0] == "ok":
-                # Only the status block was rejected (an ingest without #94).
-                self._patch_status_disabled = True
-                sys.stderr.write(
-                    "ingest rejected sensor_status; patch status reporting disabled\n"
-                )
+                # Only the status block was rejected. A 400 does not say which
+                # part, so never disable reporting for good:
+                if "http_collector" in status:
+                    # Drop this overload report (it would be rejected again)
+                    # but keep patch status and future overload reports.
+                    self._pending_overload = None
+                    self.spool.set_state("collector_pending", None)
+                    self.metrics.overload_reports_rejected += 1
+                    sys.stderr.write("ingest rejected the overload report; it was dropped\n")
+                else:
+                    # Probably an ingest that predates sensor_status: back off.
+                    self._status_disabled_until = time.monotonic() + STATUS_REJECT_BACKOFF_SECONDS
+                    sys.stderr.write(
+                        "ingest rejected sensor_status; status reporting paused for 1 hour\n"
+                    )
             # Otherwise (an event-level 400, or a transient failure that proves
             # nothing) keep status enabled; poison-pill isolation and the normal
             # retry path handle the events.
@@ -518,13 +739,12 @@ class EventShipper:
     def _send_body(
         self,
         events: list[dict[str, Any]],
-        include_status: bool,
-        patched_at: str | None,
+        status: dict[str, Any] | None,
         now_sec: int | None,
     ) -> tuple[str, int | None, float | None]:
         body: dict[str, Any] = {"events": events}
-        if include_status:
-            body["sensor_status"] = {"patch_last_success_at": patched_at}
+        if status is not None:
+            body["sensor_status"] = status
         raw_body = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         timestamp = str(int(now_sec if now_sec is not None else time.time()))
         request_id = f"req-{uuid.uuid4().hex[:24]}"
@@ -716,6 +936,8 @@ class EventShipper:
             "backoff_seconds": self.next_backoff_seconds(),
             "last_error": self.metrics.last_error,
             "last_delivery_at": self.metrics.last_delivery_at,
+            "overload_window_clamped": self.metrics.overload_window_clamped,
+            "overload_reports_rejected": self.metrics.overload_reports_rejected,
         }
 
     def ingest_jsonl_file(self, path: Path, max_bytes: int = 1024 * 1024) -> int:
@@ -808,6 +1030,14 @@ def main() -> None:
             )
         )
         if os.environ.get("SHIPPER_PATCH_STATUS_PATH", "x") != ""
+        else None,
+        collector_metrics_path=Path(
+            os.environ.get(
+                "SHIPPER_COLLECTOR_METRICS_PATH",
+                "/var/log/attackarium/http-collector-metrics.json",
+            )
+        )
+        if os.environ.get("SHIPPER_COLLECTOR_METRICS_PATH", "x") != ""
         else None,
     )
     metrics_path = Path(

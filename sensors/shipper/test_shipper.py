@@ -1,5 +1,7 @@
 import http.server
+import datetime as dt
 import json
+import sqlite3
 import tempfile
 import threading
 import time
@@ -29,6 +31,7 @@ class MockIngestState:
         self.received_request_ids: set[str] = set()
         self.signature_failures = 0
         self.reject_sensor_status = False
+        self.reject_http_collector = False
         self.received_sensor_status: list[dict] = []
 
 
@@ -76,6 +79,10 @@ class MockIngestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         payload = json.loads(raw_body)
+        if "http_collector" in payload.get("sensor_status", {}) and self.state.reject_http_collector:
+            self.send_response(400)
+            self.end_headers()
+            return
         if "sensor_status" in payload and self.state.reject_sensor_status:
             self.send_response(400)
             self.end_headers()
@@ -718,11 +725,11 @@ class ShipperIntegrationTests(unittest.TestCase):
             original = shipper._send_body
             calls = {"n": 0}
 
-            def flaky(events, include_status, patched_at, now_sec):
+            def flaky(events, status, now_sec):
                 calls["n"] += 1
                 if calls["n"] == 2:
                     return ("transient", 503, None)
-                return original(events, include_status, patched_at, now_sec)
+                return original(events, status, now_sec)
 
             shipper._send_body = flaky  # type: ignore[method-assign]
             shipper.flush_once()
@@ -752,6 +759,287 @@ class ShipperIntegrationTests(unittest.TestCase):
         self.assertIn("33333333-3333-4333-8333-333333333333", self.state.received_event_ids)
         self.assertEqual(shipper.metrics.events_delivered, 1)
         self.assertTrue(shipper._patch_status_disabled)
+
+
+class CollectorOverloadReportTests(unittest.TestCase):
+    """#95: the shipper reports collector shed/cut increases, once each."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.state = MockIngestState()
+        handler_cls = type("BoundMockIngestHandler", (MockIngestHandler,), {"state": self.state})
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.metrics = Path(self.tmpdir.name) / "metrics.json"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.tmpdir.cleanup()
+
+    def write(self, started: str, rejected: int, cut: int, updated: str) -> None:
+        self.metrics.write_text(
+            json.dumps(
+                {"started_at": started, "rejected_overload": rejected, "deadline_exceeded": cut, "updated_at": updated}
+            )
+        )
+
+    # Fixed wall clock: the fixtures below are around 2026-11-26, so the
+    # 6-day clamp must never depend on when the tests run.
+    FIXED_NOW = dt.datetime(2026, 11, 26, 9, 0, 0, tzinfo=dt.timezone.utc)
+
+    def shipper(self) -> EventShipper:
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_path=self.metrics,
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        return sh
+
+    def beat(self, shipper: EventShipper) -> None:
+        shipper._last_heartbeat_sec = None
+        self.assertTrue(shipper.flush_once())
+
+    def reports(self) -> list[dict]:
+        return [s["http_collector"] for s in self.state.received_sensor_status if "http_collector" in s]
+
+    def test_first_read_is_baseline_then_deltas_are_reported_once(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 5, 1, "2026-11-26T08:00:00.123456Z")
+            self.beat(sh)  # baseline only
+            self.assertEqual(self.reports(), [])
+            self.write("2026-11-26T00:00:00Z", 12, 4, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.beat(sh)  # unchanged: nothing new
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 7, "deadline_cut": 3, "window_start": "2026-11-26T08:00:00Z", "window_end": "2026-11-26T08:05:00Z"}],
+            )
+        finally:
+            sh.close()
+
+    def test_window_starts_at_the_previous_files_write_time_despite_a_late_write(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            # A refusal happens at 08:00:10 but the file is written late; the
+            # shipper reads the old file again meanwhile.
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-26T08:00:40Z")
+            self.beat(sh)
+            [report] = self.reports()
+            self.assertEqual(report["window_start"], "2026-11-26T08:00:00Z")  # not after 08:00:10
+        finally:
+            sh.close()
+
+    def test_collector_restart_reports_current_values_since_its_start(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 50, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T09:00:00Z", 2, 0, "2026-11-26T09:01:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [2])
+        finally:
+            sh.close()
+
+    def test_undelivered_delta_is_retried_not_lost(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+            self.state.fail_next = 1
+            sh._last_heartbeat_sec = None
+            self.assertFalse(sh.flush_once())  # 503: not delivered
+            sh.consecutive_failures = 0
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [3])
+        finally:
+            sh.close()
+
+    def test_failed_delivery_then_collector_restart_keeps_both_runs(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 1, "2026-11-26T08:05:00Z")  # run A
+            self.state.fail_next = 1
+            sh._last_heartbeat_sec = None
+            self.assertFalse(sh.flush_once())
+            sh.consecutive_failures = 0
+            self.write("2026-11-26T09:00:00Z", 2, 0, "2026-11-26T09:01:00Z")  # run B
+            self.beat(sh)
+            self.assertEqual([(r["rejected"], r["deadline_cut"]) for r in self.reports()], [(5, 1)])
+            self.beat(sh)  # delivered once only
+            self.assertEqual(len(self.reports()), 1)
+        finally:
+            sh.close()
+
+    def test_undelivered_report_survives_a_shipper_restart(self) -> None:
+        sh = self.shipper()
+        self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+        self.beat(sh)
+        self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+        self.state.fail_next = 1
+        sh._last_heartbeat_sec = None
+        self.assertFalse(sh.flush_once())  # 503
+        sh.close()  # shipper restarts before delivery
+        sh2 = self.shipper()
+        try:
+            self.beat(sh2)
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 3, "deadline_cut": 0, "window_start": "2026-11-26T08:00:00Z", "window_end": "2026-11-26T08:05:00Z"}],
+            )
+            self.beat(sh2)  # not re-sent after delivery
+            self.assertEqual(len(self.reports()), 1)
+        finally:
+            sh2.close()
+        sh3 = self.shipper()  # a delivered report is gone after a restart too
+        try:
+            self.beat(sh3)
+            self.assertEqual(len(self.reports()), 1)
+        finally:
+            sh3.close()
+
+    def test_pending_and_snapshot_commit_together(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+
+            real_conn = sh.spool.conn
+
+            class FailOnSecondWrite:
+                """Delegates to SQLite but fails the SECOND state write of a transaction."""
+
+                def __init__(self) -> None:
+                    self.writes = 0
+
+                def __enter__(self):
+                    return real_conn.__enter__()
+
+                def __exit__(self, *exc):
+                    return real_conn.__exit__(*exc)
+
+                def execute(self, sql, params=()):
+                    if "shipper_state" in sql and not sql.lstrip().upper().startswith("SELECT"):
+                        self.writes += 1
+                        if self.writes == 2:
+                            raise sqlite3.OperationalError("disk I/O error")
+                    return real_conn.execute(sql, params)
+
+                def __getattr__(self, name):
+                    return getattr(real_conn, name)
+
+            failing = FailOnSecondWrite()
+            sh.spool.conn = failing  # type: ignore[assignment]
+            with self.assertRaises(sqlite3.OperationalError):
+                sh._collector_status()
+            sh.spool.conn = real_conn
+            self.assertEqual(failing.writes, 2, "the failure must happen after the first write")
+            # The first write was rolled back: neither memory nor the database moved.
+            self.assertIsNone(sh._pending_overload)
+            self.assertEqual(sh._collector_snapshot[1], 0)
+            self.assertIsNone(sh.spool.get_state("collector_pending"))
+            self.assertEqual(sh.spool.get_state("collector_snapshot")[1], 0)
+            # Retry counts the increase once.
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [3])
+        finally:
+            sh.close()
+
+    def test_counts_above_the_report_cap_are_kept_for_later(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 25_000_000, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual(sh._pending_overload["rejected"], 15_000_000)
+            self.beat(sh)
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [10_000_000, 10_000_000, 5_000_000])
+            self.assertIsNone(sh._pending_overload)
+        finally:
+            sh.close()
+
+    def test_quiet_period_does_not_widen_the_next_window(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-18T00:00:00Z")
+            self.beat(sh)
+            # Eight quiet days later the collector has refreshed updated_at.
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-26T08:01:00Z")
+            self.beat(sh)
+            [report] = self.reports()
+            self.assertEqual(report["window_start"], "2026-11-26T08:00:00Z")
+            self.assertFalse(sh._patch_status_disabled)
+        finally:
+            sh.close()
+
+    def test_old_undelivered_report_is_clamped_into_the_ingest_range(self) -> None:
+        sh = self.shipper()
+        try:
+            old = (self.FIXED_NOW - dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            sh._pending_overload = {"rejected": 4, "deadline_cut": 0, "window_start": old, "window_end": old}
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            [report] = self.reports()
+            self.assertEqual(report["window_start"], "2026-11-20T09:00:00Z")  # FIXED_NOW - 6 days
+            self.assertGreaterEqual(report["window_end"], report["window_start"])
+            self.assertIsNone(sh._pending_overload)
+            # The lost timing is surfaced, not silent, and exported.
+            self.assertGreaterEqual(sh.metrics.overload_window_clamped, 1)
+            self.assertGreaterEqual(sh.metrics_snapshot()["overload_window_clamped"], 1)
+        finally:
+            sh.close()
+
+    def test_rejected_overload_report_is_dropped_without_disabling_reporting(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+            self.state.reject_http_collector = True
+            self.beat(sh)  # 400 on the status block, events-only retry succeeds
+            self.assertIsNone(sh._pending_overload)
+            self.assertFalse(sh._patch_status_disabled)
+            self.assertEqual(sh.metrics_snapshot()["overload_reports_rejected"], 1)
+            # Later overload is still reported.
+            self.state.reject_http_collector = False
+            self.write("2026-11-26T00:00:00Z", 5, 0, "2026-11-26T08:10:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [2])
+        finally:
+            sh.close()
+
+    def test_malformed_or_missing_metrics_are_ignored(self) -> None:
+        sh = self.shipper()
+        try:
+            for bad in ("not json", "[]", json.dumps({"started_at": "x", "rejected_overload": -1, "deadline_exceeded": 0, "updated_at": "y"}), "x" * 5000):
+                self.metrics.write_text(bad)
+                self.beat(sh)
+            self.metrics.unlink()
+            self.beat(sh)
+            self.assertEqual(self.reports(), [])
+        finally:
+            sh.close()
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,18 @@ import type { NormalizedAttackEvent } from "./schema.ts";
 import { generateSyntheticBatch } from "./synthetic.ts";
 
 class InMemoryIngestRepo implements IngestRepository {
+  overloads: Array<{ sensorId: string; rejected: number; deadlineCut: number; windowStartIso: string; windowEndIso: string }> = [];
+  failOverload = false;
+  async recordSensorOverload(params: {
+    sensorId: string;
+    rejected: number;
+    deadlineCut: number;
+    windowStartIso: string;
+    windowEndIso: string;
+  }): Promise<void> {
+    if (this.failOverload) throw new Error("Simulated overload RPC failure");
+    this.overloads.push(params);
+  }
   registeredSensors = new Set<string>(["sensor-dev-01"]);
   receipts = new Map<string, { sensorId: string; receivedAtMs: number; expiresAtMs: number }>();
   events = new Map<string, NormalizedAttackEvent>();
@@ -687,7 +699,6 @@ describe("ingest sensor_status (patch freshness, #94)", () => {
       { patch_last_success_at: "2026-11-20T07:00:17+09:00" },
       { patch_last_success_at: 1764000000 },
       { patch_last_success_at: PATCHED_AT, kernel: "7.0.0" },
-      {},
       { patch_last_success_at: "2026-02-30T07:00:17Z" },
       { patch_last_success_at: "2026-11-25T24:00:00Z" },
       { patch_last_success_at: "2025-02-29T00:00:00Z" },
@@ -761,5 +772,106 @@ describe("ingest sensor_status (patch freshness, #94)", () => {
     const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
     assert.equal(res.status, 200);
     assert.equal(repo.events.size, 1);
+  });
+});
+
+describe("ingest sensor_status.http_collector (overload coverage, #95)", () => {
+  const block = {
+    rejected: 7,
+    deadline_cut: 3,
+    window_start: "2026-11-21T09:50:00Z",
+    window_end: "2026-11-21T09:59:00Z",
+  };
+
+  it("records overload after the batch commits and leaves patch status untouched", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: { http_collector: block } }),
+      requestId: "req-overload-001",
+    });
+    assert.equal((await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS)).status, 200);
+    assert.deepEqual(repo.overloads, [
+      {
+        sensorId: "sensor-dev-01",
+        rejected: 7,
+        deadlineCut: 3,
+        windowStartIso: "2026-11-21T09:50:00.000Z",
+        windowEndIso: "2026-11-21T09:59:00.000Z",
+      },
+    ]);
+    assert.equal(repo.patchStatus.size, 0);
+  });
+
+  it("accepts an empty sensor_status as a no-op", async () => {
+    const repo = new InMemoryIngestRepo();
+    const req = await makeSignedRequest({
+      body: JSON.stringify({ events: [], sensor_status: {} }),
+      requestId: "req-overload-empty",
+    });
+    assert.equal((await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS)).status, 200);
+    assert.equal(repo.overloads.length, 0);
+    assert.equal(repo.patchStatus.size, 0);
+  });
+
+  it("rejects malformed overload blocks without committing", async () => {
+    const bad: unknown[] = [
+      "x",
+      { ...block, extra: 1 },
+      { ...block, rejected: -1 },
+      { ...block, rejected: 1.5 },
+      { ...block, deadline_cut: 99_999_999 },
+      { ...block, window_start: "yesterday" },
+      { ...block, window_start: "2026-11-21T10:00:00Z", window_end: "2026-11-21T09:00:00Z" },
+      { ...block, window_end: "2026-11-21T11:00:00Z" },
+      { ...block, window_start: "2026-11-01T00:00:00Z" },
+    ];
+    for (const [i, hc] of bad.entries()) {
+      const repo = new InMemoryIngestRepo();
+      const req = await makeSignedRequest({
+        body: JSON.stringify({ events: [], sensor_status: { http_collector: hc } }),
+        requestId: `req-overload-bad-${i}`,
+      });
+      const res = await handleIngestRequest(req, makeConfig(), repo, BASE_NOW_MS);
+      assert.equal(res.status, 400, JSON.stringify(hc));
+      assert.equal(repo.receipts.size, 0);
+      assert.equal(repo.overloads.length, 0);
+    }
+  });
+
+  it("does not record overload for a replayed request", async () => {
+    const repo = new InMemoryIngestRepo();
+    const body = JSON.stringify({ events: [], sensor_status: { http_collector: block } });
+    await handleIngestRequest(await makeSignedRequest({ body, requestId: "req-overload-replay" }), makeConfig(), repo, BASE_NOW_MS);
+    repo.overloads = [];
+    const res = await handleIngestRequest(await makeSignedRequest({ body, requestId: "req-overload-replay" }), makeConfig(), repo, BASE_NOW_MS);
+    assert.equal(res.status, 409);
+    assert.equal(repo.overloads.length, 0);
+  });
+
+  it("does not acknowledge a coverage report that could not be stored; the retry records it", async () => {
+    const repo = new InMemoryIngestRepo();
+    const events = generateSyntheticBatch(BASE_NOW_MS, 2);
+    const body = JSON.stringify({ events, sensor_status: { http_collector: block } });
+    repo.failOverload = true;
+    const first = await handleIngestRequest(
+      await makeSignedRequest({ body, requestId: "req-overload-fail-1" }),
+      makeConfig(),
+      repo,
+      BASE_NOW_MS,
+    );
+    assert.equal(first.status, 503);
+    assert.equal(repo.events.size, 2); // events committed
+    repo.failOverload = false;
+    const retry = await handleIngestRequest(
+      await makeSignedRequest({ body, requestId: "req-overload-fail-2" }), // shipper uses a new id
+      makeConfig(),
+      repo,
+      BASE_NOW_MS,
+    );
+    assert.equal(retry.status, 200);
+    const out = (await retry.json()) as Record<string, number>;
+    assert.equal(out.inserted, 0);
+    assert.equal(out.duplicates, 2);
+    assert.equal(repo.overloads.length, 1);
   });
 });
