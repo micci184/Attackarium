@@ -83,6 +83,10 @@ export const PublicEventSchema = z.object({
 
 export type PublicEvent = z.infer<typeof PublicEventSchema>;
 
+/** Rule-defined evidence grade (not a probability). */
+export const MatchStrengthSchema = z.enum(["high", "medium", "low"]);
+export type MatchStrength = z.infer<typeof MatchStrengthSchema>;
+
 export const PublicDetectionSchema = z.object({
   id: z.uuid(),
   event_id: z.uuid(),
@@ -112,6 +116,12 @@ export const PublicEventCveMatchSchema = z.object({
   epss_percentile: z.coerce.number().nullable(),
   epss_date: z.string().nullable(),
   evaluated_at: z.string().nullable().optional().default(null),
+  // #84: when the probe was observed (time-series basis), the rule-defined
+  // evidence grade, and the evidence basis. Defaults keep older rows parsing.
+  observed_at: z.string().nullable().optional().default(null),
+  match_strength: MatchStrengthSchema.nullable().optional().default(null),
+  indicator: z.string().nullable().optional().default(null),
+  matched_location: z.string().nullable().optional().default(null),
 });
 
 export type PublicEventCveMatch = z.infer<typeof PublicEventCveMatchSchema>;
@@ -134,6 +144,7 @@ export const PublicVulnerabilitySchema = z.object({
   cvss_score: z.coerce.number().nullable().optional().default(null),
   cvss_vector: z.string().nullable().optional().default(null),
   kev_added_at: z.string().nullable().optional().default(null),
+  last_observed_at: z.string().nullable().optional().default(null),
 });
 
 export type PublicVulnerability = z.infer<typeof PublicVulnerabilitySchema>;
@@ -154,9 +165,16 @@ export interface PatternCveContext {
   cveId: string;
   ruleId: string;
   ruleVersion: string;
+  /** Strongest rule-defined evidence grade among the matches (null = ungraded). */
+  matchStrength: MatchStrength | null;
+  /** Evidence basis of that strongest match. */
+  indicator: string | null;
+  matchedLocation: string | null;
+  /** Internal rule score (0-1). Not a probability; kept for ordering and MCP. */
   maxConfidence: number;
   matchedEventCount: number;
-  lastMatchedAt: string;
+  /** Latest OBSERVATION time of a matched event (not the matcher write time). */
+  lastObservedAt: string;
   kevPresent: boolean;
   kevAddedAt: string | null;
   kevUpdatedAt: string | null;
@@ -303,6 +321,8 @@ export interface PaginatedEventsResult {
   protocolFilter: Protocol | "all";
   periodFilter: EventPeriodFilter;
   categoryFilter: EventCategoryFilter;
+  /** Candidate CVE filter (validated CVE id) or null. */
+  cveFilter: string | null;
 }
 
 export interface EventDetailData {

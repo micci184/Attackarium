@@ -41,6 +41,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/rollup_test.sql
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/metadata_sanitization_test.sql
           psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/sensor_patch_status_test.sql
+          psql -h 127.0.0.1 -U postgres -d attackarium -v ON_ERROR_STOP=1 -f supabase/tests/cve_observation_context_test.sql
 
   ingest-tests:
     name: Ingest Edge Function Security & Idempotency Tests
