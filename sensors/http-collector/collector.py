@@ -8,6 +8,9 @@ Security invariants:
 - Hashes a bounded body sample and discards the bytes. The JSONL does not contain the payload.
 - Prunes the local JSONL so records older than 24 hours are deleted.
 - Emits structured JSONL records for the local shipper.
+- Optional TLS (#93): the handshake runs in the worker thread after a
+  connection slot is taken, under the same absolute deadline, never in the
+  accept loop. SNI is reduced to a kind label; its value is never stored.
 """
 
 from __future__ import annotations
@@ -15,11 +18,13 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import http.server
+import ipaddress
 import json
 import os
 import re
 import socket
 import socketserver
+import ssl
 import sys
 import tempfile
 import threading
@@ -157,6 +162,10 @@ class CollectorConfig:
     # A tick of 0 disables the worker (tests).
     metrics_flush_seconds: float = 2.0
     metrics_refresh_seconds: float = 60.0
+    # TLS listener (#93). Both set: serve HTTPS with this self-signed,
+    # host-generated certificate. Both None: plain HTTP.
+    tls_cert_path: Path | None = None
+    tls_key_path: Path | None = None
 
 
 def strip_control(value: str) -> str:
@@ -278,6 +287,46 @@ def classify_http_event(method: str, path: str) -> str:
     return "http_probe"
 
 
+def classify_sni(server_name: Any) -> str:
+    """Reduce an attacker-controlled SNI value to a kind label (never the value).
+
+    Same labels as classify_host_header (#89): scanners that know the sensor's
+    address may send it as SNI, and hostnames are attacker-chosen.
+    """
+    if not isinstance(server_name, str) or not server_name.strip(HOST_TRIM_CHARS):
+        return "absent"
+    try:
+        ipaddress.ip_address(server_name.strip(HOST_TRIM_CHARS).strip("[]"))
+    except ValueError:
+        return "hostname"
+    return "ip_literal"
+
+
+def build_tls_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
+    """Server context per #93 R6: TLS 1.2+, no renegotiation, compression,
+    tickets, or client certificates; ALPN offers only http/1.1."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.options |= ssl.OP_NO_COMPRESSION | ssl.OP_NO_TICKET
+    # OP_NO_TICKET covers TLS 1.2 and earlier; TLS 1.3 needs num_tickets = 0.
+    ctx.num_tickets = 0
+    ctx.options |= getattr(ssl, "OP_NO_RENEGOTIATION", 0)
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(["http/1.1"])
+    ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+
+    def _sni_callback(sock: ssl.SSLObject | ssl.SSLSocket, server_name: Any, _ctx: Any) -> None:
+        # Never fail the handshake over SNI; just remember its kind.
+        try:
+            sock.attackarium_sni_kind = classify_sni(server_name)  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001 - attacker-controlled; must not abort
+            pass
+        return None
+
+    ctx.sni_callback = _sni_callback
+    return ctx
+
+
 def _utc_now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -301,6 +350,12 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         )
         self.rejected_overload = 0
         self.deadline_exceeded = 0
+        self.tls_handshake_failed = 0
+        self.tls_context: ssl.SSLContext | None = None
+        if (config.tls_cert_path is None) != (config.tls_key_path is None):
+            raise ValueError("tls_cert_path and tls_key_path must be set together")
+        if config.tls_cert_path is not None and config.tls_key_path is not None:
+            self.tls_context = build_tls_context(config.tls_cert_path, config.tls_key_path)
         self._metrics_lock = threading.Lock()
         self._metrics_dirty = True
         self._started_at = _utc_now_iso()
@@ -331,7 +386,8 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         Unexpected errors are logged by type only (no attacker data).
         """
         exc = sys.exc_info()[1]
-        if isinstance(exc, (ConnectionError, TimeoutError, socket.timeout)):
+        # ssl.SSLError covers TLS alerts, bad records, and EOFs mid-session.
+        if isinstance(exc, (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError)):
             return
         # Everything else (including filesystem OSErrors such as an unwritable
         # events file) stays visible, by type only.
@@ -353,6 +409,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 "started_at": self._started_at,
                 "rejected_overload": self.rejected_overload,
                 "deadline_exceeded": self.deadline_exceeded,
+                "tls_handshake_failed": self.tls_handshake_failed,
                 "updated_at": _utc_now_iso(),
             }
             self._metrics_dirty = False
@@ -384,9 +441,32 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
             if self._metrics_dirty or stale:
                 self.write_metrics()
 
+    def get_request(self) -> tuple[Any, Any]:
+        """Accept without any TLS I/O (#93 R1).
+
+        The listening socket stays plain; the accepted socket is wrapped with
+        do_handshake_on_connect=False, so the accept loop never waits on a
+        client. The handshake runs in the worker (CaptureRequestHandler.handle).
+        """
+        sock, addr = self.socket.accept()
+        if self.tls_context is not None:
+            try:
+                sock = self.tls_context.wrap_socket(
+                    sock, server_side=True, do_handshake_on_connect=False
+                )
+            except (OSError, ValueError):
+                sock.close()
+                raise OSError("tls wrap failed") from None
+        return sock, addr
+
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self.connection_semaphore.acquire(blocking=False):
             self.count("rejected_overload")
+            if self.tls_context is not None:
+                # #93 R2: never write to a socket that has not finished its
+                # handshake; any TLS write here could block the accept loop.
+                self.shutdown_request(request)
+                return
             try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -397,7 +477,14 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 pass
             self.shutdown_request(request)
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except RuntimeError:
+            # The worker thread could not start (for example the unit's
+            # TasksMax). It will never release the slot, so do it here.
+            self.connection_semaphore.release()
+            self.count("rejected_overload")
+            self.shutdown_request(request)
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
@@ -477,9 +564,35 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
     def _deadline_hit(self) -> None:
         self.server.count("deadline_exceeded")
         try:
-            self.request.shutdown(socket.SHUT_RDWR)
+            # Plain socket shutdown, also for TLS sockets: SSLSocket.shutdown
+            # would drop its SSL object under a worker that is mid-read.
+            socket.socket.shutdown(self.request, socket.SHUT_RDWR)
         except OSError:
             pass
+
+    def handle(self) -> None:
+        if isinstance(self.request, ssl.SSLSocket):
+            # #93 R1: handshake in the worker, after the slot is taken, bounded
+            # by the per-recv timeout and the absolute deadline set in setup().
+            try:
+                self.request.do_handshake()
+            except (OSError, ValueError):
+                # Non-TLS bytes, aborted or truncated ClientHellos, deadline cuts.
+                # Counted only; no bytes are logged.
+                self.server.count("tls_handshake_failed")
+                self.close_connection = True
+                return
+        super().handle()
+
+    def _tls_metadata(self) -> dict[str, Any] | None:
+        sock = self.request
+        if not isinstance(sock, ssl.SSLSocket):
+            return None
+        version = sock.version()
+        return {
+            "sni_kind": getattr(sock, "attackarium_sni_kind", "absent"),
+            "version": version if version in ("TLSv1.2", "TLSv1.3") else "other",
+        }
 
     def finish(self) -> None:
         timer = getattr(self, "_deadline_timer", None)
@@ -572,6 +685,9 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
             "body_truncated": body_truncated,
             "body_sha256": body_sha256,
         }
+        tls_meta = self._tls_metadata()
+        if tls_meta is not None:
+            metadata["tls"] = tls_meta
         if detections:
             metadata["signature_detections"] = [match.to_dict() for match in detections]
 
@@ -638,6 +754,12 @@ def main() -> None:
             )
         )
         if os.environ.get("HTTP_COLLECTOR_METRICS_PATH", "x") != ""
+        else None,
+        tls_cert_path=Path(os.environ["HTTP_COLLECTOR_TLS_CERT"])
+        if os.environ.get("HTTP_COLLECTOR_TLS_CERT")
+        else None,
+        tls_key_path=Path(os.environ["HTTP_COLLECTOR_TLS_KEY"])
+        if os.environ.get("HTTP_COLLECTOR_TLS_KEY")
         else None,
     )
     server = create_server(cfg)

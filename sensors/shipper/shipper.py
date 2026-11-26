@@ -89,6 +89,9 @@ class ShipperConfig:
     # Cumulative overload counters written by the HTTP collector (#95). The
     # shipper reports the increase since its last delivered report.
     collector_metrics_path: Path | None = None
+    # Further collectors (the HTTPS collector on 443, #93), each with its own
+    # metrics file. Their increases are added to the same overload report.
+    collector_metrics_extra_paths: tuple[Path, ...] = ()
 
 
 @dataclass
@@ -480,18 +483,20 @@ class EventShipper:
         # the file's updated_at). The pending overload is what ingest has not
         # acknowledged yet. Both persist in the spool database, so a shipper
         # restart neither loses nor re-baselines an undelivered report.
-        self._collector_snapshot: tuple[str, int, int, str] | None = None
+        # One snapshot per collector metrics file, keyed by its state key.
+        self._collector_snapshots: dict[str, tuple[str, int, int, str]] = {}
         self._pending_overload: dict[str, Any] | None = None
-        saved_snapshot = self.spool.get_state("collector_snapshot")
-        if (
-            isinstance(saved_snapshot, list)
-            and len(saved_snapshot) == 4
-            and isinstance(saved_snapshot[0], str)
-            and isinstance(saved_snapshot[1], int)
-            and isinstance(saved_snapshot[2], int)
-            and isinstance(saved_snapshot[3], str)
-        ):
-            self._collector_snapshot = tuple(saved_snapshot)  # type: ignore[assignment]
+        for key, _path in self._collector_sources():
+            saved_snapshot = self.spool.get_state(key)
+            if (
+                isinstance(saved_snapshot, list)
+                and len(saved_snapshot) == 4
+                and isinstance(saved_snapshot[0], str)
+                and isinstance(saved_snapshot[1], int)
+                and isinstance(saved_snapshot[2], int)
+                and isinstance(saved_snapshot[3], str)
+            ):
+                self._collector_snapshots[key] = tuple(saved_snapshot)  # type: ignore[assignment]
         saved_pending = self.spool.get_state("collector_pending")
         if isinstance(saved_pending, dict) and {
             "rejected", "deadline_cut", "window_start", "window_end"
@@ -566,9 +571,42 @@ class EventShipper:
             return None
         return finished
 
-    def _read_collector_metrics(self) -> tuple[str, int, int, str] | None:
-        """Strictly parse the collector's cumulative counters, or None."""
-        path = self.config.collector_metrics_path
+    def _collector_sources(self) -> list[tuple[str, Path]]:
+        """(state key, metrics path) per collector.
+
+        The primary (port 80) collector keeps the original state key, so an
+        upgrade neither loses nor re-baselines its snapshot.
+        """
+        # Lexical normalization only: no filesystem access, so a broken or
+        # looping symlink can never raise here; the reader skips such a file.
+        def normalized(path: Path) -> str:
+            return os.path.normpath(os.path.abspath(path))
+
+        sources: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        if self.config.collector_metrics_path is not None:
+            sources.append(("collector_snapshot", self.config.collector_metrics_path))
+            seen.add(normalized(self.config.collector_metrics_path))
+        for extra in self.config.collector_metrics_extra_paths:
+            resolved = normalized(extra)
+            if resolved in seen:
+                continue  # a file listed twice must not count each increase twice
+            seen.add(resolved)
+            # Full path, so equal file names in different directories never share a baseline.
+            sources.append((f"collector_snapshot:{resolved}", extra))
+        return sources
+
+    @property
+    def _collector_snapshot(self) -> tuple[str, int, int, str] | None:
+        """The primary collector's snapshot."""
+        return self._collector_snapshots.get("collector_snapshot")
+
+    def _read_collector_metrics(
+        self, path: Path | None = None
+    ) -> tuple[str, int, int, str] | None:
+        """Strictly parse a collector's cumulative counters, or None."""
+        if path is None:
+            path = self.config.collector_metrics_path
         if path is None:
             return None
         try:
@@ -606,14 +644,16 @@ class EventShipper:
         restart (new started_at) resets the counters, so the new run's values
         are the increase.
         """
-        current = self._read_collector_metrics()
-        if current is not None:
+        new_pending = dict(self._pending_overload) if self._pending_overload is not None else None
+        new_snapshots: dict[str, tuple[str, int, int, str]] = {}
+        for key, path in self._collector_sources():
+            current = self._read_collector_metrics(path)
+            if current is None:
+                continue
             started, rejected, cut, observed_at = current
-            new_pending = (
-                dict(self._pending_overload) if self._pending_overload is not None else None
-            )
-            if self._collector_snapshot is not None:
-                snap_started, snap_rejected, snap_cut, snap_at = self._collector_snapshot
+            snapshot = self._collector_snapshots.get(key)
+            if snapshot is not None:
+                snap_started, snap_rejected, snap_cut, snap_at = snapshot
                 if started != snap_started:
                     delta_rejected, delta_cut = rejected, cut
                     try:
@@ -638,14 +678,17 @@ class EventShipper:
                         new_pending["deadline_cut"] += delta_cut
                         new_pending["window_start"] = min(new_pending["window_start"], window_start)
                         new_pending["window_end"] = max(new_pending["window_end"], window_end)
-            if self._collector_snapshot != current or new_pending != self._pending_overload:
-                # Pending report and snapshot change together or not at all,
-                # so a crash in between can never double-count an increase.
-                self.spool.set_states(
-                    {"collector_pending": new_pending, "collector_snapshot": list(current)}
-                )
-                self._pending_overload = new_pending
-                self._collector_snapshot = current
+            if snapshot != current:
+                new_snapshots[key] = current
+        if new_snapshots or new_pending != self._pending_overload:
+            # Pending report and snapshots change together or not at all,
+            # so a crash in between can never double-count an increase.
+            self.spool.set_states(
+                {"collector_pending": new_pending}
+                | {key: list(value) for key, value in new_snapshots.items()}
+            )
+            self._pending_overload = new_pending
+            self._collector_snapshots.update(new_snapshots)
         if self._pending_overload is None:
             return None
         report = dict(self._pending_overload)
@@ -1012,7 +1055,8 @@ def main() -> None:
         Path(item)
         for item in os.environ.get(
             "SHIPPER_JSONL_PATHS",
-            "/var/log/attackarium/opencanary.jsonl,/var/log/attackarium/http-collector.jsonl",
+            "/var/log/attackarium/opencanary.jsonl,/var/log/attackarium/http-collector.jsonl,"
+            "/var/log/attackarium/https-collector.jsonl",
         ).split(",")
         if item.strip()
     ]
@@ -1039,6 +1083,15 @@ def main() -> None:
         )
         if os.environ.get("SHIPPER_COLLECTOR_METRICS_PATH", "x") != ""
         else None,
+        # A missing file (HTTPS collector not enabled) is simply skipped.
+        collector_metrics_extra_paths=tuple(
+            Path(item.strip())
+            for item in os.environ.get(
+                "SHIPPER_COLLECTOR_METRICS_EXTRA_PATHS",
+                "/var/log/attackarium/https-collector-metrics.json",
+            ).split(",")
+            if item.strip()
+        ),
     )
     metrics_path = Path(
         os.environ.get("SHIPPER_METRICS_PATH", "/var/lib/attackarium/shipper-metrics.json")

@@ -843,6 +843,128 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh.close()
 
+    def _write_to(self, path: Path, started: str, rejected: int, cut: int, updated: str) -> None:
+        path.write_text(
+            json.dumps(
+                {"started_at": started, "rejected_overload": rejected, "deadline_exceeded": cut,
+                 "tls_handshake_failed": 0, "updated_at": updated}
+            )
+        )
+
+    def _shipper_with_tls(self, tls_metrics: Path) -> EventShipper:
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_path=self.metrics,
+                collector_metrics_extra_paths=(tls_metrics,),
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        return sh
+
+    def test_https_collector_overload_is_added_to_the_same_report(self) -> None:
+        """#93: the 443 collector has its own metrics file and snapshot."""
+        tls = Path(self.tmpdir.name) / "https-collector-metrics.json"
+        sh = self._shipper_with_tls(tls)
+        try:
+            self.write("2026-11-26T00:00:00Z", 5, 0, "2026-11-26T08:00:00Z")
+            self._write_to(tls, "2026-11-26T01:00:00Z", 100, 7, "2026-11-26T08:01:00Z")
+            self.beat(sh)  # both baselines only
+            self.assertEqual(self.reports(), [])
+            self.write("2026-11-26T00:00:00Z", 6, 0, "2026-11-26T08:05:00Z")
+            self._write_to(tls, "2026-11-26T01:00:00Z", 103, 9, "2026-11-26T08:06:00Z")
+            self.beat(sh)
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 4, "deadline_cut": 2, "window_start": "2026-11-26T08:00:00Z",
+                  "window_end": "2026-11-26T08:06:00Z"}],
+            )
+        finally:
+            sh.close()
+        # A shipper restart keeps both snapshots: nothing is re-reported.
+        sh = self._shipper_with_tls(tls)
+        try:
+            self.beat(sh)
+            self.assertEqual(len(self.reports()), 1)
+            self.assertEqual(sh._collector_snapshot[1], 6)
+        finally:
+            sh.close()
+
+    def test_extra_sources_with_the_same_file_name_keep_separate_baselines(self) -> None:
+        a = Path(self.tmpdir.name) / "a" / "metrics.json"
+        b = Path(self.tmpdir.name) / "b" / "metrics.json"
+        a.parent.mkdir()
+        b.parent.mkdir()
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_extra_paths=(a, b),
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        try:
+            self._write_to(a, "2026-11-26T01:00:00Z", 10, 0, "2026-11-26T08:00:00Z")
+            self._write_to(b, "2026-11-26T02:00:00Z", 20, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.beat(sh)  # unchanged files: no restart delta from mixed baselines
+            self.assertEqual(self.reports(), [])
+        finally:
+            sh.close()
+
+    def test_a_metrics_file_listed_twice_is_counted_once(self) -> None:
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_path=self.metrics,
+                collector_metrics_extra_paths=(self.metrics, Path(str(self.metrics))),
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        try:
+            self.write("2026-11-26T00:00:00Z", 10, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 11, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [1])
+        finally:
+            sh.close()
+
+    def test_a_looping_symlink_metrics_path_is_skipped_not_fatal(self) -> None:
+        loop = Path(self.tmpdir.name) / "loop.json"
+        loop.symlink_to(loop)
+        sh = self._shipper_with_tls(loop)
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 2, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [2])
+        finally:
+            sh.close()
+
+    def test_missing_https_metrics_file_is_skipped(self) -> None:
+        sh = self._shipper_with_tls(Path(self.tmpdir.name) / "absent.json")
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [1])
+        finally:
+            sh.close()
+
     def test_collector_restart_reports_current_values_since_its_start(self) -> None:
         sh = self.shipper()
         try:

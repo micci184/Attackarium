@@ -371,6 +371,54 @@ EICE, with explicit owner approval:
 3. Verify: `verify_egress.sh` passes, the decoy ports still answer, and
    `journalctl -u http-collector` shows no tracebacks.
 
+## HTTPS collector on 443 (#93, ADR-028)
+
+A second collector process serves 443 with a per-sensor self-signed
+certificate. It writes `/var/log/attackarium/https-collector.jsonl` and
+`https-collector-metrics.json`; the shipper reads both by default (missing
+files are skipped), so the shipper environment needs no change. The
+`metrics.tls_handshake_failed` counter in that file counts scanners that send
+non-TLS bytes or abort the handshake; it is a counter only (no bytes logged)
+and does not count as degraded coverage.
+
+**Timing:** enabling 443 changes coverage. During the #32 baseline, either
+wait until it ends or record the enable date in the dashboard methodology so
+period comparisons account for it. **Every step below needs explicit operator
+approval**, and the sensor must be current on OS updates (`/admin` shows
+"Current").
+
+Enabling it on the existing host (user data is not re-rendered), over EICE:
+1. Deploy `collector.py`, `signatures.py`, and `shipper.py` with the code
+   deployment procedure above, and copy
+   `sensors/http-collector/generate_tls_cert.sh` and
+   `sensors/http-collector/https-collector.service` to `/tmp/`. Restart
+   `http-collector` and `attackarium-shipper` and check they are active.
+2. Generate the certificate **on the host** (the key never leaves it):
+   `sudo bash /tmp/generate_tls_cert.sh` (defaults: `/etc/attackarium/tls`,
+   owner `attackarium`, key `0600`). It prints only the subject, expiry, and
+   SHA-256 fingerprint. Never copy the key off the host or into Git.
+3. Install the unit:
+   `sudo install -o root -g root -m 0644 /tmp/https-collector.service /etc/systemd/system/`,
+   `sudo systemctl daemon-reload`, `sudo systemctl enable --now https-collector`,
+   then `systemctl is-active https-collector` and `ss -ltn` shows `:443`.
+4. Host `nftables`: add `443` to the port set of **all three** decoy rules in
+   the input chain (`decoy_flood`, `decoy_conns`, and the `accept` rule). Check with
+   `nft -c -f /etc/nftables.conf`, then apply with `nft -f /etc/nftables.conf`,
+   keeping the EICE session open.
+5. Security Group: set `enable_https_decoy = true` in `terraform.tfvars`, review
+   `terraform plan` (it must only add the TCP/443 ingress rule and must not
+   replace the instance), then apply.
+6. Verify: `verify_egress.sh` passes; `journalctl -u https-collector` shows no
+   tracebacks; within a day `https` events appear in Supabase
+   (`select count(*) from attack_events where protocol = 'https'`); the
+   dashboard and MCP show the `https` protocol.
+
+Rollback: `sudo systemctl disable --now https-collector`, remove `443` from the
+`nftables` rules (validate, apply), and set `enable_https_decoy = false`
+(Terraform apply). Leave the certificate in place or delete
+`/etc/attackarium/tls`. Rotation: `sudo bash generate_tls_cert.sh --force` and
+`sudo systemctl restart https-collector`.
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):

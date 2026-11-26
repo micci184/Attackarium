@@ -41,7 +41,7 @@ public REST APIs are explicitly out of scope.
 ## 3. Protocol and port assignment
 
 - OpenCanary: **22/SSH, 23/Telnet, 21/FTP, 3306/MySQL, 6379/Redis**.
-- HTTP collector: **80/HTTP, 443/HTTPS** after TLS/DNS is configured.
+- HTTP collector: **80/HTTP**. **443/HTTPS** is a second collector process (`https-collector.service`) with a per-sensor self-signed certificate, off until the operator enables it (ADR-028, #93). No DNS or ACME is involved.
 - **Disable OpenCanary's HTTP and HTTPS decoys** when the dedicated collector owns 80/443.
 - Actual administrator SSH: separate non-decoy port, key-only, reachable only through an EC2 Instance Connect Endpoint (IAM-authenticated, CloudTrail-logged; no public admin port, no instance IAM role; ADR-025), and isolated from decoy ports.
 - Keep sensor application code (`sensors/http-collector`, `sensors/shipper`, `sensors/opencanary`) free of AWS-specific SDK lock-in so it remains portable.

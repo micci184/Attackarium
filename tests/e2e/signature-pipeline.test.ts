@@ -51,6 +51,8 @@ const EXPECTED: Record<string, { rules: string[]; cves: string[] }> = {
   dotenv_recon: { rules: ["http-sensitive-file-probe"], cves: [] },
   mcp_discovery: { rules: ["http-mcp-endpoint-probe"], cves: [] },
   benign: { rules: [], cves: [] },
+  // Same rule catalog over the TLS collector (#93), reported as https/443.
+  sap_metadatauploader_https: { rules: ["http-sap-netweaver-cve-2025-31324"], cves: ["CVE-2025-31324"] },
 };
 
 // Expected stored attack_category per probe (ingest derives http_path_probe when
@@ -65,6 +67,7 @@ const EXPECTED_CATEGORY: Record<string, string> = {
   dotenv_recon: "http_path_probe",
   mcp_discovery: "http_path_probe",
   benign: "http_path_probe",
+  sap_metadatauploader_https: "suspected_cve_probe",
 };
 
 class InMemoryIngestRepo implements IngestRepository {
@@ -301,6 +304,18 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
     }
   });
 
+  it("records the TLS collector's probe as https/443 with only TLS kind labels", () => {
+    const event = ingestRepo.events.get(sensorSummary.probe_event_ids.sap_metadatauploader_https ?? "");
+    assert.ok(event, "no stored HTTPS event");
+    assert.equal(event.protocol, "https");
+    assert.equal(event.dst_port, 443);
+    // Connected by IP, so no SNI was sent; only the kind label is kept.
+    assert.deepEqual(event.metadata.tls, { sni_kind: "absent", version: "TLSv1.3" });
+    for (const other of ingestRepo.events.values()) {
+      if (other !== event) assert.equal(other.protocol, "http");
+    }
+  });
+
   it("never stores raw IPs, callback hosts, or raw payloads", () => {
     // The Host header (the sensor's own address for IP-direct scans) must be
     // reduced to host_kind, so the loopback address appears nowhere.
@@ -340,7 +355,9 @@ describe("E2E: collector -> shipper -> ingest -> candidate CVE matching", () => 
     assert.equal(first.eventsRead, detectedEvents);
     assert.equal(first.skipped, 0, "collector output must match the versioned rule catalog");
     assert.equal(first.detections, expectedRules.length);
-    assert.equal(first.matches, expectedCves.length);
+    // One match row per (event, CVE); the HTTPS probe repeats a CVE on purpose.
+    const expectedMatchRows = Object.values(EXPECTED).reduce((sum, entry) => sum + entry.cves.length, 0);
+    assert.equal(first.matches, expectedMatchRows);
     assert.equal(stub.detections.size, expectedRules.length);
     assert.deepEqual([...stub.vulnerabilities].sort(), expectedCves);
     assert.deepEqual(

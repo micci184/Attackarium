@@ -32,7 +32,7 @@ and publishes sanitized observations and trends over time:
 3. `docs/IMPLEMENTATION_PLAN.md` — Phase 0 gate, Phase 1 / Phase 2 MVP scope, 30-day evaluation, and non-goals.
 4. `docs/SECURITY.md` — deployment gates and hostile-input threat model.
 5. `docs/DATA_MODEL.md` — tables, private data, RLS, retention, and indexes.
-6. `docs/DECISIONS.md` — architecture decision log (`ADR-001`–`ADR-024`). Provisioning still needs explicit approval.
+6. `docs/DECISIONS.md` — architecture decision log (`ADR-001`–`ADR-028`). Provisioning still needs explicit approval.
 
 **Repository status:** Phase 1 collection is live on one operator-managed EC2
 sensor in `us-east-1` (N. Virginia), with Supabase storage and a public Vercel

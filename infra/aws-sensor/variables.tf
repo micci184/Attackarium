@@ -76,7 +76,7 @@ variable "ingest_egress_cidrs" {
 }
 
 variable "enable_https_decoy" {
-  description = "Expose TCP/443 on the HTTP collector once TLS/DNS is configured."
+  description = "Expose TCP/443 for the HTTPS collector (ADR-028). Opens the Security Group and the rendered host nftables rule only; an existing host needs the runbook steps, and enabling it requires explicit operator approval."
   type        = bool
   default     = false
 }

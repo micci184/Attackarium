@@ -19,9 +19,12 @@ import argparse
 import http.client
 import json
 import os
+import ssl
+import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "sensors" / "http-collector"))
@@ -73,6 +76,11 @@ PROBES: list[tuple[str, str, str, dict[str, str], bytes | None]] = [
     ("benign", "GET", "/index.html", {"User-Agent": "Mozilla/5.0"}, None),
 ]
 
+# Sent to the TLS collector (#93): same rule catalog, reported as https/443.
+HTTPS_PROBES: list[tuple[str, str, str, dict[str, str], bytes | None]] = [
+    ("sap_metadatauploader_https", "GET", "/developmentserver/metadatauploader", {}, None),
+]
+
 
 def send_probes(port: int) -> None:
     for _label, method, path, headers, body in PROBES:
@@ -82,6 +90,30 @@ def send_probes(port: int) -> None:
             conn.getresponse().read()
         finally:
             conn.close()
+
+
+def send_https_probes(port: int, cafile: Path) -> None:
+    ctx = ssl.create_default_context(cafile=str(cafile))
+    ctx.check_hostname = False  # connect by IP like a scanner; the chain is still verified
+    for _label, method, path, headers, body in HTTPS_PROBES:
+        conn = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=ctx)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            conn.getresponse().read()
+        finally:
+            conn.close()
+
+
+def run_collector(config: CollectorConfig, send: Any) -> None:
+    server = create_server(config)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        send(server.server_address[1])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def main() -> int:
@@ -99,7 +131,15 @@ def main() -> int:
     workdir = Path(args.workdir)
     jsonl_path = workdir / "http-collector.jsonl"
 
-    server = create_server(
+    https_jsonl_path = workdir / "https-collector.jsonl"
+    tls_dir = workdir / "tls"
+    subprocess.run(
+        ["bash", str(REPO_ROOT / "sensors" / "http-collector" / "generate_tls_cert.sh"), "--dir", str(tls_dir)],
+        check=True,
+        capture_output=True,
+    )
+
+    run_collector(
         CollectorConfig(
             host="127.0.0.1",
             port=0,
@@ -107,21 +147,30 @@ def main() -> int:
             reported_dst_port=80,
             output_jsonl=jsonl_path,
             max_body_bytes=256,
-        )
+        ),
+        send_probes,
     )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        send_probes(server.server_address[1])
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    run_collector(
+        CollectorConfig(
+            host="127.0.0.1",
+            port=0,
+            protocol_label="https",
+            reported_dst_port=443,
+            output_jsonl=https_jsonl_path,
+            max_body_bytes=256,
+            tls_cert_path=tls_dir / "cert.pem",
+            tls_key_path=tls_dir / "key.pem",
+        ),
+        lambda port: send_https_probes(port, tls_dir / "cert.pem"),
+    )
 
-    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
-    # Probes are sent sequentially, so JSONL order matches PROBES order.
+    http_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    https_lines = https_jsonl_path.read_text(encoding="utf-8").splitlines()
+    lines = http_lines + https_lines
+    all_probes = PROBES + HTTPS_PROBES
+    # Probes are sent sequentially, so JSONL order matches probe order.
     probe_event_ids = {
-        label: json.loads(line)["id"] for (label, *_), line in zip(PROBES, lines)
+        label: json.loads(line)["id"] for (label, *_), line in zip(all_probes, lines)
     }
 
     shipper = EventShipper(
@@ -152,7 +201,7 @@ def main() -> int:
                 "spooled": spooled,
                 "remaining": remaining,
                 "last_error": last_error,
-                "probe_labels": [label for label, *_ in PROBES],
+                "probe_labels": [label for label, *_ in all_probes],
                 "probe_event_ids": probe_event_ids,
             }
         )
