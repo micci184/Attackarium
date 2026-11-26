@@ -2,7 +2,8 @@ import Link from "next/link";
 import { ProtocolBadge } from "@/components/protocol-badge";
 import { Panel, PanelHeader } from "@/components/ui";
 import {
-  formatConfidence,
+  formatEvidenceBasis,
+  formatMatchStrength,
   formatCount,
   formatCvss,
   formatEpss,
@@ -72,6 +73,7 @@ export function PatternLists({
                 </h3>
                 <Link
                   href="/events?category=suspected_cve_probe"
+                  title="All events with a candidate CVE; select a CVE below to see only its events"
                   className="rounded text-[11px] font-medium text-[#632ca6] transition-colors hover:text-[#4e2185] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                 >
                   Inspect Matched Events →
@@ -103,8 +105,16 @@ export function PatternLists({
                         </span>
                       </div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] tabular-nums text-slate-600">
-                        <span translate="no" className="text-amber-800">
-                          Conf {formatConfidence(item.maxConfidence)}
+                        <span
+                          translate="no"
+                          className="text-amber-800"
+                          title={`Rule-defined evidence grade, not a probability${
+                            formatEvidenceBasis(item.indicator, item.matchedLocation)
+                              ? `. Basis: ${formatEvidenceBasis(item.indicator, item.matchedLocation)}`
+                              : ""
+                          }`}
+                        >
+                          {formatMatchStrength(item.matchStrength)} match
                         </span>
                         <span
                           translate="no"
@@ -127,8 +137,13 @@ export function PatternLists({
                         ) : null}
                       </div>
                     </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-700">
+                      <span className="font-medium text-slate-500">Rule rationale: </span>
+                      {safeDisplayText(item.reason)}
+                    </p>
                     {item.description ? (
-                      <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-slate-600">
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-600">
+                        <span className="font-medium text-slate-500">NVD summary: </span>
                         {safeDisplayText(item.description)}
                       </p>
                     ) : null}

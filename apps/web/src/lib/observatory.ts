@@ -38,6 +38,7 @@ import {
   utcDateString,
   utcHourBucketStart,
 } from "./dashboard-metrics.ts";
+import { matchStrengthRank, parseCveId } from "./format.ts";
 import {
   AttackCategorySchema,
   type EnrichedEventCveMatch,
@@ -143,29 +144,35 @@ export function buildPatternCveContext(
     {
       eventIds: Set<string>;
       best: PublicEventCveMatch;
-      lastMatchedAt: string;
+      lastObservedAt: string;
     }
   >();
 
   for (const match of matches) {
     if (!match.rule_id || !match.rule_version) continue;
+    // Time series follow the observation, never the matcher's write time.
+    const observedAt = match.observed_at ?? match.created_at;
     const existing = grouped.get(match.cve_id);
     if (!existing) {
       grouped.set(match.cve_id, {
         eventIds: new Set([match.event_id]),
         best: match,
-        lastMatchedAt: match.created_at,
+        lastObservedAt: observedAt,
       });
       continue;
     }
     existing.eventIds.add(match.event_id);
-    if (match.created_at > existing.lastMatchedAt) {
-      existing.lastMatchedAt = match.created_at;
+    if (observedAt > existing.lastObservedAt) {
+      existing.lastObservedAt = observedAt;
     }
+    const strengthDelta =
+      matchStrengthRank(match.match_strength) - matchStrengthRank(existing.best.match_strength);
     if (
-      match.confidence > existing.best.confidence ||
-      (match.confidence === existing.best.confidence &&
-        match.created_at > existing.best.created_at)
+      strengthDelta > 0 ||
+      (strengthDelta === 0 && match.confidence > existing.best.confidence) ||
+      (strengthDelta === 0 &&
+        match.confidence === existing.best.confidence &&
+        (match.observed_at ?? match.created_at) > (existing.best.observed_at ?? existing.best.created_at))
     ) {
       existing.best = match;
     }
@@ -178,9 +185,12 @@ export function buildPatternCveContext(
         cveId,
         ruleId: entry.best.rule_id,
         ruleVersion: entry.best.rule_version,
+        matchStrength: entry.best.match_strength ?? null,
+        indicator: entry.best.indicator ?? null,
+        matchedLocation: entry.best.matched_location ?? null,
         maxConfidence: entry.best.confidence,
         matchedEventCount: entry.eventIds.size,
-        lastMatchedAt: entry.lastMatchedAt,
+        lastObservedAt: entry.lastObservedAt,
         kevPresent: vuln?.kev_present ?? entry.best.kev_present,
         kevAddedAt: vuln?.kev_added_at ?? null,
         kevUpdatedAt: vuln?.kev_updated_at ?? null,
@@ -192,12 +202,13 @@ export function buildPatternCveContext(
         product: vuln?.product ?? null,
         description: vuln?.description ?? null,
         reason: entry.best.reason,
-        eventsHref: "/events?category=suspected_cve_probe",
+        eventsHref: `/events?cve=${encodeURIComponent(cveId)}`,
       };
     })
     .toSorted(
       (a, b) =>
         b.matchedEventCount - a.matchedEventCount ||
+        matchStrengthRank(b.matchStrength) - matchStrengthRank(a.matchStrength) ||
         b.maxConfidence - a.maxConfidence ||
         a.cveId.localeCompare(b.cveId),
     )
@@ -393,7 +404,9 @@ export async function getOverviewData(): Promise<OverviewData> {
         eventsHref: eventsFilterHref(pattern.protocol, pattern.key.split(":")[1]),
       })),
       patternCveContext24h: buildPatternCveContext(
-        MOCK_CVE_MATCHES.filter((match) => Date.parse(match.created_at) >= windowStart),
+        MOCK_CVE_MATCHES.filter(
+          (match) => Date.parse(match.observed_at ?? match.created_at) >= windowStart,
+        ),
         MOCK_VULNERABILITIES,
       ),
       httpPaths24h: topHttpPaths(MOCK_EVENTS),
@@ -467,8 +480,8 @@ export async function getOverviewData(): Promise<OverviewData> {
     client
       .from("public_event_cve_matches")
       .select("*")
-      .gte("created_at", since24h)
-      .order("created_at", { ascending: false })
+      .gte("observed_at", since24h)
+      .order("observed_at", { ascending: false })
       .limit(CVE_MATCH_WINDOW_LIMIT),
     client
       .from("public_vulnerabilities")
@@ -646,7 +659,10 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
   let aggregateComplete = true;
   let hourAggregates: Array<z.infer<typeof HourAggregateSchema>> = [];
   let cveMatches: PublicEventCveMatch[] = MOCK_CVE_MATCHES.filter(
-    (match) => Date.parse(match.created_at) >= windowStartMs && Date.parse(match.created_at) <= nowMs,
+    (match) => {
+      const observedMs = Date.parse(match.observed_at ?? match.created_at);
+      return observedMs >= windowStartMs && observedMs <= nowMs;
+    },
   );
   let vulnerabilities: PublicVulnerability[] = MOCK_VULNERABILITIES;
 
@@ -720,8 +736,8 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
       client
         .from("public_event_cve_matches")
         .select("*")
-        .gte("created_at", sinceIso)
-        .order("created_at", { ascending: false })
+        .gte("observed_at", sinceIso)
+        .order("observed_at", { ascending: false })
         .limit(CVE_MATCH_WINDOW_LIMIT),
       client
         .from("public_vulnerabilities")
@@ -895,6 +911,8 @@ export async function getPaginatedEvents(options: {
   protocol?: string;
   period?: string;
   category?: string;
+  /** Candidate CVE id; events are those with an evidence-backed candidate match. */
+  cve?: string;
 }): Promise<PaginatedEventsResult> {
   const pageSize = Math.min(Math.max(options.pageSize ?? 12, 1), 50);
   const requestedPage = Math.max(options.page ?? 1, 1);
@@ -902,14 +920,19 @@ export async function getPaginatedEvents(options: {
   const protocolFilter: Protocol | "all" = parsedProtocol.success ? parsedProtocol.data : "all";
   const periodFilter = parseEventPeriod(options.period);
   const categoryFilter = parseEventCategory(options.category);
+  const cveFilter = parseCveId(options.cve);
 
   const client = getPublicSupabaseClient();
   const nowMs = client ? Date.now() : MOCK_REFERENCE_NOW_MS;
 
   if (!client) {
+    const cveEventIds = cveFilter
+      ? new Set(MOCK_CVE_MATCHES.filter((m) => m.cve_id === cveFilter).map((m) => m.event_id))
+      : null;
     const filtered = MOCK_EVENTS.filter(
       (event) =>
         (protocolFilter === "all" || event.protocol === protocolFilter) &&
+        (cveEventIds === null || cveEventIds.has(event.id)) &&
         eventMatchesExplorerFilters(event, periodFilter, categoryFilter, nowMs),
     );
     const totalCount = filtered.length;
@@ -927,12 +950,15 @@ export async function getPaginatedEvents(options: {
       protocolFilter,
       periodFilter,
       categoryFilter,
+      cveFilter,
     };
   }
 
   const offset = (requestedPage - 1) * pageSize;
+  // public_cve_events = public_events + cve_id (one row per event and CVE),
+  // so every existing filter and the pagination work unchanged.
   let query = client
-    .from("public_events")
+    .from(cveFilter ? "public_cve_events" : "public_events")
     .select("*", { count: "exact" })
     .order("observed_at", { ascending: false })
     .range(offset, offset + pageSize - 1);
@@ -949,6 +975,9 @@ export async function getPaginatedEvents(options: {
     query = query.is("attack_category", null);
   } else if (categoryFilter !== "all") {
     query = query.eq("attack_category", categoryFilter);
+  }
+  if (cveFilter) {
+    query = query.eq("cve_id", cveFilter);
   }
 
   const { data, count, error } = await query;
@@ -967,6 +996,7 @@ export async function getPaginatedEvents(options: {
     protocolFilter,
     periodFilter,
     categoryFilter,
+    cveFilter,
   };
 }
 

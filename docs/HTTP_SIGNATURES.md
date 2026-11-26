@@ -11,7 +11,7 @@ feeds downstream persistence and on-demand NVD caching in `jobs/cve-matching`.
   - *Observed indicator*: `matched_location` + `evidence.indicator`
   - *Attack technique candidate*: `classification = "indicator_match"`, `attack_technique`, `candidate_cves = []`
   - *Candidate CVE*: `classification = "candidate_cve"`, `candidate_cves = [...]`
-  - *Exploitation outcome*: **Unknown**. Signature matches never claim confirmed exploitation; `confidence` / `match_strength` express rule match strength, not exploitation probability.
+  - *Exploitation outcome*: **Unknown**. Signature matches never claim confirmed exploitation; `confidence` / `match_strength` express rule match strength, not exploitation probability. Public surfaces show only the graded `match_strength` (High / Medium / Low) with its evidence basis (indicator and matched location); the numeric `confidence` stays as the internal rule score for ordering and MCP (#84).
 - **Separation from NVD / KEV / EPSS:** Signature rules identify candidates solely from observed request patterns. Vulnerability feeds enrich matched CVEs later and never generate detections on their own.
 - **Data minimization:** Raw HTTP bodies are never stored. Attacker JNDI expressions, callback URLs (including command-injection `curl`/`wget` URLs), credentials, and sensitive header names (`header:redacted`) are excluded or redacted from stored records.
 - **Inspection bounds:**

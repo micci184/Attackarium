@@ -442,10 +442,13 @@ describe("observatory data layer (mock mode)", () => {
       assert.equal(ctx.ruleId, "http-cgi-luci-probe");
       assert.equal(ctx.ruleVersion, "1.0.0");
       assert.equal(ctx.maxConfidence, 0.62);
+      assert.equal(ctx.matchStrength, "medium");
+      assert.equal(ctx.indicator, "luci_cgi_path");
+      assert.equal(ctx.matchedLocation, "url");
       assert.equal(ctx.kevPresent, true);
       assert.equal(ctx.epssDate, "2026-11-21");
       assert.equal(ctx.cvssScore, 8.8);
-      assert.equal(ctx.eventsHref, "/events?category=suspected_cve_probe");
+      assert.equal(ctx.eventsHref, "/events?cve=CVE-2023-1389");
 
       // Matched event detail includes enriched NVD/KEV/EPSS metadata.
       const matchedDetail = await getEventDetail("10000000-0000-4000-8000-000000000004");
@@ -546,5 +549,84 @@ describe("observatory data layer (mock mode)", () => {
     assert.equal(resolveDisplayCategory("redis_command_probe", "auth_attempt"), null);
     assert.equal(resolveDisplayCategory("telnet_login_attempt", "auth_attempt"), "auth_attempt");
     assert.equal(parseTrendPeriod(undefined), "7d");
+  });
+});
+
+describe("CVE observation context (#84)", () => {
+  const base = MOCK_CVE_MATCHES[0]!;
+  const match = (overrides: Partial<typeof base>) => ({ ...base, ...overrides });
+
+  it("uses observation time, not the matcher write time, for lastObservedAt", () => {
+    const [ctx] = buildPatternCveContext(
+      [
+        match({
+          id: "30000000-0000-4000-8000-0000000000a1",
+          event_id: "10000000-0000-4000-8000-0000000000a1",
+          observed_at: "2026-11-01T00:00:00.000Z",
+          created_at: "2026-11-26T12:00:00.000Z",
+        }),
+        match({
+          id: "30000000-0000-4000-8000-0000000000a2",
+          event_id: "10000000-0000-4000-8000-0000000000a2",
+          observed_at: "2026-11-20T00:00:00.000Z",
+          created_at: "2026-11-20T01:00:00.000Z",
+        }),
+      ],
+      MOCK_VULNERABILITIES,
+    );
+    assert.ok(ctx);
+    // The re-evaluated old event (written today) does not make the CVE look recent.
+    assert.equal(ctx.lastObservedAt, "2026-11-20T00:00:00.000Z");
+    assert.equal(ctx.matchedEventCount, 2);
+  });
+
+  it("reports the strongest rule-defined grade, independent of the numeric score", () => {
+    const [ctx] = buildPatternCveContext(
+      [
+        match({ id: "30000000-0000-4000-8000-0000000000b1", match_strength: "medium", confidence: 0.9, indicator: "a" }),
+        match({ id: "30000000-0000-4000-8000-0000000000b2", match_strength: "high", confidence: 0.6, indicator: "b" }),
+      ],
+      MOCK_VULNERABILITIES,
+    );
+    assert.ok(ctx);
+    assert.equal(ctx.matchStrength, "high");
+    assert.equal(ctx.indicator, "b");
+  });
+
+  it("filters /events by candidate CVE and keeps other filters and pagination", async () => {
+    const previousMock = process.env.USE_MOCK;
+    process.env.USE_MOCK = "true";
+    try {
+      const all = await getPaginatedEvents({ page: 1, pageSize: 50 });
+      const byCve = await getPaginatedEvents({ page: 1, pageSize: 50, cve: "cve-2023-1389" });
+      assert.equal(byCve.cveFilter, "CVE-2023-1389");
+      assert.deepEqual(
+        byCve.items.map((e) => e.id),
+        ["10000000-0000-4000-8000-000000000004"],
+      );
+      assert.equal(byCve.totalCount, 1);
+      assert.ok(all.totalCount > byCve.totalCount);
+
+      const unknown = await getPaginatedEvents({ page: 1, pageSize: 50, cve: "CVE-2099-0001" });
+      assert.equal(unknown.totalCount, 0);
+
+      const combined = await getPaginatedEvents({
+        page: 1,
+        pageSize: 50,
+        cve: "CVE-2023-1389",
+        protocol: "ssh",
+      });
+      assert.equal(combined.totalCount, 0);
+
+      // Invalid values are ignored rather than passed to the query.
+      for (const bad of ["CVE-1", "../etc", "CVE-2023-1389,CVE-2021-44228", "", "<x>"]) {
+        const result = await getPaginatedEvents({ page: 1, pageSize: 50, cve: bad });
+        assert.equal(result.cveFilter, null, bad);
+        assert.equal(result.totalCount, all.totalCount, bad);
+      }
+    } finally {
+      if (previousMock === undefined) delete process.env.USE_MOCK;
+      else process.env.USE_MOCK = previousMock;
+    }
   });
 });

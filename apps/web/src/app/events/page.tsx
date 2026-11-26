@@ -48,7 +48,13 @@ const CATEGORY_FILTERS: Array<{ value: EventCategoryFilter; label: string }> = [
 ];
 
 interface EventsPageProps {
-  searchParams: Promise<{ page?: string; protocol?: string; period?: string; category?: string }>;
+  searchParams: Promise<{
+    page?: string;
+    protocol?: string;
+    period?: string;
+    category?: string;
+    cve?: string;
+  }>;
 }
 
 export default async function EventsPage({ searchParams }: EventsPageProps) {
@@ -62,24 +68,28 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
     protocol: params.protocol,
     period: params.period,
     category: params.category,
+    cve: params.cve,
   });
 
   const activeFilterCount =
     (result.protocolFilter !== "all" ? 1 : 0) +
     (result.periodFilter !== "all" ? 1 : 0) +
-    (result.categoryFilter !== "all" ? 1 : 0);
+    (result.categoryFilter !== "all" ? 1 : 0) +
+    (result.cveFilter ? 1 : 0);
 
   const buildUrl = (
     nextPage: number,
     nextProtocol: Protocol | "all" = result.protocolFilter,
     nextPeriod: EventPeriodFilter = result.periodFilter,
     nextCategory: EventCategoryFilter = result.categoryFilter,
+    nextCve: string | null = result.cveFilter,
   ) => {
     const q = new URLSearchParams();
     if (nextPage > 1) q.set("page", String(nextPage));
     if (nextProtocol !== "all") q.set("protocol", nextProtocol);
     if (nextPeriod !== "all") q.set("period", nextPeriod);
     if (nextCategory !== "all") q.set("category", nextCategory);
+    if (nextCve) q.set("cve", nextCve);
     const qs = q.toString();
     return qs ? `/events?${qs}` : "/events";
   };
@@ -137,6 +147,23 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
               </FilterLink>
             ))}
           </FilterRow>
+          {result.cveFilter ? (
+            <FilterRow label="CVE">
+              <span className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] text-amber-900">
+                <span translate="no" className="font-mono font-semibold">
+                  {result.cveFilter}
+                </span>
+                <span>candidate match (rule-based inference, not proof of exploitation)</span>
+                <Link
+                  href={buildUrl(1, result.protocolFilter, result.periodFilter, result.categoryFilter, null)}
+                  aria-label={`Remove CVE filter ${result.cveFilter}`}
+                  className="rounded font-medium text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                >
+                  Clear
+                </Link>
+              </span>
+            </FilterRow>
+          ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
             <p className="font-mono tabular-nums">
               Page {result.page} / {result.totalPages}

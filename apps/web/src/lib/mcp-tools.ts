@@ -34,6 +34,7 @@ const PeriodSchema = z.enum(TREND_PERIODS);
 export const SCOPE_CAVEATS = [
   "Observations reflect unsolicited probes received on operator-managed sensors only, not global Internet attack volume.",
   "Candidate CVE/KEV/EPSS context is evidence-backed hypothesis only and does not prove successful exploitation.",
+  "matchStrength (high/medium/low) is a rule-defined evidence grade and maxConfidence is the internal rule score; neither is a probability of exploitation. lastObservedAt is when the matched probe was observed.",
   "Periods marked hasCoverageGap indicate sensor downtime or telemetry gaps rather than zero observed probes.",
 ] as const;
 

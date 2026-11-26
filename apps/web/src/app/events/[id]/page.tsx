@@ -6,8 +6,9 @@ import { FormattedTime, TimezoneLabel } from "@/components/timezone-provider";
 import { Panel, PanelHeader } from "@/components/ui";
 import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
-  formatConfidence,
   formatCvss,
+  formatEvidenceBasis,
+  formatMatchStrength,
   formatEpss,
   formatEpssPercentile,
   formatEventTypeLabel,
@@ -129,7 +130,10 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
 
       {/* Rule Detections */}
       <Panel>
-        <PanelHeader title="Rule detections & evidence" />
+        <PanelHeader
+          title="Rule detections & evidence"
+          subtitle="Inference: a versioned rule matched the observed request. Match strength is a rule-defined evidence grade, not a probability of exploitation."
+        />
         <div className="p-4">
           {detections.length === 0 ? (
             <p className="text-xs text-slate-500">
@@ -154,15 +158,23 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                       <span translate="no" className="text-[#632ca6]">
                         {d.classification}
                       </span>
-                      <span>Confidence {formatConfidence(d.confidence)}</span>
+                      <span title="Rule-defined evidence grade (not a probability)">
+                        Match strength: {formatMatchStrength(stringField(d.evidence_redacted, "match_strength"))}
+                      </span>
                     </div>
                   </div>
-                  <pre
-                    translate="no"
-                    className="mt-2.5 overflow-x-auto rounded border border-slate-200 bg-white p-3 font-mono text-[11px] text-slate-700"
-                  >
-                    {safeDisplayText(JSON.stringify(d.evidence_redacted, null, 2))}
-                  </pre>
+                  <DetectionBasis evidence={d.evidence_redacted} />
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-slate-700">
+                      Redacted evidence (raw)
+                    </summary>
+                    <pre
+                      translate="no"
+                      className="mt-2 overflow-x-auto rounded border border-slate-200 bg-white p-3 font-mono text-[11px] text-slate-700"
+                    >
+                      {safeDisplayText(JSON.stringify(d.evidence_redacted, null, 2))}
+                    </pre>
+                  </details>
                 </div>
               ))}
             </div>
@@ -201,7 +213,7 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] tabular-nums text-slate-600">
                       <span translate="no" className="text-amber-800">
-                        {m.match_type} · {formatConfidence(m.confidence)}
+                        {m.match_type} · {formatMatchStrength(m.match_strength)} match
                       </span>
                       <span
                         translate="no"
@@ -227,6 +239,12 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                   <p className="mt-2 leading-relaxed text-slate-700">
                     {safeDisplayText(m.reason)}
                   </p>
+                  <Link
+                    href={`/events?cve=${encodeURIComponent(m.cve_id)}`}
+                    className="mt-1.5 inline-block rounded text-[11px] font-medium text-[#632ca6] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
+                  >
+                    Other observed events with this candidate CVE →
+                  </Link>
                   {m.description ? (
                     <p className="mt-2 rounded border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600">
                       <span className="font-semibold text-slate-700">NVD summary: </span>
@@ -238,6 +256,12 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
                       <dt className="text-slate-500">Detection rule</dt>
                       <dd translate="no" className="mt-0.5 font-mono text-slate-800">
                         {safeDisplayText(m.rule_id)}@{safeDisplayText(m.rule_version)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Evidence basis</dt>
+                      <dd translate="no" className="mt-0.5 break-words font-mono text-slate-800">
+                        {safeDisplayText(formatEvidenceBasis(m.indicator, m.matched_location), "—")}
                       </dd>
                     </div>
                     <div>
@@ -272,5 +296,35 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
         </div>
       </Panel>
     </div>
+  );
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+/** Why the rule matched, from the redacted evidence (inference, not observation). */
+function DetectionBasis({ evidence }: { evidence: Record<string, unknown> }) {
+  const basis = formatEvidenceBasis(stringField(evidence, "indicator"), stringField(evidence, "matched_location"));
+  const summary = stringField(evidence, "summary");
+  if (!basis && !summary) return null;
+  return (
+    <dl className="mt-2.5 grid gap-1 text-[11px] text-slate-700">
+      {basis ? (
+        <div className="flex flex-wrap gap-1">
+          <dt className="text-slate-500">Evidence basis:</dt>
+          <dd translate="no" className="font-mono">
+            {safeDisplayText(basis)}
+          </dd>
+        </div>
+      ) : null}
+      {summary ? (
+        <div className="flex flex-wrap gap-1">
+          <dt className="text-slate-500">Rule rationale:</dt>
+          <dd>{safeDisplayText(summary)}</dd>
+        </div>
+      ) : null}
+    </dl>
   );
 }

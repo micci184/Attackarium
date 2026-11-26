@@ -71,8 +71,41 @@ export function formatJstShort(isoString: string | null | undefined): string {
   return `${JST_SHORT_FORMATTER.format(date)} JST`;
 }
 
-export function formatConfidence(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`;
+const MATCH_STRENGTH_LABELS = { high: "High", medium: "Medium", low: "Low" } as const;
+
+/**
+ * Rule-defined evidence grade for display. Deliberately not a percentage:
+ * a rule score is how specific the matched indicator is, not a probability
+ * that an exploit happened or succeeded.
+ */
+export function formatMatchStrength(strength: string | null | undefined): string {
+  return strength === "high" || strength === "medium" || strength === "low"
+    ? MATCH_STRENGTH_LABELS[strength]
+    : "Ungraded";
+}
+
+const STRENGTH_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
+
+export function matchStrengthRank(strength: string | null | undefined): number {
+  return (strength && STRENGTH_RANK[strength]) || 0;
+}
+
+/** Human-readable evidence basis, e.g. "sap_visual_composer_metadatauploader_path in url". */
+export function formatEvidenceBasis(
+  indicator: string | null | undefined,
+  location: string | null | undefined,
+): string | null {
+  const parts = [indicator, location ? `in ${location}` : null].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
+/** Strict CVE identifier check for URL parameters. */
+export function parseCveId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const upper = value.trim().toUpperCase();
+  // CVE sequence numbers have four or more digits and no upper bound; the
+  // overall length cap only keeps absurd input out of the query.
+  return upper.length <= 32 && /^CVE-\d{4}-\d{4,}$/.test(upper) ? upper : null;
 }
 
 export function formatEpss(score: number | null | undefined): string {
