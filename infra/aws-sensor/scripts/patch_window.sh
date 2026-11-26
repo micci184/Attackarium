@@ -311,12 +311,22 @@ cmd_run() {
     --property=RuntimeMaxSec="$MAX_RUNTIME_SECONDS" \
     --setenv=PATCH_WINDOW_NO_DETACH=1 \
     "$SELF" "$mode" "$@" || true
-  systemctl stop "$CLEANUP_UNIT.timer" 2>/dev/null || true
   # The unit's journal holds the full apt output.
   journalctl -u "$UNIT_NAME" --since "-$((MAX_RUNTIME_SECONDS / 60 + 5))min" --no-pager -o cat | tail -n 40 || true
-  if patch_rule_present || [[ -f "$WINDOW_ADDRS_FILE" ]]; then
-    log "temporary rule or window flows still present; restoring now"
-    restore_firewall || die "firewall restore failed; run: $SELF cleanup"
+  # Final check and restore under run.lock, and only then disarm the cleanup
+  # timer: a new window refuses to start while the timer is armed, so it
+  # cannot begin before this restore, and the lock keeps the restore from
+  # touching a window that does hold it.
+  exec 9>"$STATE_DIR/run.lock"
+  if flock -w 30 9; then
+    if patch_rule_present || [[ -f "$WINDOW_ADDRS_FILE" ]]; then
+      log "temporary rule or window flows still present; restoring now"
+      restore_firewall || die "firewall restore failed; run: $SELF cleanup"
+    fi
+    systemctl stop "$CLEANUP_UNIT.timer" 2>/dev/null || true
+    exec 9>&-
+  else
+    log "run.lock is held (the patch unit is still running?); leaving the cleanup timer armed"
   fi
   cmd_status
   grep -qs '^result=success$' "$STATE_DIR/last-result"
