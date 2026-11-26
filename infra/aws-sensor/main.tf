@@ -234,6 +234,20 @@ resource "aws_vpc_security_group_egress_rule" "bootstrap_http" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+# Automatic OS security updates (ADR-027): Canonical-owned archive ranges
+# only, plain HTTP (apt verifies signed InRelease files). The host nftables
+# allows the same ranges, so unattended-upgrades can refresh its lists daily.
+resource "aws_vpc_security_group_egress_rule" "os_update_http" {
+  for_each = toset(var.os_update_egress_cidrs)
+
+  security_group_id = aws_security_group.sensor.id
+  description       = "OS security updates: Canonical Ubuntu archive (HTTP, signed)"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  cidr_ipv4         = each.value
+}
+
 # Patch window (#94): Ubuntu mirrors only, plain HTTP (apt verifies signed
 # InRelease files). The host nftables rule is added in memory by
 # scripts/patch_window.sh and is never persisted. Empty list = no rules.
@@ -294,8 +308,13 @@ resource "aws_instance" "sensor" {
     eice_source_cidr    = var.subnet_cidr
     decoy_tcp_ports     = local.decoy_tcp_ports
     ingest_egress_cidrs = var.ingest_egress_cidrs
-    vpc_dns_ip          = local.vpc_dns_ip
-    aws_time_sync_ip    = local.aws_time_sync_ip
+    os_update_cidrs     = var.os_update_egress_cidrs
+    # Single source of truth for host files shipped by cloud-init (ADR-027).
+    record_os_update_script = file("${path.module}/../../sensors/host/record_os_update_status.sh")
+    unattended_upgrades_cfg = file("${path.module}/../../sensors/host/52attackarium-unattended-upgrades")
+    apt_upgrade_dropin      = file("${path.module}/../../sensors/host/apt-daily-upgrade-attackarium.conf")
+    vpc_dns_ip              = local.vpc_dns_ip
+    aws_time_sync_ip        = local.aws_time_sync_ip
   })
   user_data_replace_on_change = false
 

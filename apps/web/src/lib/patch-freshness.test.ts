@@ -14,18 +14,18 @@ describe("classifyPatchFreshness", () => {
     assert.equal(classifyPatchFreshness(daysAgo(-1), NOW).state, "unknown");
   });
 
-  it("follows the 30-day cadence and the 35-day alert threshold", () => {
+  it("follows the 3-day and 7-day thresholds for daily automatic updates", () => {
     assert.deepEqual(classifyPatchFreshness(daysAgo(0), NOW), {
       state: "current",
       ageDays: 0,
       label: "Current (0 days)",
     });
-    assert.equal(classifyPatchFreshness(daysAgo(30), NOW).state, "current");
-    assert.equal(classifyPatchFreshness(daysAgo(30.5), NOW).state, "due");
-    assert.equal(classifyPatchFreshness(daysAgo(35), NOW).state, "due");
-    const overdue = classifyPatchFreshness(daysAgo(40), NOW);
+    assert.equal(classifyPatchFreshness(daysAgo(3), NOW).state, "current");
+    assert.equal(classifyPatchFreshness(daysAgo(3.5), NOW).state, "due");
+    assert.equal(classifyPatchFreshness(daysAgo(7), NOW).state, "due");
+    const overdue = classifyPatchFreshness(daysAgo(10), NOW);
     assert.equal(overdue.state, "overdue");
-    assert.equal(overdue.label, "Overdue (40 days)");
+    assert.equal(overdue.label, "Overdue (10 days)");
   });
 
   it("attaches freshness to each sensor row", () => {

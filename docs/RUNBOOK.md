@@ -161,12 +161,77 @@ Changing host firewall rules (`/etc/nftables.conf`):
      snapshot, and deregister any AMI **and delete its EBS snapshots**. They
      contain the shipper HMAC secret.
 
+## Automatic OS security updates (ADR-027)
+
+The sensor installs security updates by itself: `unattended-upgrades` runs
+daily over permanent TCP/80 egress to the Canonical-owned archive ranges
+(`os_update_egress_cidrs`), and reboots at 04:00 UTC when an update requires
+it. Each `apt-daily-upgrade` run first refreshes the package lists itself
+(`record_os_update_status.sh refresh`, `apt-get update` with
+`APT::Update::Error-Mode "any"`) and stores that attempt's outcome from the
+exit status; apt's success hooks and stamps are not trusted because they run
+even after a partial failure. Afterwards (`record`), success is written only if
+that refresh succeeded, the unattended-upgrades run that followed finished
+cleanly, and it is newer than the last recorded success. The shipper reports
+it to `/admin` (Current within
+3 days, Due after 3, Overdue after 7). The `sensor-patch-freshness-weekly`
+GitHub Actions workflow fails (and GitHub emails the maintainer) when an
+active sensor is not current. Its public logs print counts only.
+
+If it reports a problem:
+1. Over EICE, read `/var/log/unattended-upgrades/unattended-upgrades.log` and
+   `journalctl -u apt-daily.service -u apt-daily-upgrade.service`.
+2. If apt cannot connect, compare `getent ahostsv4 archive.ubuntu.com
+   security.ubuntu.com` with `os_update_egress_cidrs`. If Canonical moved the
+   archive, confirm the new range in the RIPE database (owner Canonical,
+   AS41231) before changing the variable, then update both the Terraform
+   variable and the host `nftables` rule. Never widen it to unowned ranges.
+3. Patch manually in the meantime with `scripts/patch_sensor.sh` (below).
+
+Enabling it on a host created before ADR-027 (user data is not re-rendered),
+over an EICE session, keeping the existing session open. This is a production
+change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
+1. **On the operator machine** (not over EICE: the sensor has no AWS
+   credentials), from `infra/aws-sensor` after `aws login`, save a plan with
+   `terraform plan -out=os-update.tfplan`, then review that
+   saved plan with `terraform show os-update.tfplan`. It must contain **only**
+   the `aws_vpc_security_group_egress_rule.os_update_http` additions (one per
+   CIDR); stop and investigate if anything else changes. Apply exactly that
+   file: `terraform apply os-update.tfplan`.
+2. Still locally, print the configured ranges with
+   `terraform console <<< 'var.os_update_egress_cidrs'`. Then, in the EICE
+   session on the host, add exactly those to
+   the `output` chain in `/etc/nftables.conf`, for example with the defaults:
+   `ip daddr { 91.189.88.0/21, 185.125.188.0/22 } tcp dport 80 accept`.
+   Check with `nft -c -f /etc/nftables.conf` and apply with
+   `nft -f /etc/nftables.conf`. The Security Group and host rule must list the
+   same CIDRs.
+3. Install `sensors/host/record_os_update_status.sh` as
+   `/usr/local/sbin/record_os_update_status.sh` (`root:root 0755`),
+   `sensors/host/52attackarium-unattended-upgrades` in `/etc/apt/apt.conf.d/`
+   (`0644`), and `sensors/host/apt-daily-upgrade-attackarium.conf` as
+   `/etc/systemd/system/apt-daily-upgrade.service.d/attackarium-status.conf`
+   (`0644`); then `systemctl daemon-reload`.
+4. Verify: `sudo /usr/local/sbin/verify_egress.sh` still passes (arbitrary
+   egress blocked). Then run `sudo systemctl start apt-daily-upgrade.service`
+   (its pre-step refreshes the lists). Expected:
+   `/var/lib/attackarium-patch/refresh-result` shows `result=ok`, the latest
+   run in `/var/log/unattended-upgrades/unattended-upgrades.log` ends with
+   "All upgrades installed" or "No packages found ...", and `last-success`
+   has a newer `finished_at` (that run's completion time). If not, read
+   `journalctl -u apt-daily-upgrade.service` for the
+   `record_os_update_status` lines: `refresh failed` means apt could not
+   reach the archive (check `nftables`, the Security Group, and
+   `getent ahostsv4 archive.ubuntu.com`); `does not follow the latest
+   refresh` means unattended-upgrade did not run (check
+   `APT::Periodic::Unattended-Upgrade`).
+
 ## OS security patch window (ADR-026, #94)
 
-The host firewall blocks Ubuntu mirrors, so `unattended-upgrades` cannot refresh
-its package lists on its own. Patch through a short, self-reverting window
-instead: at least **monthly**, and **within days** of a critical fix for OpenSSL,
-OpenSSH, Python, or the kernel. Every window needs explicit operator approval.
+Since ADR-027 this is the **manual fallback**: for an urgent fix before the
+next daily run, a rollback (`install PKG=VERSION`), or while automatic updates
+are broken (for example the archive moved outside `os_update_egress_cidrs`).
+Every window needs explicit operator approval.
 
 `infra/aws-sensor/scripts/patch_window.sh` opens TCP/80 only to the IPv4
 addresses that the configured apt mirrors resolve to, runs `apt-get update`

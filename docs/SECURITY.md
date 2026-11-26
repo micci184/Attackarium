@@ -42,11 +42,15 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 9. **LLM safety:** summaries only from sanitized aggregates and redacted evidence; attack payloads
    are prompt-injection vectors, not authoritative instructions. Never permit LLM-driven commands,
    network calls, unsupported exploit assertions, or automated X posting.
-10. **OS patching:** the sensor cannot reach package mirrors in normal operation, so security
-    updates are applied in a short, self-reverting patch window (TCP/80 to resolved Ubuntu mirror
-    `/32`s only, in both the Security Group and in-memory `nftables`; ADR-026). Run it at least
-    monthly and within days of a critical OpenSSL/OpenSSH/Python/kernel fix. Enabling new
-    Internet-facing parsers (for example TLS on 443, #93) requires a completed window first.
+10. **OS patching:** security updates are automatic (ADR-027). The sensor may reach only the
+    Canonical-owned Ubuntu archive ranges (`os_update_egress_cidrs`: `91.189.88.0/21`,
+    `185.125.188.0/22`, AS41231) on TCP/80, in both the Security Group and host `nftables`;
+    apt verifies signed `InRelease` files. `unattended-upgrades` installs security updates daily
+    and reboots at 04:00 UTC when required. Each verified run is reported to the operator-only
+    `/admin`, and a weekly GitHub Actions check fails (email) when an active sensor is not
+    current. The manual patch window (ADR-026, `scripts/patch_sensor.sh`) remains for urgent
+    fixes, rollbacks, and mirror changes. Enabling new Internet-facing parsers (for example TLS on
+    443, #93) requires a verified current sensor first.
 11. **Incident response:** abuse contact, AWS Budgets/cost alerts, sensor shutdown runbook, and
     log/secret rotation plan; never run real malware or attacker commands on the sensor.
 12. **Remote MCP auth & authz (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1):**
@@ -87,7 +91,7 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 | AWS monthly spend | AWS Budgets threshold (e.g., 50% / 80% / 100%) | Review traffic/egress; shut down EC2 sensor if cap approached |
 | Abnormal egress | Any outbound connection outside allowlist | Block, inspect, rotate sensor credentials |
 | Ingest rejects | Sustained 401/413/429/400 failures | Investigate key abuse, gateway throttling, or format regression |
-| OS patch freshness | No successful patch window in 35 days, or a critical OpenSSL/OpenSSH/Python/kernel fix is published | `/admin` shows Due/Overdue. Run `scripts/patch_sensor.sh` (`docs/RUNBOOK.md`) |
+| OS patch freshness | No verified update in 3 days (Due) or 7 days (Overdue); the weekly `sensor-patch-freshness-weekly` workflow fails | Check the sensor's `unattended-upgrades` log and egress (`docs/RUNBOOK.md`); patch manually with `scripts/patch_sensor.sh` if needed |
 | HTTP body sampling | Max size crossed or concurrency shed (503) | Truncate/shed cleanly; never unbounded buffer |
 
 ## Publication ethics

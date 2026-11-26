@@ -84,14 +84,38 @@ write_files:
 
           # HTTPS outbound strictly to approved Supabase ingest CIDRs
           ip daddr { ${join(", ", ingest_egress_cidrs)} } tcp dport 443 accept
+%{ if length(os_update_cidrs) > 0 ~}
+
+          # Automatic OS security updates: Canonical archive ranges, HTTP only (ADR-027)
+          ip daddr { ${join(", ", os_update_cidrs)} } tcp dport 80 accept
+%{ endif ~}
         }
       }
+
+  - path: /usr/local/sbin/record_os_update_status.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      ${indent(6, record_os_update_script)}
+
+  - path: /etc/apt/apt.conf.d/52attackarium-unattended-upgrades
+    permissions: "0644"
+    owner: root:root
+    content: |
+      ${indent(6, unattended_upgrades_cfg)}
+
+  - path: /etc/systemd/system/apt-daily-upgrade.service.d/attackarium-status.conf
+    permissions: "0644"
+    owner: root:root
+    content: |
+      ${indent(6, apt_upgrade_dropin)}
 
 runcmd:
   - install -d -m 2770 -o attackarium -g attackarium /var/log/attackarium
   - install -d -m 0750 -o attackarium -g attackarium /var/lib/attackarium
   - install -d -m 0750 -o opencanary -g opencanary /var/lib/attackarium/opencanary
   - install -d -m 0700 -o root -g root /etc/attackarium
+  - systemctl daemon-reload
   - systemctl enable nftables
   - nft -f /etc/nftables.conf
   # Ubuntu 24.04 uses ssh.socket on port 22 by default; switch to ssh.service so Port ${admin_ssh_port} takes effect.
