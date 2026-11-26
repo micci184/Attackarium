@@ -307,10 +307,21 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         self.config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(server_address, CaptureRequestHandler)
         self._last_metrics_write = 0.0
+        self._metrics_stop = threading.Event()
+        self._metrics_thread: threading.Thread | None = None
         if self.config.metrics_path is not None:
             self.write_metrics()
             if self.config.metrics_flush_seconds > 0:
-                threading.Thread(target=self._metrics_loop, daemon=True).start()
+                self._metrics_thread = threading.Thread(target=self._metrics_loop, daemon=True)
+                self._metrics_thread.start()
+
+    def server_close(self) -> None:
+        """Stop the metrics worker before closing the listening socket."""
+        self._metrics_stop.set()
+        thread = self._metrics_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        super().server_close()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         """Never print tracebacks for client-caused socket errors.
@@ -368,8 +379,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
             sys.stderr.write(f"metrics write failed ({type(exc).__name__})\n")
 
     def _metrics_loop(self) -> None:
-        while True:
-            time.sleep(self.config.metrics_flush_seconds)
+        while not self._metrics_stop.wait(self.config.metrics_flush_seconds):
             stale = time.monotonic() - self._last_metrics_write >= self.config.metrics_refresh_seconds
             if self._metrics_dirty or stale:
                 self.write_metrics()

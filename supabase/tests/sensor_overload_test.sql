@@ -50,6 +50,15 @@ begin
   -- Restore the two-row shape the rest of the test expects.
   perform public.record_sensor_overload('sensor-ovl-01', 1, 0, now() - interval '6 hours', now() - interval '355 minutes');
 
+  -- A zero-length window still yields a visible (>= 1 minute) interval.
+  perform public.record_sensor_overload('sensor-ovl-01', 1, 0, now() - interval '12 hours', now() - interval '12 hours');
+  select * into r from public.sensor_status_events
+  where sensor_id = 'sensor-ovl-01' and started_at = (select max(started_at) from public.sensor_status_events where sensor_id = 'sensor-ovl-01' and started_at <= now() - interval '11 hours');
+  if r.ended_at - r.started_at < interval '1 minute' then
+    raise exception 'zero-length window stored as %', r.ended_at - r.started_at;
+  end if;
+  delete from public.sensor_status_events where id = r.id;
+
   -- Deadline cuts alone, bad windows, and unknown sensors record nothing.
   if public.record_sensor_overload('sensor-ovl-01', 0, 50, now() - interval '2 minutes', now()) then
     raise exception 'deadline cuts alone must not mark degraded coverage';

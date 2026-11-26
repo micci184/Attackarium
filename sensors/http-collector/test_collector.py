@@ -1179,6 +1179,11 @@ class SlowClientDeadlineTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+            # The worker is stopped and joined by server_close.
+            self.assertFalse(server._metrics_thread.is_alive())
+            (Path(d) / "metrics.json").unlink()
+            time.sleep(0.5)
+            self.assertFalse((Path(d) / "metrics.json").exists(), "worker kept writing after close")
 
     def test_fast_requests_are_unaffected_by_the_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as d:

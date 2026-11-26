@@ -1,6 +1,7 @@
 import http.server
 import datetime as dt
 import json
+import sqlite3
 import tempfile
 import threading
 import time
@@ -902,6 +903,31 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh3.close()
 
+    def test_pending_and_snapshot_commit_together(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+            original = sh.spool.set_states
+
+            def crash(values):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            sh.spool.set_states = crash  # type: ignore[method-assign]
+            with self.assertRaises(sqlite3.OperationalError):
+                sh._collector_status()
+            # Neither the memory state nor the database moved.
+            self.assertIsNone(sh._pending_overload)
+            self.assertEqual(sh._collector_snapshot[1], 0)
+            self.assertIsNone(sh.spool.get_state("collector_pending"))
+            self.assertEqual(sh.spool.get_state("collector_snapshot")[1], 0)
+            sh.spool.set_states = original  # type: ignore[method-assign]
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [3])  # counted once
+        finally:
+            sh.close()
+
     def test_quiet_period_does_not_widen_the_next_window(self) -> None:
         sh = self.shipper()
         try:
@@ -930,6 +956,8 @@ class CollectorOverloadReportTests(unittest.TestCase):
             self.assertGreaterEqual(report["window_start"], six_days)
             self.assertGreaterEqual(report["window_end"], report["window_start"])
             self.assertIsNone(sh._pending_overload)
+            # The lost timing is surfaced, not silent.
+            self.assertGreaterEqual(sh.metrics.overload_window_clamped, 1)
         finally:
             sh.close()
 

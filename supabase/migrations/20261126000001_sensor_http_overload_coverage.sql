@@ -9,6 +9,10 @@
 -- minutes merge into one interval. The summary (counts) stays private:
 -- public_sensor_status_events does not expose it.
 --
+-- Windows have second precision and can be zero-length (two reads in the same
+-- second); every recorded interval spans at least one minute so delivered
+-- refusals always appear as visible degraded coverage.
+--
 -- Slow connections cut at the per-connection deadline are attacker-side
 -- connections, not lost observations, so they alone do not mark degradation.
 -- =============================================================================
@@ -44,6 +48,9 @@ begin
   if not exists (select 1 from public.sensors where id = p_sensor_id) then
     return false;
   end if;
+
+  -- Minimum visible duration (see header).
+  p_window_end := greatest(p_window_end, p_window_start + interval '1 minute');
 
   v_summary := format(
     'HTTP collector at capacity: %s connection(s) refused, %s slow connection(s) cut',

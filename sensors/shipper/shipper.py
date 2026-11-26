@@ -101,6 +101,9 @@ class ShipperMetrics:
     last_error: str | None = None
     last_retry_after_seconds: float | None = None
     last_delivery_at: str | None = None
+    # Overload reports whose window start had to be clamped into ingest's
+    # accepted range (delivery delayed > 6 days): timing information was lost.
+    overload_window_clamped: int = 0
 
 
 def validate_ingest_url(url: str) -> str:
@@ -334,6 +337,19 @@ class BoundedSqliteSpool:
             return json.loads(row[0])
         except ValueError:
             return None
+
+    def set_states(self, values: dict[str, Any]) -> None:
+        """Write several keys in one transaction (None deletes a key)."""
+        with self.conn:  # one commit, or rollback on error
+            for key, value in values.items():
+                if value is None:
+                    self.conn.execute("DELETE FROM shipper_state WHERE key = ?", (key,))
+                else:
+                    self.conn.execute(
+                        "INSERT INTO shipper_state (key, value_json) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                        (key, json.dumps(value, separators=(",", ":"))),
+                    )
 
     def set_state(self, key: str, value: Any) -> None:
         if value is None:
@@ -588,6 +604,9 @@ class EventShipper:
         current = self._read_collector_metrics()
         if current is not None:
             started, rejected, cut, observed_at = current
+            new_pending = (
+                dict(self._pending_overload) if self._pending_overload is not None else None
+            )
             if self._collector_snapshot is not None:
                 snap_started, snap_rejected, snap_cut, snap_at = self._collector_snapshot
                 if started != snap_started:
@@ -602,23 +621,26 @@ class EventShipper:
                     window_start = snap_at
                 if delta_rejected > 0 or delta_cut > 0:
                     window_end = max(observed_at, window_start)
-                    pending = self._pending_overload
-                    if pending is None:
-                        self._pending_overload = {
+                    if new_pending is None:
+                        new_pending = {
                             "rejected": delta_rejected,
                             "deadline_cut": delta_cut,
                             "window_start": window_start,
                             "window_end": window_end,
                         }
                     else:
-                        pending["rejected"] += delta_rejected
-                        pending["deadline_cut"] += delta_cut
-                        pending["window_start"] = min(pending["window_start"], window_start)
-                        pending["window_end"] = max(pending["window_end"], window_end)
-                    self.spool.set_state("collector_pending", self._pending_overload)
-            if self._collector_snapshot != current:
+                        new_pending["rejected"] += delta_rejected
+                        new_pending["deadline_cut"] += delta_cut
+                        new_pending["window_start"] = min(new_pending["window_start"], window_start)
+                        new_pending["window_end"] = max(new_pending["window_end"], window_end)
+            if self._collector_snapshot != current or new_pending != self._pending_overload:
+                # Pending report and snapshot change together or not at all,
+                # so a crash in between can never double-count an increase.
+                self.spool.set_states(
+                    {"collector_pending": new_pending, "collector_snapshot": list(current)}
+                )
+                self._pending_overload = new_pending
                 self._collector_snapshot = current
-                self.spool.set_state("collector_snapshot", list(current))
         if self._pending_overload is None:
             return None
         report = dict(self._pending_overload)
@@ -626,7 +648,13 @@ class EventShipper:
         # undelivered report become a permanent 400.
         oldest = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
         if report["window_start"] < oldest:
+            # Timing information is lost: the refusals happened before the
+            # clamped start. Surface it instead of failing the report forever.
             report["window_start"] = oldest
+            self.metrics.overload_window_clamped += 1
+            sys.stderr.write(
+                "overload report delayed beyond 6 days; window start clamped (timing approximate)\n"
+            )
         if report["window_end"] < report["window_start"]:
             report["window_end"] = report["window_start"]
         report["rejected"] = min(report["rejected"], 10_000_000)
