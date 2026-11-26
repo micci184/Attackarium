@@ -718,11 +718,11 @@ class ShipperIntegrationTests(unittest.TestCase):
             original = shipper._send_body
             calls = {"n": 0}
 
-            def flaky(events, include_status, patched_at, now_sec):
+            def flaky(events, status, now_sec):
                 calls["n"] += 1
                 if calls["n"] == 2:
                     return ("transient", 503, None)
-                return original(events, include_status, patched_at, now_sec)
+                return original(events, status, now_sec)
 
             shipper._send_body = flaky  # type: ignore[method-assign]
             shipper.flush_once()
@@ -752,6 +752,109 @@ class ShipperIntegrationTests(unittest.TestCase):
         self.assertIn("33333333-3333-4333-8333-333333333333", self.state.received_event_ids)
         self.assertEqual(shipper.metrics.events_delivered, 1)
         self.assertTrue(shipper._patch_status_disabled)
+
+
+class CollectorOverloadReportTests(unittest.TestCase):
+    """#95: the shipper reports collector shed/cut increases, once each."""
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.state = MockIngestState()
+        handler_cls = type("BoundMockIngestHandler", (MockIngestHandler,), {"state": self.state})
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.metrics = Path(self.tmpdir.name) / "metrics.json"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.tmpdir.cleanup()
+
+    def write(self, started: str, rejected: int, cut: int, updated: str) -> None:
+        self.metrics.write_text(
+            json.dumps(
+                {"started_at": started, "rejected_overload": rejected, "deadline_exceeded": cut, "updated_at": updated}
+            )
+        )
+
+    def shipper(self) -> EventShipper:
+        return EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_path=self.metrics,
+            )
+        )
+
+    def beat(self, shipper: EventShipper) -> None:
+        shipper._last_heartbeat_sec = None
+        self.assertTrue(shipper.flush_once())
+
+    def reports(self) -> list[dict]:
+        return [s["http_collector"] for s in self.state.received_sensor_status if "http_collector" in s]
+
+    def test_first_read_is_baseline_then_deltas_are_reported_once(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 5, 1, "2026-11-26T08:00:00.123456Z")
+            self.beat(sh)  # baseline only
+            self.assertEqual(self.reports(), [])
+            self.write("2026-11-26T00:00:00Z", 12, 4, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.beat(sh)  # unchanged: nothing new
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 7, "deadline_cut": 3, "window_start": "2026-11-26T08:00:00Z", "window_end": "2026-11-26T08:05:00Z"}],
+            )
+        finally:
+            sh.close()
+
+    def test_collector_restart_reports_current_values_since_its_start(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 50, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T09:00:00Z", 2, 0, "2026-11-26T09:01:00Z")
+            self.beat(sh)
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 2, "deadline_cut": 0, "window_start": "2026-11-26T09:00:00Z", "window_end": "2026-11-26T09:01:00Z"}],
+            )
+        finally:
+            sh.close()
+
+    def test_undelivered_delta_is_retried_not_lost(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+            self.state.fail_next = 1
+            sh._last_heartbeat_sec = None
+            self.assertFalse(sh.flush_once())  # 503: not delivered
+            sh.consecutive_failures = 0
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [3])
+        finally:
+            sh.close()
+
+    def test_malformed_or_missing_metrics_are_ignored(self) -> None:
+        sh = self.shipper()
+        try:
+            for bad in ("not json", "[]", json.dumps({"started_at": "x", "rejected_overload": -1, "deadline_exceeded": 0, "updated_at": "y"}), "x" * 5000):
+                self.metrics.write_text(bad)
+                self.beat(sh)
+            self.metrics.unlink()
+            self.beat(sh)
+            self.assertEqual(self.reports(), [])
+        finally:
+            sh.close()
 
 if __name__ == "__main__":
     unittest.main()

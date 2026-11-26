@@ -49,6 +49,14 @@ export interface IngestRepository {
     patchLastSuccessAtIso: string | null;
     receivedAtIso: string;
   }): Promise<void>;
+  /** Operator coverage signal (#95): refused connections become a degraded interval. */
+  recordSensorOverload?(params: {
+    sensorId: string;
+    rejected: number;
+    deadlineCut: number;
+    windowStartIso: string;
+    windowEndIso: string;
+  }): Promise<void>;
 }
 
 const encoder = new TextEncoder();
@@ -255,7 +263,7 @@ export async function handleIngestRequest(
   if (!validation.ok) {
     return jsonResponse(400, { error: validation.error });
   }
-  const statusValidation = validateSensorStatus(parsedJson);
+  const statusValidation = validateSensorStatus(parsedJson, nowMs);
   if (!statusValidation.ok) {
     return jsonResponse(400, { error: statusValidation.error });
   }
@@ -300,6 +308,20 @@ export async function handleIngestRequest(
   }
 
   const patchLastSuccessAtIso = statusValidation.value.patchLastSuccessAt;
+  const overload = statusValidation.value.httpCollector;
+  if (overload && repo.recordSensorOverload) {
+    try {
+      await repo.recordSensorOverload({
+        sensorId,
+        rejected: overload.rejected,
+        deadlineCut: overload.deadlineCut,
+        windowStartIso: overload.windowStart,
+        windowEndIso: overload.windowEnd,
+      });
+    } catch {
+      console.error("record_sensor_overload failed");
+    }
+  }
   if (statusValidation.value.reported && repo.recordSensorStatus) {
     // Best effort: host status must never cost observation data, and the
     // shipper must not retry a committed batch because of it.

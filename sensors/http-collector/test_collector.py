@@ -1012,5 +1012,126 @@ class HttpCollectorSecurityTests(unittest.TestCase):
         self.assertLess(elapsed, 2.0)
 
 
+
+class SlowClientDeadlineTests(unittest.TestCase):
+    """#95: slow clients must not hold connection slots past an absolute deadline."""
+
+    def _server(self, tmp: Path, **overrides):
+        cfg = CollectorConfig(
+            host="127.0.0.1",
+            port=0,
+            protocol_label="http",
+            reported_dst_port=80,
+            output_jsonl=tmp / "events.jsonl",
+            socket_timeout_seconds=1.0,
+            max_concurrent_connections=2,
+            max_connection_seconds=1.5,
+            metrics_path=tmp / "metrics.json",
+            **overrides,
+        )
+        server = create_server(cfg)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread
+
+    def _drip(self, port: int, stop: threading.Event) -> None:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            sock.sendall(b"GET / HTTP/1.1\r\n")
+            while not stop.is_set():
+                sock.sendall(b"X")  # one header byte, faster than the recv timeout
+                time.sleep(0.4)
+        except OSError:
+            pass  # cut by the server: expected
+        finally:
+            sock.close()
+
+    def test_dripping_clients_are_cut_and_slots_freed(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            stop = threading.Event()
+            drippers = [
+                threading.Thread(target=self._drip, args=(server.server_address[1], stop), daemon=True)
+                for _ in range(2)
+            ]
+            try:
+                for t in drippers:
+                    t.start()
+                time.sleep(0.3)
+                # Both slots are taken: an honest request is shed now...
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
+                conn.request("GET", "/early")
+                self.assertEqual(conn.getresponse().status, 503)
+                conn.close()
+                # ...but after the absolute deadline the drippers are gone.
+                time.sleep(2.0)
+                conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
+                conn.request("GET", "/late")
+                self.assertNotEqual(conn.getresponse().status, 503)
+                conn.close()
+                self.assertGreaterEqual(server.deadline_exceeded, 2)
+                self.assertGreaterEqual(server.rejected_overload, 1)
+            finally:
+                stop.set()
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_client_socket_errors_print_no_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            try:
+                with mock.patch("sys.stderr") as err:
+                    try:
+                        raise BrokenPipeError(32, "Broken pipe")
+                    except BrokenPipeError:
+                        server.handle_error(None, ("198.51.100.1", 1234))
+                    try:
+                        raise ValueError("attacker-controlled detail")
+                    except ValueError:
+                        server.handle_error(None, ("198.51.100.1", 1234))
+                written = "".join(c.args[0] for c in err.write.call_args_list)
+                self.assertNotIn("Broken pipe", written)
+                self.assertIn("ValueError", written)
+                self.assertNotIn("attacker-controlled", written)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_counters_are_written_to_the_metrics_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            try:
+                server.count("rejected_overload")
+                server.count("deadline_exceeded")
+                server.count("deadline_exceeded")
+                server.write_metrics()
+                metrics = json.loads((Path(d) / "metrics.json").read_text())
+                self.assertEqual(metrics["rejected_overload"], 1)
+                self.assertEqual(metrics["deadline_exceeded"], 2)
+                self.assertRegex(metrics["started_at"], r"Z$")
+                self.assertEqual((Path(d) / "metrics.json").stat().st_mode & 0o777, 0o640)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_fast_requests_are_unaffected_by_the_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            try:
+                for _ in range(5):
+                    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=3)
+                    conn.request("GET", "/ok")
+                    self.assertNotEqual(conn.getresponse().status, 503)
+                    conn.close()
+                time.sleep(2.0)  # timers of finished connections were cancelled
+                self.assertEqual(server.deadline_exceeded, 0)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
 if __name__ == "__main__":
     unittest.main()

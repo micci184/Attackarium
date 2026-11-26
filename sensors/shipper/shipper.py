@@ -34,6 +34,12 @@ SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
 SPOOL_ALERT_RATIO = 0.70
 SPOOL_ALERT_REPEAT_SECONDS = 300.0
 PATCH_STATUS_MAX_BYTES = 4096
+def _iso_seconds(value: str) -> str:
+    """Normalize an ISO UTC timestamp to 'YYYY-MM-DDTHH:MM:SSZ' (ingest format)."""
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 PATCH_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HTTP_METHOD_REGEX = re.compile(r"^[A-Z]{2,16}$")
 LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -79,6 +85,9 @@ class ShipperConfig:
     # Written by infra/aws-sensor/scripts/patch_window.sh after a successful
     # patch window (#94). None disables the operator-only patch status report.
     patch_status_path: Path | None = None
+    # Cumulative overload counters written by the HTTP collector (#95). The
+    # shipper reports the increase since its last delivered report.
+    collector_metrics_path: Path | None = None
 
 
 @dataclass
@@ -416,6 +425,9 @@ class EventShipper:
         # example an ingest that predates #94), so events are never dropped
         # as poison pills because of it.
         self._patch_status_disabled = False
+        # Last delivered collector counters: (collector started_at, rejected,
+        # deadline_cut, observed_at ISO). None until the first read.
+        self._collector_baseline: tuple[str, int, int, str] | None = None
         self._spool_alert_active = False
         self._spool_notice_at: float | None = None
 
@@ -485,24 +497,93 @@ class EventShipper:
             return None
         return finished
 
+    def _read_collector_metrics(self) -> tuple[str, int, int, str] | None:
+        """Strictly parse the collector's cumulative counters, or None."""
+        path = self.config.collector_metrics_path
+        if path is None:
+            return None
+        try:
+            with path.open("rb") as fp:
+                raw = fp.read(PATCH_STATUS_MAX_BYTES + 1)
+            if len(raw) > PATCH_STATUS_MAX_BYTES:
+                return None
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        started = data.get("started_at")
+        updated = data.get("updated_at")
+        rejected = data.get("rejected_overload")
+        cut = data.get("deadline_exceeded")
+        if not (isinstance(started, str) and isinstance(updated, str)):
+            return None
+        if not all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 2**31 for v in (rejected, cut)):
+            return None
+        try:
+            return (started, rejected, cut, _iso_seconds(updated))
+        except ValueError:
+            return None
+
+    def _collector_status(self) -> tuple[dict[str, Any] | None, tuple[str, int, int, str] | None]:
+        """Report the counter increase since the last delivered report.
+
+        The first read only sets a baseline. A collector restart (new
+        started_at) resets the counters, so the current values are the delta.
+        """
+        current = self._read_collector_metrics()
+        if current is None:
+            return None, None
+        if self._collector_baseline is None:
+            self._collector_baseline = current
+            return None, None
+        base_started, base_rejected, base_cut, base_at = self._collector_baseline
+        started, rejected, cut, observed_at = current
+        if started != base_started:
+            try:
+                window_start = _iso_seconds(started)
+            except ValueError:
+                return None, None
+            delta_rejected, delta_cut = rejected, cut
+        else:
+            delta_rejected, delta_cut, window_start = rejected - base_rejected, cut - base_cut, base_at
+        if delta_rejected <= 0 and delta_cut <= 0:
+            return None, None
+        block = {
+            "rejected": max(0, delta_rejected),
+            "deadline_cut": max(0, delta_cut),
+            "window_start": window_start,
+            "window_end": observed_at,
+        }
+        return block, current
+
     def _send_events(
         self,
         events: list[dict[str, Any]],
         now_sec: int | None = None,
     ) -> tuple[str, int | None, float | None]:
         """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
-        include_status = (
-            self.config.patch_status_path is not None and not self._patch_status_disabled
-        )
-        # When enabled, status is always sent, with null when no successful
-        # window is recorded (for example after restoring a pre-patch
-        # snapshot), so the console never keeps showing an older success.
-        patched_at = self._read_patch_last_success_at() if include_status else None
-        result = self._send_body(events, include_status, patched_at, now_sec)
-        if result[0] == "permanent_400" and include_status:
+        status: dict[str, Any] | None = None
+        collector_snapshot = None
+        if not self._patch_status_disabled:
+            status = {}
+            if self.config.patch_status_path is not None:
+                # Always sent when enabled, with null when no successful window
+                # is recorded (for example after restoring a pre-patch
+                # snapshot), so the console never keeps an older success.
+                status["patch_last_success_at"] = self._read_patch_last_success_at()
+            collector_block, collector_snapshot = self._collector_status()
+            if collector_block is not None:
+                status["http_collector"] = collector_block
+            if not status:
+                status = None
+        result = self._send_body(events, status, now_sec)
+        if result[0] == "ok" and collector_snapshot is not None:
+            self._collector_baseline = collector_snapshot
+        if result[0] == "permanent_400" and status is not None:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.
-            retry = self._send_body(events, False, None, now_sec)
+            retry = self._send_body(events, None, now_sec)
             if retry[0] == "ok":
                 # Only the status block was rejected (an ingest without #94).
                 self._patch_status_disabled = True
@@ -518,13 +599,12 @@ class EventShipper:
     def _send_body(
         self,
         events: list[dict[str, Any]],
-        include_status: bool,
-        patched_at: str | None,
+        status: dict[str, Any] | None,
         now_sec: int | None,
     ) -> tuple[str, int | None, float | None]:
         body: dict[str, Any] = {"events": events}
-        if include_status:
-            body["sensor_status"] = {"patch_last_success_at": patched_at}
+        if status is not None:
+            body["sensor_status"] = status
         raw_body = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         timestamp = str(int(now_sec if now_sec is not None else time.time()))
         request_id = f"req-{uuid.uuid4().hex[:24]}"
@@ -808,6 +888,14 @@ def main() -> None:
             )
         )
         if os.environ.get("SHIPPER_PATCH_STATUS_PATH", "x") != ""
+        else None,
+        collector_metrics_path=Path(
+            os.environ.get(
+                "SHIPPER_COLLECTOR_METRICS_PATH",
+                "/var/log/attackarium/http-collector-metrics.json",
+            )
+        )
+        if os.environ.get("SHIPPER_COLLECTOR_METRICS_PATH", "x") != ""
         else None,
     )
     metrics_path = Path(

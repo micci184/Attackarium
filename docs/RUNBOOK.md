@@ -343,6 +343,29 @@ persisted ruleset accepts established flows. `status` reports
 `sudo /usr/local/sbin/patch_window.sh cleanup` until it succeeds. Only one
 window can run at a time.
 
+## HTTP collector overload protection (#95)
+
+The collector cuts every connection at an absolute 10 s deadline
+(`HTTP_COLLECTOR_MAX_CONNECTION_SECONDS`), so slow clients cannot hold slots,
+and writes cumulative counters to
+`/var/log/attackarium/http-collector-metrics.json`. The shipper reports their
+increase; refused connections (`rejected_overload`) become a closed
+`degraded` interval in public coverage. Host `nftables` limits each source to
+`decoy_max_conns_per_source` (default 8) concurrent decoy connections.
+
+Enabling it on a host created before #95 (user data is not re-rendered), over
+EICE, with explicit owner approval:
+1. Deploy `collector.py` and `shipper.py` (code deployment procedure above;
+   the migration and ingest Edge Function must be deployed first) and restart
+   `http-collector` and `attackarium-shipper`. Confirm the metrics file exists.
+2. In `/etc/nftables.conf`, add the `decoy_conns` set (`type ipv4_addr`,
+   `size 65535`, `flags dynamic`) and, after the `decoy_flood` rule,
+   `tcp dport { <decoy ports> } ct state new add @decoy_conns { ip saddr ct count over 8 } drop`.
+   Check with `nft -c -f /etc/nftables.conf`, then apply with
+   `nft -f /etc/nftables.conf`, keeping the EICE session open.
+3. Verify: `verify_egress.sh` passes, the decoy ports still answer, and
+   `journalctl -u http-collector` shows no tracebacks.
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):

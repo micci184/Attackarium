@@ -18,6 +18,7 @@ import http.server
 import json
 import os
 import re
+import socket
 import socketserver
 import sys
 import tempfile
@@ -144,6 +145,12 @@ class CollectorConfig:
     max_header_bytes: int = 8192
     socket_timeout_seconds: float = 5.0
     max_concurrent_connections: int = 32
+    # Absolute wall-clock budget per connection (#95). socket_timeout_seconds is
+    # per recv, so without this a client dripping one byte every few seconds
+    # could hold a slot indefinitely.
+    max_connection_seconds: float = 10.0
+    # Counters for the shipper (shed connections, deadline cuts). None disables.
+    metrics_path: Path | None = None
 
 
 def strip_control(value: str) -> str:
@@ -265,6 +272,10 @@ def classify_http_event(method: str, path: str) -> str:
     return "http_probe"
 
 
+def _utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -283,12 +294,66 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
             max(1, config.max_concurrent_connections)
         )
         self.rejected_overload = 0
+        self.deadline_exceeded = 0
+        self._metrics_lock = threading.Lock()
+        self._metrics_dirty = True
+        self._started_at = _utc_now_iso()
         self.config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(server_address, CaptureRequestHandler)
+        if self.config.metrics_path is not None:
+            self.write_metrics()
+            threading.Thread(target=self._metrics_loop, daemon=True).start()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Never print tracebacks for client-caused socket errors.
+
+        Deadline cuts and resets are routine and attacker-triggerable; logging
+        a traceback per connection would let a client flood the journal.
+        Unexpected errors are logged by type only (no attacker data).
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (OSError, TimeoutError)):
+            return
+        sys.stderr.write(f"request handler error ({type(exc).__name__})\n")
+
+    def count(self, name: str) -> None:
+        """Increment an overload counter (thread-safe)."""
+        with self._metrics_lock:
+            setattr(self, name, getattr(self, name) + 1)
+            self._metrics_dirty = True
+
+    def write_metrics(self) -> None:
+        """Atomically write the cumulative counters for the shipper."""
+        path = self.config.metrics_path
+        if path is None:
+            return
+        with self._metrics_lock:
+            payload = {
+                "started_at": self._started_at,
+                "rejected_overload": self.rejected_overload,
+                "deadline_exceeded": self.deadline_exceeded,
+                "updated_at": _utc_now_iso(),
+            }
+            self._metrics_dirty = False
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".http-collector-metrics.")
+            with os.fdopen(fd, "w", encoding="utf-8") as fp:
+                json.dump(payload, fp, separators=(",", ":"))
+            os.chmod(tmp, 0o640)
+            os.replace(tmp, path)
+        except OSError as exc:
+            sys.stderr.write(f"metrics write failed ({type(exc).__name__})\n")
+
+    def _metrics_loop(self) -> None:
+        while True:
+            time.sleep(2.0)
+            if self._metrics_dirty:
+                self.write_metrics()
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self.connection_semaphore.acquire(blocking=False):
-            self.rejected_overload += 1
+            self.count("rejected_overload")
             try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -363,12 +428,34 @@ class CaptureRequestHandler(http.server.BaseHTTPRequestHandler):
     def setup(self) -> None:
         super().setup()
         self.request.settimeout(self.server.config.socket_timeout_seconds)
+        # Absolute deadline: shut the socket down so any blocked read returns.
+        self._deadline_timer = threading.Timer(
+            self.server.config.max_connection_seconds, self._deadline_hit
+        )
+        self._deadline_timer.daemon = True
+        self._deadline_timer.start()
         self._header_rejected = False
         self.rfile = _BoundedHeaderReader(
             self.rfile,
             self.server.config.max_header_bytes,
             self._reject_headers,
         )
+
+    def _deadline_hit(self) -> None:
+        self.server.count("deadline_exceeded")
+        try:
+            self.request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def finish(self) -> None:
+        timer = getattr(self, "_deadline_timer", None)
+        if timer is not None:
+            timer.cancel()
+        try:
+            super().finish()
+        except OSError:
+            pass
 
     def _reject_headers(self) -> None:
         if self._header_rejected:
@@ -505,6 +592,17 @@ def main() -> None:
             os.environ.get("HTTP_COLLECTOR_OUTPUT", "./logs/http-collector.jsonl")
         ),
         max_body_bytes=int(os.environ.get("HTTP_COLLECTOR_MAX_BODY_BYTES", "4096")),
+        max_connection_seconds=float(
+            os.environ.get("HTTP_COLLECTOR_MAX_CONNECTION_SECONDS", "10")
+        ),
+        metrics_path=Path(
+            os.environ.get(
+                "HTTP_COLLECTOR_METRICS_PATH",
+                "/var/log/attackarium/http-collector-metrics.json",
+            )
+        )
+        if os.environ.get("HTTP_COLLECTOR_METRICS_PATH", "x") != ""
+        else None,
     )
     server = create_server(cfg)
     try:
