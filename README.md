@@ -90,7 +90,7 @@ docs/IMPLEMENTATION_PLAN.md  Phase 0 / Phase 1 / Phase 2 MVP plan, 30-day evalua
 docs/CURSOR_SETUP.md         Official Vercel/Supabase Skills for Cursor
 docs/DATA_MODEL.md           Tables, retention separation & data minimization
 docs/SECURITY.md             Threat model, deployment gates & operational monitoring
-docs/DECISIONS.md            Architecture decision log (ADR-001 through ADR-024)
+docs/DECISIONS.md            Architecture decision log (ADR-001 through ADR-028)
 docs/RUNBOOK.md              Manual abuse check and emergency stop procedure
 ```
 

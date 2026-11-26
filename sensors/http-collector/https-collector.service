@@ -1,0 +1,45 @@
+[Unit]
+Description=Attackarium HTTPS capture collector (443, self-signed TLS)
+After=network-online.target
+Wants=network-online.target
+# The certificate is generated on the host (generate_tls_cert.sh); never start
+# without it rather than fall back to plain HTTP on 443.
+ConditionPathExists=/etc/attackarium/tls/cert.pem
+ConditionPathExists=/etc/attackarium/tls/key.pem
+
+[Service]
+Type=simple
+User=attackarium
+Group=attackarium
+ExecStart=/opt/attackarium/venv/bin/python /opt/attackarium/http-collector/collector.py
+Restart=on-failure
+RestartSec=5
+Environment=HTTP_COLLECTOR_HOST=0.0.0.0
+Environment=HTTP_COLLECTOR_PORT=443
+Environment=HTTP_COLLECTOR_PROTOCOL=https
+Environment=HTTP_COLLECTOR_REPORTED_PORT=443
+# Own files: two processes must never append to or prune the same JSONL, and
+# each metrics file has one writer. The shipper reads both (#93).
+Environment=HTTP_COLLECTOR_OUTPUT=/var/log/attackarium/https-collector.jsonl
+Environment=HTTP_COLLECTOR_METRICS_PATH=/var/log/attackarium/https-collector-metrics.json
+Environment=HTTP_COLLECTOR_TLS_CERT=/etc/attackarium/tls/cert.pem
+Environment=HTTP_COLLECTOR_TLS_KEY=/etc/attackarium/tls/key.pem
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log/attackarium
+RestrictAddressFamilies=AF_INET AF_INET6
+# Separate budget from the port 80 collector (#93 R8): TLS parsing runs in its
+# own process, so a problem here cannot take port 80 down.
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
