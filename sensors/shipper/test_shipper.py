@@ -894,6 +894,31 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh.close()
 
+    def test_extra_sources_with_the_same_file_name_keep_separate_baselines(self) -> None:
+        a = Path(self.tmpdir.name) / "a" / "metrics.json"
+        b = Path(self.tmpdir.name) / "b" / "metrics.json"
+        a.parent.mkdir()
+        b.parent.mkdir()
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_extra_paths=(a, b),
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        try:
+            self._write_to(a, "2026-11-26T01:00:00Z", 10, 0, "2026-11-26T08:00:00Z")
+            self._write_to(b, "2026-11-26T02:00:00Z", 20, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.beat(sh)  # unchanged files: no restart delta from mixed baselines
+            self.assertEqual(self.reports(), [])
+        finally:
+            sh.close()
+
     def test_missing_https_metrics_file_is_skipped(self) -> None:
         sh = self._shipper_with_tls(Path(self.tmpdir.name) / "absent.json")
         try:

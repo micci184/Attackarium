@@ -308,6 +308,8 @@ def build_tls_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.options |= ssl.OP_NO_COMPRESSION | ssl.OP_NO_TICKET
+    # OP_NO_TICKET covers TLS 1.2 and earlier; TLS 1.3 needs num_tickets = 0.
+    ctx.num_tickets = 0
     ctx.options |= getattr(ssl, "OP_NO_RENEGOTIATION", 0)
     ctx.verify_mode = ssl.CERT_NONE
     ctx.set_alpn_protocols(["http/1.1"])
@@ -475,7 +477,14 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 pass
             self.shutdown_request(request)
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except RuntimeError:
+            # The worker thread could not start (for example the unit's
+            # TasksMax). It will never release the slot, so do it here.
+            self.connection_semaphore.release()
+            self.count("rejected_overload")
+            self.shutdown_request(request)
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:

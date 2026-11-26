@@ -1194,6 +1194,47 @@ class SlowClientDeadlineTests(unittest.TestCase):
             time.sleep(0.5)
             self.assertFalse((Path(d) / "metrics.json").exists(), "worker kept writing after close")
 
+    def test_worker_start_failure_returns_the_slot(self) -> None:
+        """A worker that cannot start (TasksMax) must not leak its slot."""
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            port = server.server_address[1]
+            real_start = threading.Thread.start
+            calls = {"n": 0}
+
+            def failing_start(self_thread):  # type: ignore[no-untyped-def]
+                if self_thread.name.startswith("Thread") and calls["n"] == 0 and getattr(
+                    self_thread, "_target", None
+                ) == server.process_request_thread:
+                    calls["n"] += 1
+                    raise RuntimeError("can't start new thread")
+                return real_start(self_thread)
+
+            try:
+                with mock.patch.object(threading.Thread, "start", failing_start):
+                    s = socket.create_connection(("127.0.0.1", port), timeout=3)
+                    try:
+                        s.recv(16)  # closed without a worker
+                    except OSError:
+                        pass
+                    s.close()
+                    time.sleep(0.2)
+                self.assertEqual(calls["n"], 1)
+                self.assertEqual(server.rejected_overload, 1)
+                # Both slots are still available afterwards.
+                self.assertTrue(server.connection_semaphore.acquire(blocking=False))
+                self.assertTrue(server.connection_semaphore.acquire(blocking=False))
+                server.connection_semaphore.release()
+                server.connection_semaphore.release()
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                conn.request("GET", "/after")
+                self.assertEqual(conn.getresponse().status, 404)
+                conn.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_fast_requests_are_unaffected_by_the_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             server, thread = self._server(Path(d))
@@ -1480,6 +1521,14 @@ class TlsCollectorTests(unittest.TestCase):
             written = "".join(str(c.args[0]) for c in err.write.call_args_list)
             self.assertEqual(written, "")
             self.assertGreaterEqual(server.tls_handshake_failed, 3)
+
+    def test_tls_context_disables_tickets_for_all_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server = self._server(Path(d))
+            ctx = server.tls_context
+            self.assertEqual(ctx.num_tickets, 0)  # TLS 1.3
+            self.assertTrue(ctx.options & ssl.OP_NO_TICKET)  # TLS 1.2
+            self.assertTrue(ctx.options & ssl.OP_NO_COMPRESSION)
 
     def test_metrics_include_tls_handshake_failures(self) -> None:
         with tempfile.TemporaryDirectory() as d:

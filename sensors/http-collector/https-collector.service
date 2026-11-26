@@ -39,7 +39,9 @@ RestrictAddressFamilies=AF_INET AF_INET6
 # Separate budget from the port 80 collector (#93 R8): TLS parsing runs in its
 # own process, so a problem here cannot take port 80 down.
 MemoryMax=256M
-TasksMax=64
+# Each connection uses two threads (worker + deadline timer): 32 slots need
+# 66 tasks plus headroom for exiting threads.
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target

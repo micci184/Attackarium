@@ -28,7 +28,9 @@ ProtectControlGroups=true
 ReadWritePaths=/var/log/attackarium
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryMax=256M
-TasksMax=64
+# Each connection uses two threads (worker + deadline timer): 32 slots need
+# 66 tasks plus headroom for exiting threads.
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target

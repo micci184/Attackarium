@@ -581,7 +581,8 @@ class EventShipper:
         if self.config.collector_metrics_path is not None:
             sources.append(("collector_snapshot", self.config.collector_metrics_path))
         for extra in self.config.collector_metrics_extra_paths:
-            sources.append((f"collector_snapshot:{extra.name}", extra))
+            # Full path, so equal file names in different directories never share a baseline.
+            sources.append((f"collector_snapshot:{extra.resolve(strict=False)}", extra))
         return sources
 
     @property
