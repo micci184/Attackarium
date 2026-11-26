@@ -226,6 +226,29 @@ change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
    refresh` means unattended-upgrade did not run (check
    `APT::Periodic::Unattended-Upgrade`).
 
+   **If unattended-upgrades already ran in the last 24 hours** (for example
+   from the daily timer), `apt.systemd.daily` skips the upgrade on a manual
+   start. The pre-step still refreshes the lists, and the recorder correctly
+   logs `does not follow the latest refresh` and writes nothing. To verify the
+   whole path anyway, run the same three phases by hand, in order:
+
+   ```bash
+   sudo /usr/local/sbin/record_os_update_status.sh refresh
+   sudo unattended-upgrade -v
+   sudo /usr/local/sbin/record_os_update_status.sh record
+   ```
+
+   `refresh-result` must show `result=ok`, and `last-success` must then show
+   `detail=unattended-upgrades` with that run's completion time. Within a few
+   minutes the shipper reports it and `/admin` shows Current.
+
+   **Transient mirror errors:** if unattended-upgrades logs
+   `404  Not Found` for a `.deb` (the archive nodes are briefly out of sync)
+   or any other download error, the recorder logs `reported errors` and writes
+   nothing. Re-run the three phases after a few minutes; on the daily timer it
+   recovers on the next day without action. Only a failure lasting three days
+   makes `/admin` show Due, and the weekly check fails after that.
+
 ## OS security patch window (ADR-026, #94)
 
 Since ADR-027 this is the **manual fallback**: for an urgent fix before the
@@ -430,6 +453,8 @@ cost near zero and avoid duplicating operational infrastructure before the
 | Ingest outage recovery (local SQLite spool) | Verified | Shipper unit tests cover bounded SQLite spooling, 70% cap warning, backoff, and idempotent replay via `ingest_receipts` |
 | Remote MCP OAuth 2.1 + 5-gate authz E2E | Verified | Live Cursor OAuth 2.1 + PKCE consent flow on `https://attackarium.vercel.app/api/mcp` and live `get_observation_summary` execution verified |
 | Operator Admin Console + MFA (`aal2`) | Verified | Live TOTP enrollment on `/admin/mfa`, `aal2` access to `/admin` and `/admin/mcp-usage`, and `401`/`403` denial for unauthenticated/non-allowlisted callers |
+| Sensor OS patch window (ADR-026) | Verified 2026-11-25 | First production window: 59 s, Security Group egress open about 2 minutes, no reboot, `verify_egress.sh` passed afterwards |
+| Automatic OS security updates (ADR-027) | Verified 2026-11-26 | Rolled out per this runbook. A manual `apt-daily-upgrade` start was skipped (already ran within 24 h) and correctly not recorded; a first manual run hit a transient mirror `404` and was correctly not recorded; the retry installed 13 security updates and recorded `2026-11-26T08:42:02Z`, which reached `/admin`. `verify_egress.sh` passed, and the weekly check passed on a manual run. Pending: confirm that killing a patch-window wrapper keeps `run.lock` held by the unit, during the next approved window (PR #99 review) |
 | Live EC2 sensor emergency stop drill | Deferred (requires explicit approval) | Intentionally not executed during active 30-day observation collection (`#32`); run only with explicit operator authorization |
 
 ## What this runbook does not add
