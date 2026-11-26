@@ -920,22 +920,60 @@ class CollectorOverloadReportTests(unittest.TestCase):
             self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
             self.beat(sh)
             self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
-            original = sh.spool.set_states
 
-            def crash(values):
-                raise sqlite3.OperationalError("disk I/O error")
+            real_conn = sh.spool.conn
 
-            sh.spool.set_states = crash  # type: ignore[method-assign]
+            class FailOnSecondWrite:
+                """Delegates to SQLite but fails the SECOND state write of a transaction."""
+
+                def __init__(self) -> None:
+                    self.writes = 0
+
+                def __enter__(self):
+                    return real_conn.__enter__()
+
+                def __exit__(self, *exc):
+                    return real_conn.__exit__(*exc)
+
+                def execute(self, sql, params=()):
+                    if "shipper_state" in sql and not sql.lstrip().upper().startswith("SELECT"):
+                        self.writes += 1
+                        if self.writes == 2:
+                            raise sqlite3.OperationalError("disk I/O error")
+                    return real_conn.execute(sql, params)
+
+                def __getattr__(self, name):
+                    return getattr(real_conn, name)
+
+            failing = FailOnSecondWrite()
+            sh.spool.conn = failing  # type: ignore[assignment]
             with self.assertRaises(sqlite3.OperationalError):
                 sh._collector_status()
-            # Neither the memory state nor the database moved.
+            sh.spool.conn = real_conn
+            self.assertEqual(failing.writes, 2, "the failure must happen after the first write")
+            # The first write was rolled back: neither memory nor the database moved.
             self.assertIsNone(sh._pending_overload)
             self.assertEqual(sh._collector_snapshot[1], 0)
             self.assertIsNone(sh.spool.get_state("collector_pending"))
             self.assertEqual(sh.spool.get_state("collector_snapshot")[1], 0)
-            sh.spool.set_states = original  # type: ignore[method-assign]
+            # Retry counts the increase once.
             self.beat(sh)
-            self.assertEqual([r["rejected"] for r in self.reports()], [3])  # counted once
+            self.assertEqual([r["rejected"] for r in self.reports()], [3])
+        finally:
+            sh.close()
+
+    def test_counts_above_the_report_cap_are_kept_for_later(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 25_000_000, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual(sh._pending_overload["rejected"], 15_000_000)
+            self.beat(sh)
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [10_000_000, 10_000_000, 5_000_000])
+            self.assertIsNone(sh._pending_overload)
         finally:
             sh.close()
 

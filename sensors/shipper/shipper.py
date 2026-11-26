@@ -666,6 +666,20 @@ class EventShipper:
         report["deadline_cut"] = min(report["deadline_cut"], 10_000_000)
         return report
 
+    def _acknowledge_overload(self, delivered: dict[str, Any]) -> None:
+        """Subtract only what was delivered; keep any capped remainder pending."""
+        pending = self._pending_overload
+        if pending is None:
+            return
+        remaining = {
+            **pending,
+            "rejected": max(0, pending["rejected"] - delivered["rejected"]),
+            "deadline_cut": max(0, pending["deadline_cut"] - delivered["deadline_cut"]),
+        }
+        new_pending = remaining if remaining["rejected"] > 0 or remaining["deadline_cut"] > 0 else None
+        self.spool.set_state("collector_pending", new_pending)
+        self._pending_overload = new_pending
+
     @property
     def _patch_status_disabled(self) -> bool:
         return time.monotonic() < self._status_disabled_until
@@ -695,8 +709,7 @@ class EventShipper:
                 status = None
         result = self._send_body(events, status, now_sec)
         if result[0] == "ok" and status is not None and "http_collector" in status:
-            self._pending_overload = None  # delivered
-            self.spool.set_state("collector_pending", None)
+            self._acknowledge_overload(status["http_collector"])
         if result[0] == "permanent_400" and status is not None:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.
