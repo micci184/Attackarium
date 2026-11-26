@@ -151,6 +151,12 @@ class CollectorConfig:
     max_connection_seconds: float = 10.0
     # Counters for the shipper (shed connections, deadline cuts). None disables.
     metrics_path: Path | None = None
+    # Background metrics writer: flush changes every tick, and rewrite at least
+    # every refresh interval even without changes, so updated_at stays fresh
+    # (the shipper uses the previous file's updated_at as a window start).
+    # A tick of 0 disables the worker (tests).
+    metrics_flush_seconds: float = 2.0
+    metrics_refresh_seconds: float = 60.0
 
 
 def strip_control(value: str) -> str:
@@ -300,9 +306,11 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         self._started_at = _utc_now_iso()
         self.config.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(server_address, CaptureRequestHandler)
+        self._last_metrics_write = 0.0
         if self.config.metrics_path is not None:
             self.write_metrics()
-            threading.Thread(target=self._metrics_loop, daemon=True).start()
+            if self.config.metrics_flush_seconds > 0:
+                threading.Thread(target=self._metrics_loop, daemon=True).start()
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         """Never print tracebacks for client-caused socket errors.
@@ -346,6 +354,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
             os.chmod(tmp, 0o640)
             os.replace(tmp, path)
             tmp = None
+            self._last_metrics_write = time.monotonic()
         except OSError as exc:
             # Never leave a temp file behind: retries run every 2 s while the
             # fault lasts, and the directory also holds events.jsonl.
@@ -360,8 +369,9 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
 
     def _metrics_loop(self) -> None:
         while True:
-            time.sleep(2.0)
-            if self._metrics_dirty:
+            time.sleep(self.config.metrics_flush_seconds)
+            stale = time.monotonic() - self._last_metrics_write >= self.config.metrics_refresh_seconds
+            if self._metrics_dirty or stale:
                 self.write_metrics()
 
     def process_request(self, request: Any, client_address: Any) -> None:
@@ -607,6 +617,9 @@ def main() -> None:
         max_body_bytes=int(os.environ.get("HTTP_COLLECTOR_MAX_BODY_BYTES", "4096")),
         max_connection_seconds=float(
             os.environ.get("HTTP_COLLECTOR_MAX_CONNECTION_SECONDS", "10")
+        ),
+        metrics_refresh_seconds=float(
+            os.environ.get("HTTP_COLLECTOR_METRICS_REFRESH_SECONDS", "60")
         ),
         metrics_path=Path(
             os.environ.get(

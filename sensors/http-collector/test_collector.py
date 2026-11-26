@@ -1017,6 +1017,7 @@ class SlowClientDeadlineTests(unittest.TestCase):
     """#95: slow clients must not hold connection slots past an absolute deadline."""
 
     def _server(self, tmp: Path, **overrides):
+        overrides.setdefault("metrics_flush_seconds", 0)  # no background writer in tests
         cfg = CollectorConfig(
             host="127.0.0.1",
             port=0,
@@ -1157,6 +1158,23 @@ class SlowClientDeadlineTests(unittest.TestCase):
                 leftovers = list(Path(d).glob(".http-collector-metrics.*"))
                 self.assertEqual(leftovers, [])
                 self.assertTrue(server._metrics_dirty)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_background_worker_refreshes_updated_at_without_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d), metrics_flush_seconds=0.05, metrics_refresh_seconds=0.2)
+            try:
+                first = json.loads((Path(d) / "metrics.json").read_text())["updated_at"]
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    current = json.loads((Path(d) / "metrics.json").read_text())["updated_at"]
+                    if current != first:
+                        break
+                self.assertNotEqual(current, first, "metrics must be rewritten periodically")
             finally:
                 server.shutdown()
                 server.server_close()

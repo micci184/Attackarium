@@ -800,27 +800,34 @@ class CollectorOverloadReportTests(unittest.TestCase):
     def reports(self) -> list[dict]:
         return [s["http_collector"] for s in self.state.received_sensor_status if "http_collector" in s]
 
-    @staticmethod
-    def _now_iso(offset_seconds: int = 0) -> str:
-        return (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=offset_seconds)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-
     def test_first_read_is_baseline_then_deltas_are_reported_once(self) -> None:
         sh = self.shipper()
         try:
             self.write("2026-11-26T00:00:00Z", 5, 1, "2026-11-26T08:00:00.123456Z")
             self.beat(sh)  # baseline only
             self.assertEqual(self.reports(), [])
-            before = self._now_iso(-2)
             self.write("2026-11-26T00:00:00Z", 12, 4, "2026-11-26T08:05:00Z")
             self.beat(sh)
             self.beat(sh)  # unchanged: nothing new
-            reports = self.reports()
-            self.assertEqual([(r["rejected"], r["deadline_cut"]) for r in reports], [(7, 3)])
-            # The window starts at the previous READ, not at an old counter change.
-            self.assertGreaterEqual(reports[0]["window_start"], before)
-            self.assertGreaterEqual(reports[0]["window_end"], reports[0]["window_start"])
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 7, "deadline_cut": 3, "window_start": "2026-11-26T08:00:00Z", "window_end": "2026-11-26T08:05:00Z"}],
+            )
+        finally:
+            sh.close()
+
+    def test_window_starts_at_the_previous_files_write_time_despite_a_late_write(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            # A refusal happens at 08:00:10 but the file is written late; the
+            # shipper reads the old file again meanwhile.
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-26T08:00:40Z")
+            self.beat(sh)
+            [report] = self.reports()
+            self.assertEqual(report["window_start"], "2026-11-26T08:00:00Z")  # not after 08:00:10
         finally:
             sh.close()
 
@@ -868,19 +875,45 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh.close()
 
+    def test_undelivered_report_survives_a_shipper_restart(self) -> None:
+        sh = self.shipper()
+        self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+        self.beat(sh)
+        self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+        self.state.fail_next = 1
+        sh._last_heartbeat_sec = None
+        self.assertFalse(sh.flush_once())  # 503
+        sh.close()  # shipper restarts before delivery
+        sh2 = self.shipper()
+        try:
+            self.beat(sh2)
+            self.assertEqual(
+                self.reports(),
+                [{"rejected": 3, "deadline_cut": 0, "window_start": "2026-11-26T08:00:00Z", "window_end": "2026-11-26T08:05:00Z"}],
+            )
+            self.beat(sh2)  # not re-sent after delivery
+            self.assertEqual(len(self.reports()), 1)
+        finally:
+            sh2.close()
+        sh3 = self.shipper()  # a delivered report is gone after a restart too
+        try:
+            self.beat(sh3)
+            self.assertEqual(len(self.reports()), 1)
+        finally:
+            sh3.close()
+
     def test_quiet_period_does_not_widen_the_next_window(self) -> None:
         sh = self.shipper()
         try:
             self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-18T00:00:00Z")
             self.beat(sh)
-            sh._collector_snapshot_at = self._now_iso(-8 * 86_400)  # eight quiet days ago
-            self.beat(sh)  # healthy heartbeat: the snapshot time advances
-            before = self._now_iso(-2)
-            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-18T00:00:00Z")
+            # Eight quiet days later the collector has refreshed updated_at.
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 1, 0, "2026-11-26T08:01:00Z")
             self.beat(sh)
             [report] = self.reports()
-            self.assertEqual(report["rejected"], 1)
-            self.assertGreaterEqual(report["window_start"], before)
+            self.assertEqual(report["window_start"], "2026-11-26T08:00:00Z")
             self.assertFalse(sh._patch_status_disabled)
         finally:
             sh.close()
@@ -888,16 +921,13 @@ class CollectorOverloadReportTests(unittest.TestCase):
     def test_old_undelivered_report_is_clamped_into_the_ingest_range(self) -> None:
         sh = self.shipper()
         try:
-            sh._pending_overload = {
-                "rejected": 4,
-                "deadline_cut": 0,
-                "window_start": self._now_iso(-10 * 86_400),
-                "window_end": self._now_iso(-10 * 86_400 + 60),
-            }
+            old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            sh._pending_overload = {"rejected": 4, "deadline_cut": 0, "window_start": old, "window_end": old}
             self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
             self.beat(sh)
             [report] = self.reports()
-            self.assertGreaterEqual(report["window_start"], self._now_iso(-6 * 86_400 - 120))
+            six_days = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6, minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.assertGreaterEqual(report["window_start"], six_days)
             self.assertGreaterEqual(report["window_end"], report["window_start"])
             self.assertIsNone(sh._pending_overload)
         finally:

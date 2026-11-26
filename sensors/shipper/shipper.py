@@ -314,6 +314,36 @@ class BoundedSqliteSpool:
             )
             """
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shipper_state (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
+
+    def get_state(self, key: str) -> Any:
+        row = self.conn.execute(
+            "SELECT value_json FROM shipper_state WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except ValueError:
+            return None
+
+    def set_state(self, key: str, value: Any) -> None:
+        if value is None:
+            self.conn.execute("DELETE FROM shipper_state WHERE key = ?", (key,))
+        else:
+            self.conn.execute(
+                "INSERT INTO shipper_state (key, value_json) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+                (key, json.dumps(value, separators=(",", ":"))),
+            )
         self.conn.commit()
 
     def get_cursor(self, path: Path) -> tuple[int | None, int]:
@@ -425,11 +455,27 @@ class EventShipper:
         # example an ingest that predates #94), so events are never dropped
         # as poison pills because of it.
         self._patch_status_disabled = False
-        # Latest collector counters read (started_at, rejected, deadline_cut),
-        # when they were read, and the overload not yet delivered to ingest.
-        self._collector_snapshot: tuple[str, int, int] | None = None
-        self._collector_snapshot_at: str | None = None
+        # Latest collector counters read: (started_at, rejected, deadline_cut,
+        # the file's updated_at). The pending overload is what ingest has not
+        # acknowledged yet. Both persist in the spool database, so a shipper
+        # restart neither loses nor re-baselines an undelivered report.
+        self._collector_snapshot: tuple[str, int, int, str] | None = None
         self._pending_overload: dict[str, Any] | None = None
+        saved_snapshot = self.spool.get_state("collector_snapshot")
+        if (
+            isinstance(saved_snapshot, list)
+            and len(saved_snapshot) == 4
+            and isinstance(saved_snapshot[0], str)
+            and isinstance(saved_snapshot[1], int)
+            and isinstance(saved_snapshot[2], int)
+            and isinstance(saved_snapshot[3], str)
+        ):
+            self._collector_snapshot = tuple(saved_snapshot)  # type: ignore[assignment]
+        saved_pending = self.spool.get_state("collector_pending")
+        if isinstance(saved_pending, dict) and {
+            "rejected", "deadline_cut", "window_start", "window_end"
+        } <= saved_pending.keys():
+            self._pending_overload = saved_pending
         self._spool_alert_active = False
         self._spool_notice_at: float | None = None
 
@@ -530,27 +576,31 @@ class EventShipper:
     def _collector_status(self) -> dict[str, Any] | None:
         """Accumulate collector overload into a pending report; return it.
 
-        Every read advances the snapshot (so quiet periods never widen a
-        window). Increases are added to a pending report that is cleared only
-        after a successful delivery, so a failed send followed by a collector
-        restart loses nothing. A restart (new started_at) resets the counters,
-        so the new run's values are the increase.
+        A window starts at the updated_at of the previous metrics file the
+        shipper saw: every increment in a later file happened after that
+        payload was taken, even if the collector wrote it late or a write
+        failed. The collector rewrites the file at least every minute, so quiet
+        periods do not widen windows. Increases accumulate in a persisted
+        pending report that only a successful delivery clears. A collector
+        restart (new started_at) resets the counters, so the new run's values
+        are the increase.
         """
-        now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = self._read_collector_metrics()
         if current is not None:
             started, rejected, cut, observed_at = current
-            if self._collector_snapshot is None:
-                self._collector_snapshot = (started, rejected, cut)
-            else:
-                snap_started, snap_rejected, snap_cut = self._collector_snapshot
+            if self._collector_snapshot is not None:
+                snap_started, snap_rejected, snap_cut, snap_at = self._collector_snapshot
                 if started != snap_started:
                     delta_rejected, delta_cut = rejected, cut
+                    try:
+                        window_start = min(snap_at, _iso_seconds(started))
+                    except ValueError:
+                        window_start = snap_at
                 else:
                     delta_rejected = max(0, rejected - snap_rejected)
                     delta_cut = max(0, cut - snap_cut)
+                    window_start = snap_at
                 if delta_rejected > 0 or delta_cut > 0:
-                    window_start = self._collector_snapshot_at or now_iso
                     window_end = max(observed_at, window_start)
                     pending = self._pending_overload
                     if pending is None:
@@ -565,8 +615,10 @@ class EventShipper:
                         pending["deadline_cut"] += delta_cut
                         pending["window_start"] = min(pending["window_start"], window_start)
                         pending["window_end"] = max(pending["window_end"], window_end)
-                self._collector_snapshot = (started, rejected, cut)
-            self._collector_snapshot_at = now_iso
+                    self.spool.set_state("collector_pending", self._pending_overload)
+            if self._collector_snapshot != current:
+                self._collector_snapshot = current
+                self.spool.set_state("collector_snapshot", list(current))
         if self._pending_overload is None:
             return None
         report = dict(self._pending_overload)
@@ -603,6 +655,7 @@ class EventShipper:
         result = self._send_body(events, status, now_sec)
         if result[0] == "ok" and status is not None and "http_collector" in status:
             self._pending_overload = None  # delivered
+            self.spool.set_state("collector_pending", None)
         if result[0] == "permanent_400" and status is not None:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.
