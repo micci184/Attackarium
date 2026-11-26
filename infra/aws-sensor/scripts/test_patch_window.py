@@ -44,6 +44,9 @@ STUBS = {
         #!/usr/bin/env bash
         echo "apt-get $* rule_present=$([[ -f $STUB_STATE/rule ]] && echo yes || echo no)" >> "$STUB_LOG"
         [[ -n "${STUB_APT_SLEEP:-}" ]] && sleep "$STUB_APT_SLEEP"
+        if [[ -n "${STUB_APT_WAIT_FILE:-}" ]]; then
+          for _ in $(seq 1 400); do [[ -f "$STUB_APT_WAIT_FILE" ]] && break; sleep 0.05; done
+        fi
         exit "${STUB_APT_RC:-0}"
     """,
     "ss": """
@@ -350,21 +353,26 @@ class PatchWindowTest(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("flock"), "flock (util-linux) not installed")
     def test_patch_unit_itself_holds_the_lock_while_running(self) -> None:
+        release = self.tmp / "release-apt"
+        # apt-get blocks until released, so the run stays active for the probe.
         proc = subprocess.Popen(
             ["bash", str(SCRIPT), "run"],
-            env=self.env(STUB_APT_SLEEP="2"),
+            env=self.env(STUB_APT_WAIT_FILE=str(release)),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         lock = self.tmp / "result" / "run.lock"
-        deadline = time.monotonic() + 10
-        while not self.rule_present() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertTrue(self.rule_present())
-        probe = subprocess.run(["flock", "-n", str(lock), "true"])
-        self.assertNotEqual(probe.returncode, 0, "run.lock must be held by the patch run itself")
-        proc.communicate(timeout=30)
+        try:
+            deadline = time.monotonic() + 10
+            while not self.rule_present() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(self.rule_present())
+            probe = subprocess.run(["flock", "-n", str(lock), "true"])
+            self.assertNotEqual(probe.returncode, 0, "run.lock must be held by the patch run itself")
+        finally:
+            release.touch()
+            proc.communicate(timeout=30)
         self.assertEqual(proc.returncode, 0)
         probe = subprocess.run(["flock", "-n", str(lock), "true"])
         self.assertEqual(probe.returncode, 0, "run.lock must be released when the run exits")
