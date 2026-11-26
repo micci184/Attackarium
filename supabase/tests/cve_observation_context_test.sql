@@ -51,24 +51,24 @@ begin
   if n <> 3 then raise exception 'created_at must remain the write time (3 rows), got %', n; end if;
 
   -- Strength and evidence basis are exposed only from the controlled vocabulary.
-  select * into r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000001';
-  if r.match_strength <> 'medium' or r.matched_location <> 'url'
-     or r.indicator <> 'sap_visual_composer_metadatauploader_path' then
+  select * into strict r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000001';
+  if r.match_strength is distinct from 'medium' or r.matched_location is distinct from 'url'
+     or r.indicator is distinct from 'sap_visual_composer_metadatauploader_path' then
     raise exception 'unexpected strength/evidence: % % %', r.match_strength, r.matched_location, r.indicator;
   end if;
-  select * into r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000003';
-  if r.match_strength is not null or r.matched_location <> 'header:x-api-key' then
+  select * into strict r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000003';
+  if r.match_strength is not null or r.matched_location is distinct from 'header:x-api-key' then
     raise exception 'invalid strength must be null; safe header label kept: % %', r.match_strength, r.matched_location;
   end if;
-  select * into r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000004';
+  select * into strict r from public.public_event_cve_matches where detection_id = 'bbbbbbbb-0000-4000-8000-000000000004';
   if r.matched_location is not null then raise exception 'unsafe location leaked: %', r.matched_location; end if;
 
   -- public_vulnerabilities: last_observed_at is the latest observation.
-  select * into r from public.public_vulnerabilities where cve_id = 'CVE-2025-31324';
-  if r.last_observed_at < now() - interval '2 hours' then
+  select * into strict r from public.public_vulnerabilities where cve_id = 'CVE-2025-31324';
+  if r.last_observed_at is null or r.last_observed_at < now() - interval '2 hours' then
     raise exception 'last_observed_at should be ~1 hour ago, got %', r.last_observed_at;
   end if;
-  if r.matched_event_count <> 2 then raise exception 'matched_event_count changed: %', r.matched_event_count; end if;
+  if r.matched_event_count is distinct from 2 then raise exception 'matched_event_count changed: %', r.matched_event_count; end if;
 
   -- public_cve_events: one row per (event, cve), same columns as public_events plus cve_id.
   select count(*) into n from public.public_cve_events where cve_id = 'CVE-2025-31324';

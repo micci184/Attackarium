@@ -64,7 +64,8 @@ describe("match strength and CVE ids (#84)", () => {
     assert.equal(parseCveId("CVE-2025-31324"), "CVE-2025-31324");
     assert.equal(parseCveId(" cve-2021-44228 "), "CVE-2021-44228");
     assert.equal(parseCveId("CVE-2021-1234567"), "CVE-2021-1234567");
-    for (const bad of ["CVE-21-1234", "CVE-2021-123", "CVE-2021-12345678", "CVE-2021-1234;drop", null, undefined]) {
+    assert.equal(parseCveId("CVE-2026-12345678"), "CVE-2026-12345678");
+    for (const bad of ["CVE-21-1234", "CVE-2021-123", `CVE-2021-${"9".repeat(40)}`, "CVE-2021-1234;drop", null, undefined]) {
       assert.equal(parseCveId(bad), null, String(bad));
     }
   });

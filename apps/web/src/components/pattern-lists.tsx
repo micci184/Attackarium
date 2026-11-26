@@ -137,8 +137,13 @@ export function PatternLists({
                         ) : null}
                       </div>
                     </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-700">
+                      <span className="font-medium text-slate-500">Rule rationale: </span>
+                      {safeDisplayText(item.reason)}
+                    </p>
                     {item.description ? (
-                      <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-slate-600">
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-600">
+                        <span className="font-medium text-slate-500">NVD summary: </span>
                         {safeDisplayText(item.description)}
                       </p>
                     ) : null}

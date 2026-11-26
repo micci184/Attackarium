@@ -103,7 +103,9 @@ export function formatEvidenceBasis(
 export function parseCveId(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   const upper = value.trim().toUpperCase();
-  return /^CVE-\d{4}-\d{4,7}$/.test(upper) ? upper : null;
+  // CVE sequence numbers have four or more digits and no upper bound; the
+  // overall length cap only keeps absurd input out of the query.
+  return upper.length <= 32 && /^CVE-\d{4}-\d{4,}$/.test(upper) ? upper : null;
 }
 
 export function formatEpss(score: number | null | undefined): string {
