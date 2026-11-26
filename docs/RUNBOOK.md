@@ -250,7 +250,7 @@ change: get explicit owner approval first (`docs/SECURITY.md`, gate 1).
    from the age of the last recorded success, not from the first failure: the
    sensor shows Due once that success is more than 3 days old (Overdue after
    7), and the weekly check fails whenever it is not Current. With daily
-   updates, roughly two consecutive failed days are needed before that.
+   updates that means about three consecutive days without a verified run.
 
 ## OS security patch window (ADR-026, #94)
 
