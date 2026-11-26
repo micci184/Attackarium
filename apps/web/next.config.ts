@@ -19,7 +19,10 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Permitted-Cross-Domain-Policies", value: "none" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  // Origin only, also same-origin: page paths and queries (filters, OAuth
+  // values) never reach analytics or other requests via Referer. Cross-origin
+  // links already received only the origin.
+  { key: "Referrer-Policy", value: "strict-origin" },
   {
     key: "Permissions-Policy",
     value: "camera=(), microphone=(), geolocation=()",
