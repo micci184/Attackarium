@@ -50,6 +50,12 @@ export function MethodologyBanner({ sourceMode, sensorCount = 1 }: MethodologyBa
           (AWS infrastructure abuse notices are routed to the registered AWS
           account owner).
         </p>
+        <p className="mt-2 text-slate-500">
+          Site analytics: public pages are counted with cookieless, aggregate-only
+          Vercel Web Analytics (page path, country, referrer, browser, and device
+          type). Query strings are dropped, and sign-in, consent, and operator pages
+          are never counted.
+        </p>
       </div>
     </details>
   );

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { NavHeader } from "@/components/nav-header";
+import { PrivacyAnalytics } from "@/components/privacy-analytics";
 import { TimezoneProvider } from "@/components/timezone-provider";
 import "./globals.css";
 
@@ -58,6 +59,7 @@ export default function RootLayout({
             </div>
           </div>
         </TimezoneProvider>
+        <PrivacyAnalytics />
       </body>
     </html>
   );
