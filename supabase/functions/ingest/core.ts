@@ -319,7 +319,16 @@ export async function handleIngestRequest(
         windowEndIso: overload.windowEnd,
       });
     } catch {
+      // Do not acknowledge a coverage report that was not stored. The shipper
+      // retries with a NEW request id, so this is not a replay; events are
+      // idempotent by id and come back as duplicates, and the overload report
+      // is recorded on the retry.
       console.error("record_sensor_overload failed");
+      return jsonResponse(
+        503,
+        { error: "Coverage report could not be stored; retry" },
+        { "retry-after": "30" },
+      );
     }
   }
   if (statusValidation.value.reported && repo.recordSensorStatus) {

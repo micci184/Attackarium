@@ -312,8 +312,10 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
         Unexpected errors are logged by type only (no attacker data).
         """
         exc = sys.exc_info()[1]
-        if isinstance(exc, (OSError, TimeoutError)):
+        if isinstance(exc, (ConnectionError, TimeoutError, socket.timeout)):
             return
+        # Everything else (including filesystem OSErrors such as an unwritable
+        # events file) stays visible, by type only.
         sys.stderr.write(f"request handler error ({type(exc).__name__})\n")
 
     def count(self, name: str) -> None:
@@ -343,6 +345,8 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
             os.chmod(tmp, 0o640)
             os.replace(tmp, path)
         except OSError as exc:
+            with self._metrics_lock:
+                self._metrics_dirty = True  # retry on the next loop tick
             sys.stderr.write(f"metrics write failed ({type(exc).__name__})\n")
 
     def _metrics_loop(self) -> None:

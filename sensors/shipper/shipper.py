@@ -425,9 +425,11 @@ class EventShipper:
         # example an ingest that predates #94), so events are never dropped
         # as poison pills because of it.
         self._patch_status_disabled = False
-        # Last delivered collector counters: (collector started_at, rejected,
-        # deadline_cut, observed_at ISO). None until the first read.
-        self._collector_baseline: tuple[str, int, int, str] | None = None
+        # Latest collector counters read (started_at, rejected, deadline_cut),
+        # when they were read, and the overload not yet delivered to ingest.
+        self._collector_snapshot: tuple[str, int, int] | None = None
+        self._collector_snapshot_at: str | None = None
+        self._pending_overload: dict[str, Any] | None = None
         self._spool_alert_active = False
         self._spool_notice_at: float | None = None
 
@@ -525,37 +527,59 @@ class EventShipper:
         except ValueError:
             return None
 
-    def _collector_status(self) -> tuple[dict[str, Any] | None, tuple[str, int, int, str] | None]:
-        """Report the counter increase since the last delivered report.
+    def _collector_status(self) -> dict[str, Any] | None:
+        """Accumulate collector overload into a pending report; return it.
 
-        The first read only sets a baseline. A collector restart (new
-        started_at) resets the counters, so the current values are the delta.
+        Every read advances the snapshot (so quiet periods never widen a
+        window). Increases are added to a pending report that is cleared only
+        after a successful delivery, so a failed send followed by a collector
+        restart loses nothing. A restart (new started_at) resets the counters,
+        so the new run's values are the increase.
         """
+        now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         current = self._read_collector_metrics()
-        if current is None:
-            return None, None
-        if self._collector_baseline is None:
-            self._collector_baseline = current
-            return None, None
-        base_started, base_rejected, base_cut, base_at = self._collector_baseline
-        started, rejected, cut, observed_at = current
-        if started != base_started:
-            try:
-                window_start = _iso_seconds(started)
-            except ValueError:
-                return None, None
-            delta_rejected, delta_cut = rejected, cut
-        else:
-            delta_rejected, delta_cut, window_start = rejected - base_rejected, cut - base_cut, base_at
-        if delta_rejected <= 0 and delta_cut <= 0:
-            return None, None
-        block = {
-            "rejected": max(0, delta_rejected),
-            "deadline_cut": max(0, delta_cut),
-            "window_start": window_start,
-            "window_end": observed_at,
-        }
-        return block, current
+        if current is not None:
+            started, rejected, cut, observed_at = current
+            if self._collector_snapshot is None:
+                self._collector_snapshot = (started, rejected, cut)
+            else:
+                snap_started, snap_rejected, snap_cut = self._collector_snapshot
+                if started != snap_started:
+                    delta_rejected, delta_cut = rejected, cut
+                else:
+                    delta_rejected = max(0, rejected - snap_rejected)
+                    delta_cut = max(0, cut - snap_cut)
+                if delta_rejected > 0 or delta_cut > 0:
+                    window_start = self._collector_snapshot_at or now_iso
+                    window_end = max(observed_at, window_start)
+                    pending = self._pending_overload
+                    if pending is None:
+                        self._pending_overload = {
+                            "rejected": delta_rejected,
+                            "deadline_cut": delta_cut,
+                            "window_start": window_start,
+                            "window_end": window_end,
+                        }
+                    else:
+                        pending["rejected"] += delta_rejected
+                        pending["deadline_cut"] += delta_cut
+                        pending["window_start"] = min(pending["window_start"], window_start)
+                        pending["window_end"] = max(pending["window_end"], window_end)
+                self._collector_snapshot = (started, rejected, cut)
+            self._collector_snapshot_at = now_iso
+        if self._pending_overload is None:
+            return None
+        report = dict(self._pending_overload)
+        # Ingest accepts windows from the last 7 days; never let an old
+        # undelivered report become a permanent 400.
+        oldest = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if report["window_start"] < oldest:
+            report["window_start"] = oldest
+        if report["window_end"] < report["window_start"]:
+            report["window_end"] = report["window_start"]
+        report["rejected"] = min(report["rejected"], 10_000_000)
+        report["deadline_cut"] = min(report["deadline_cut"], 10_000_000)
+        return report
 
     def _send_events(
         self,
@@ -564,7 +588,6 @@ class EventShipper:
     ) -> tuple[str, int | None, float | None]:
         """Send a signed event batch. Returns (outcome, status_code, retry_after)."""
         status: dict[str, Any] | None = None
-        collector_snapshot = None
         if not self._patch_status_disabled:
             status = {}
             if self.config.patch_status_path is not None:
@@ -572,14 +595,14 @@ class EventShipper:
                 # is recorded (for example after restoring a pre-patch
                 # snapshot), so the console never keeps an older success.
                 status["patch_last_success_at"] = self._read_patch_last_success_at()
-            collector_block, collector_snapshot = self._collector_status()
+            collector_block = self._collector_status()
             if collector_block is not None:
                 status["http_collector"] = collector_block
             if not status:
                 status = None
         result = self._send_body(events, status, now_sec)
-        if result[0] == "ok" and collector_snapshot is not None:
-            self._collector_baseline = collector_snapshot
+        if result[0] == "ok" and status is not None and "http_collector" in status:
+            self._pending_overload = None  # delivered
         if result[0] == "permanent_400" and status is not None:
             # Never let the optional status block turn real events into poison
             # pills: retry the same events without it.

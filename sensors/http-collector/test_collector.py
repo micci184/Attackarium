@@ -1086,14 +1086,27 @@ class SlowClientDeadlineTests(unittest.TestCase):
                         raise BrokenPipeError(32, "Broken pipe")
                     except BrokenPipeError:
                         server.handle_error(None, ("198.51.100.1", 1234))
+                    for quiet in (ConnectionResetError(104, "reset"), TimeoutError("t")):
+                        try:
+                            raise quiet
+                        except OSError:
+                            server.handle_error(None, ("198.51.100.1", 1234))
                     try:
                         raise ValueError("attacker-controlled detail")
                     except ValueError:
                         server.handle_error(None, ("198.51.100.1", 1234))
+                    try:
+                        raise PermissionError(13, "events.jsonl not writable")
+                    except PermissionError:
+                        server.handle_error(None, ("198.51.100.1", 1234))
                 written = "".join(c.args[0] for c in err.write.call_args_list)
                 self.assertNotIn("Broken pipe", written)
+                self.assertNotIn("reset", written)
                 self.assertIn("ValueError", written)
                 self.assertNotIn("attacker-controlled", written)
+                # Filesystem failures stay visible (type only).
+                self.assertIn("PermissionError", written)
+                self.assertNotIn("not writable", written)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1112,6 +1125,22 @@ class SlowClientDeadlineTests(unittest.TestCase):
                 self.assertEqual(metrics["deadline_exceeded"], 2)
                 self.assertRegex(metrics["started_at"], r"Z$")
                 self.assertEqual((Path(d) / "metrics.json").stat().st_mode & 0o777, 0o640)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_failed_metrics_write_is_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            try:
+                server.count("rejected_overload")
+                with mock.patch("collector.tempfile.mkstemp", side_effect=PermissionError(13, "x")):
+                    server.write_metrics()
+                self.assertTrue(server._metrics_dirty, "a failed write must stay pending")
+                server.write_metrics()
+                self.assertEqual(json.loads((Path(d) / "metrics.json").read_text())["rejected_overload"], 1)
+                self.assertFalse(server._metrics_dirty)
             finally:
                 server.shutdown()
                 server.server_close()

@@ -69,8 +69,10 @@ write_files:
           # Honeypot decoy TCP ports with per-source new-connection rate cap
           tcp dport { ${join(", ", decoy_tcp_ports)} } ct state new add @decoy_flood { ip saddr limit rate over 30/second burst 60 packets } drop
           # One source may not hold more than ${decoy_max_conns_per_source} concurrent decoy connections,
-          # so a single IP cannot fill the HTTP collector's slots (#95).
-          tcp dport { ${join(", ", decoy_tcp_ports)} } ct state new add @decoy_conns { ip saddr ct count over ${decoy_max_conns_per_source} } drop
+          # so a single IP cannot fill the HTTP collector's slots (#95). These
+          # drops never reach the collector; the counter makes them visible
+          # (`nft list chain inet attackarium input`).
+          tcp dport { ${join(", ", decoy_tcp_ports)} } ct state new add @decoy_conns { ip saddr ct count over ${decoy_max_conns_per_source} } counter drop
           tcp dport { ${join(", ", decoy_tcp_ports)} } accept
         }
 

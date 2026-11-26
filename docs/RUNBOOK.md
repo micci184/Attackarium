@@ -358,9 +358,14 @@ EICE, with explicit owner approval:
 1. Deploy `collector.py` and `shipper.py` (code deployment procedure above;
    the migration and ingest Edge Function must be deployed first) and restart
    `http-collector` and `attackarium-shipper`. Confirm the metrics file exists.
-2. In `/etc/nftables.conf`, add the `decoy_conns` set (`type ipv4_addr`,
-   `size 65535`, `flags dynamic`) and, after the `decoy_flood` rule,
-   `tcp dport { <decoy ports> } ct state new add @decoy_conns { ip saddr ct count over 8 } drop`.
+2. On the operator machine, print the configured limit with
+   `terraform -chdir=infra/aws-sensor console <<< 'var.decoy_max_conns_per_source'`
+   (default `8`). In `/etc/nftables.conf` on the host, add the `decoy_conns`
+   set (`type ipv4_addr`, `size 65535`, `flags dynamic`) and, after the
+   `decoy_flood` rule,
+   `tcp dport { <decoy ports> } ct state new add @decoy_conns { ip saddr ct count over <limit> } counter drop`
+   (with the default: `over 8`). The counter shows how many connections the
+   cap dropped; those never reach the collector or coverage.
    Check with `nft -c -f /etc/nftables.conf`, then apply with
    `nft -f /etc/nftables.conf`, keeping the EICE session open.
 3. Verify: `verify_egress.sh` passes, the decoy ports still answer, and

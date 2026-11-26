@@ -26,7 +26,9 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_event_id uuid;
+  v_keep_id uuid;
+  v_start timestamptz;
+  v_end timestamptz;
   v_summary text;
 begin
   if p_sensor_id is null
@@ -52,8 +54,26 @@ begin
   -- Serialize per sensor so concurrent batches cannot create overlapping rows.
   perform pg_catalog.pg_advisory_xact_lock(8217003, pg_catalog.hashtext(p_sensor_id));
 
+  -- Merge EVERY capacity interval this window connects (within 15 minutes),
+  -- so a report that bridges two existing rows leaves exactly one.
+  select min(started_at), max(ended_at)
+  into v_start, v_end
+  from public.sensor_status_events
+  where sensor_id = p_sensor_id
+    and status = 'degraded'
+    and summary like 'HTTP collector at capacity:%'
+    and ended_at is not null
+    and ended_at >= p_window_start - interval '15 minutes'
+    and started_at <= p_window_end + interval '15 minutes';
+
+  if v_start is null then
+    insert into public.sensor_status_events (sensor_id, status, started_at, ended_at, summary)
+    values (p_sensor_id, 'degraded', p_window_start, p_window_end, v_summary);
+    return true;
+  end if;
+
   select id
-  into v_event_id
+  into v_keep_id
   from public.sensor_status_events
   where sensor_id = p_sensor_id
     and status = 'degraded'
@@ -61,19 +81,23 @@ begin
     and ended_at is not null
     and ended_at >= p_window_start - interval '15 minutes'
     and started_at <= p_window_end + interval '15 minutes'
-  order by ended_at desc
+  order by started_at, id
   limit 1;
 
-  if v_event_id is not null then
-    update public.sensor_status_events
-    set started_at = least(started_at, p_window_start),
-        ended_at = greatest(ended_at, p_window_end),
-        summary = v_summary
-    where id = v_event_id;
-  else
-    insert into public.sensor_status_events (sensor_id, status, started_at, ended_at, summary)
-    values (p_sensor_id, 'degraded', p_window_start, p_window_end, v_summary);
-  end if;
+  delete from public.sensor_status_events
+  where sensor_id = p_sensor_id
+    and status = 'degraded'
+    and summary like 'HTTP collector at capacity:%'
+    and ended_at is not null
+    and ended_at >= p_window_start - interval '15 minutes'
+    and started_at <= p_window_end + interval '15 minutes'
+    and id <> v_keep_id;
+
+  update public.sensor_status_events
+  set started_at = least(v_start, p_window_start),
+      ended_at = greatest(v_end, p_window_end),
+      summary = v_summary
+  where id = v_keep_id;
 
   return true;
 end;

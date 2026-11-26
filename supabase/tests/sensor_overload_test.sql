@@ -39,6 +39,17 @@ begin
   select count(*) into n from public.sensor_status_events where sensor_id = 'sensor-ovl-01';
   if n <> 2 then raise exception 'distant windows must not merge, got % rows', n; end if;
 
+  -- A window that bridges two existing intervals leaves exactly one.
+  perform public.record_sensor_overload('sensor-ovl-01', 1, 0, now() - interval '170 minutes' + interval '1 minute', now() - interval '25 minutes');
+  select count(*) into n from public.sensor_status_events where sensor_id = 'sensor-ovl-01';
+  if n <> 1 then raise exception 'bridging window must merge all connected rows, got %', n; end if;
+  select * into r from public.sensor_status_events where sensor_id = 'sensor-ovl-01';
+  if r.started_at > now() - interval '3 hours' + interval '1 second' or r.ended_at < now() - interval '6 minutes' then
+    raise exception 'merged interval must span all rows: % - %', r.started_at, r.ended_at;
+  end if;
+  -- Restore the two-row shape the rest of the test expects.
+  perform public.record_sensor_overload('sensor-ovl-01', 1, 0, now() - interval '6 hours', now() - interval '355 minutes');
+
   -- Deadline cuts alone, bad windows, and unknown sensors record nothing.
   if public.record_sensor_overload('sensor-ovl-01', 0, 50, now() - interval '2 minutes', now()) then
     raise exception 'deadline cuts alone must not mark degraded coverage';

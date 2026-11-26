@@ -69,8 +69,12 @@ URLs, follow redirects, or pass payloads to a shell.
    and resends the same events without it.
    `sensor_status.http_collector` (#95) carries the HTTP collector's refused
    connections and deadline cuts since the last delivered report, with a UTC
-   window; refused connections become a closed `degraded` coverage interval
-   (`record_sensor_overload`), so lost observations never look like "0 events".
+   window; connections the collector refuses become a closed `degraded`
+   coverage interval (`record_sensor_overload`), so that loss never looks like
+   "0 events". Connections dropped earlier by the host per-source cap
+   (`decoy_max_conns_per_source`) never reach the collector: they undercount a
+   single heavy source (whose first connections are still recorded) and are
+   visible only in the `nftables` rule counter, not in coverage.
 5. Background jobs roll up hourly/daily aggregates, record observed patterns and
    sensor coverage gaps, enforce configurable retention on detailed records, and
    (Phase 2) enrich events with deterministic rules and CVE/KEV/EPSS context.
