@@ -31,6 +31,7 @@ class MockIngestState:
         self.received_request_ids: set[str] = set()
         self.signature_failures = 0
         self.reject_sensor_status = False
+        self.reject_http_collector = False
         self.received_sensor_status: list[dict] = []
 
 
@@ -78,6 +79,10 @@ class MockIngestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         payload = json.loads(raw_body)
+        if "http_collector" in payload.get("sensor_status", {}) and self.state.reject_http_collector:
+            self.send_response(400)
+            self.end_headers()
+            return
         if "sensor_status" in payload and self.state.reject_sensor_status:
             self.send_response(400)
             self.end_headers()
@@ -782,8 +787,12 @@ class CollectorOverloadReportTests(unittest.TestCase):
             )
         )
 
+    # Fixed wall clock: the fixtures below are around 2026-11-26, so the
+    # 6-day clamp must never depend on when the tests run.
+    FIXED_NOW = dt.datetime(2026, 11, 26, 9, 0, 0, tzinfo=dt.timezone.utc)
+
     def shipper(self) -> EventShipper:
-        return EventShipper(
+        sh = EventShipper(
             ShipperConfig(
                 sensor_id="sensor-dev-01",
                 hmac_secret=TEST_SECRET,
@@ -793,6 +802,8 @@ class CollectorOverloadReportTests(unittest.TestCase):
                 collector_metrics_path=self.metrics,
             )
         )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        return sh
 
     def beat(self, shipper: EventShipper) -> None:
         shipper._last_heartbeat_sec = None
@@ -947,17 +958,36 @@ class CollectorOverloadReportTests(unittest.TestCase):
     def test_old_undelivered_report_is_clamped_into_the_ingest_range(self) -> None:
         sh = self.shipper()
         try:
-            old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            old = (self.FIXED_NOW - dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
             sh._pending_overload = {"rejected": 4, "deadline_cut": 0, "window_start": old, "window_end": old}
             self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
             self.beat(sh)
             [report] = self.reports()
-            six_days = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6, minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            self.assertGreaterEqual(report["window_start"], six_days)
+            self.assertEqual(report["window_start"], "2026-11-20T09:00:00Z")  # FIXED_NOW - 6 days
             self.assertGreaterEqual(report["window_end"], report["window_start"])
             self.assertIsNone(sh._pending_overload)
-            # The lost timing is surfaced, not silent.
+            # The lost timing is surfaced, not silent, and exported.
             self.assertGreaterEqual(sh.metrics.overload_window_clamped, 1)
+            self.assertGreaterEqual(sh.metrics_snapshot()["overload_window_clamped"], 1)
+        finally:
+            sh.close()
+
+    def test_rejected_overload_report_is_dropped_without_disabling_reporting(self) -> None:
+        sh = self.shipper()
+        try:
+            self.write("2026-11-26T00:00:00Z", 0, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 3, 0, "2026-11-26T08:05:00Z")
+            self.state.reject_http_collector = True
+            self.beat(sh)  # 400 on the status block, events-only retry succeeds
+            self.assertIsNone(sh._pending_overload)
+            self.assertFalse(sh._patch_status_disabled)
+            self.assertEqual(sh.metrics_snapshot()["overload_reports_rejected"], 1)
+            # Later overload is still reported.
+            self.state.reject_http_collector = False
+            self.write("2026-11-26T00:00:00Z", 5, 0, "2026-11-26T08:10:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [2])
         finally:
             sh.close()
 

@@ -34,6 +34,7 @@ SPOOL_MAX_AGE_SECONDS = 24 * 60 * 60
 SPOOL_ALERT_RATIO = 0.70
 SPOOL_ALERT_REPEAT_SECONDS = 300.0
 PATCH_STATUS_MAX_BYTES = 4096
+STATUS_REJECT_BACKOFF_SECONDS = 3600.0
 def _iso_seconds(value: str) -> str:
     """Normalize an ISO UTC timestamp to 'YYYY-MM-DDTHH:MM:SSZ' (ingest format)."""
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -104,6 +105,8 @@ class ShipperMetrics:
     # Overload reports whose window start had to be clamped into ingest's
     # accepted range (delivery delayed > 6 days): timing information was lost.
     overload_window_clamped: int = 0
+    # Overload reports the ingest rejected (dropped so reporting continues).
+    overload_reports_rejected: int = 0
 
 
 def validate_ingest_url(url: str) -> str:
@@ -470,7 +473,9 @@ class EventShipper:
         # Set when the ingest rejects the optional sensor_status block (for
         # example an ingest that predates #94), so events are never dropped
         # as poison pills because of it.
-        self._patch_status_disabled = False
+        # Monotonic time until which sensor_status is not sent (after an
+        # ingest that rejects the block, e.g. one that predates #94).
+        self._status_disabled_until = 0.0
         # Latest collector counters read: (started_at, rejected, deadline_cut,
         # the file's updated_at). The pending overload is what ingest has not
         # acknowledged yet. Both persist in the spool database, so a shipper
@@ -646,7 +651,7 @@ class EventShipper:
         report = dict(self._pending_overload)
         # Ingest accepts windows from the last 7 days; never let an old
         # undelivered report become a permanent 400.
-        oldest = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        oldest = (self._utcnow() - dt.timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
         if report["window_start"] < oldest:
             # Timing information is lost: the refusals happened before the
             # clamped start. Surface it instead of failing the report forever.
@@ -660,6 +665,14 @@ class EventShipper:
         report["rejected"] = min(report["rejected"], 10_000_000)
         report["deadline_cut"] = min(report["deadline_cut"], 10_000_000)
         return report
+
+    @property
+    def _patch_status_disabled(self) -> bool:
+        return time.monotonic() < self._status_disabled_until
+
+    def _utcnow(self) -> dt.datetime:
+        """Wall clock (UTC); a seam for deterministic tests."""
+        return dt.datetime.now(dt.timezone.utc)
 
     def _send_events(
         self,
@@ -689,11 +702,21 @@ class EventShipper:
             # pills: retry the same events without it.
             retry = self._send_body(events, None, now_sec)
             if retry[0] == "ok":
-                # Only the status block was rejected (an ingest without #94).
-                self._patch_status_disabled = True
-                sys.stderr.write(
-                    "ingest rejected sensor_status; patch status reporting disabled\n"
-                )
+                # Only the status block was rejected. A 400 does not say which
+                # part, so never disable reporting for good:
+                if "http_collector" in status:
+                    # Drop this overload report (it would be rejected again)
+                    # but keep patch status and future overload reports.
+                    self._pending_overload = None
+                    self.spool.set_state("collector_pending", None)
+                    self.metrics.overload_reports_rejected += 1
+                    sys.stderr.write("ingest rejected the overload report; it was dropped\n")
+                else:
+                    # Probably an ingest that predates sensor_status: back off.
+                    self._status_disabled_until = time.monotonic() + STATUS_REJECT_BACKOFF_SECONDS
+                    sys.stderr.write(
+                        "ingest rejected sensor_status; status reporting paused for 1 hour\n"
+                    )
             # Otherwise (an event-level 400, or a transient failure that proves
             # nothing) keep status enabled; poison-pill isolation and the normal
             # retry path handle the events.
@@ -900,6 +923,8 @@ class EventShipper:
             "backoff_seconds": self.next_backoff_seconds(),
             "last_error": self.metrics.last_error,
             "last_delivery_at": self.metrics.last_delivery_at,
+            "overload_window_clamped": self.metrics.overload_window_clamped,
+            "overload_reports_rejected": self.metrics.overload_reports_rejected,
         }
 
     def ingest_jsonl_file(self, path: Path, max_bytes: int = 1024 * 1024) -> int:

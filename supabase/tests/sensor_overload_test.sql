@@ -54,7 +54,8 @@ begin
   perform public.record_sensor_overload('sensor-ovl-01', 1, 0, now() - interval '12 hours', now() - interval '12 hours');
   select * into r from public.sensor_status_events
   where sensor_id = 'sensor-ovl-01' and started_at = (select max(started_at) from public.sensor_status_events where sensor_id = 'sensor-ovl-01' and started_at <= now() - interval '11 hours');
-  if r.ended_at - r.started_at < interval '1 minute' then
+  if not found then raise exception 'zero-length window created no interval'; end if;
+  if r.ended_at is null or r.ended_at - r.started_at < interval '1 minute' then
     raise exception 'zero-length window stored as %', r.ended_at - r.started_at;
   end if;
   delete from public.sensor_status_events where id = r.id;
