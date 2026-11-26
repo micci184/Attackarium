@@ -919,6 +919,28 @@ class CollectorOverloadReportTests(unittest.TestCase):
         finally:
             sh.close()
 
+    def test_a_metrics_file_listed_twice_is_counted_once(self) -> None:
+        sh = EventShipper(
+            ShipperConfig(
+                sensor_id="sensor-dev-01",
+                hmac_secret=TEST_SECRET,
+                ingest_url=f"http://127.0.0.1:{self.port}/ingest",
+                spool_path=Path(self.tmpdir.name) / "spool.sqlite3",
+                heartbeat_interval_seconds=0.001,
+                collector_metrics_path=self.metrics,
+                collector_metrics_extra_paths=(self.metrics, Path(str(self.metrics))),
+            )
+        )
+        sh._utcnow = lambda: self.FIXED_NOW  # type: ignore[method-assign]
+        try:
+            self.write("2026-11-26T00:00:00Z", 10, 0, "2026-11-26T08:00:00Z")
+            self.beat(sh)
+            self.write("2026-11-26T00:00:00Z", 11, 0, "2026-11-26T08:05:00Z")
+            self.beat(sh)
+            self.assertEqual([r["rejected"] for r in self.reports()], [1])
+        finally:
+            sh.close()
+
     def test_missing_https_metrics_file_is_skipped(self) -> None:
         sh = self._shipper_with_tls(Path(self.tmpdir.name) / "absent.json")
         try:

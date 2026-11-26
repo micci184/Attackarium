@@ -578,11 +578,17 @@ class EventShipper:
         upgrade neither loses nor re-baselines its snapshot.
         """
         sources: list[tuple[str, Path]] = []
+        seen: set[Path] = set()
         if self.config.collector_metrics_path is not None:
             sources.append(("collector_snapshot", self.config.collector_metrics_path))
+            seen.add(self.config.collector_metrics_path.resolve(strict=False))
         for extra in self.config.collector_metrics_extra_paths:
+            resolved = extra.resolve(strict=False)
+            if resolved in seen:
+                continue  # a file listed twice must not count each increase twice
+            seen.add(resolved)
             # Full path, so equal file names in different directories never share a baseline.
-            sources.append((f"collector_snapshot:{extra.resolve(strict=False)}", extra))
+            sources.append((f"collector_snapshot:{resolved}", extra))
         return sources
 
     @property
