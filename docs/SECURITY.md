@@ -93,6 +93,7 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
 | Ingest rejects | Sustained 401/413/429/400 failures | Investigate key abuse, gateway throttling, or format regression |
 | OS patch freshness | No verified update in 3 days (Due) or 7 days (Overdue); the weekly `sensor-patch-freshness-weekly` workflow fails | Check the sensor's `unattended-upgrades` log and egress (`docs/RUNBOOK.md`); patch manually with `scripts/patch_sensor.sh` if needed |
 | HTTP body sampling | Max size crossed or concurrency shed (503) | Truncate/shed cleanly; never unbounded buffer |
+| HTTP collector overload (#95) | Connections refused at capacity (`rejected_overload`) | Shipper reports the window; ingest records a closed `degraded` coverage interval (public coverage shows it instead of "0 events"). Slow clients are cut at the 10 s per-connection deadline, and a source may hold at most 8 concurrent decoy connections (host `nftables` `ct count`) |
 
 ## Publication ethics
 

@@ -87,6 +87,17 @@ variable "enable_bootstrap_egress" {
   default     = false
 }
 
+variable "decoy_max_conns_per_source" {
+  description = "Maximum concurrent decoy connections per source IPv4 (host nftables ct count, #95). Keeps one source from filling the HTTP collector's connection slots."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.decoy_max_conns_per_source >= 2 && var.decoy_max_conns_per_source <= 64 && floor(var.decoy_max_conns_per_source) == var.decoy_max_conns_per_source
+    error_message = "decoy_max_conns_per_source must be an integer between 2 and 64."
+  }
+}
+
 variable "os_update_egress_cidrs" {
   description = "Permanent plain-HTTP (TCP/80) egress for automatic OS security updates (ADR-027): Canonical-owned Ubuntu archive ranges only (AS41231). apt verifies signed InRelease files."
   type        = list(string)

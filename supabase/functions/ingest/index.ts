@@ -93,6 +93,18 @@ function createSupabaseRepository(): IngestRepository {
       }
       throw new Error("Unexpected response from commit_ingest_batch");
     },
+    async recordSensorOverload(params): Promise<void> {
+      const { error } = await supabase.rpc("record_sensor_overload", {
+        p_sensor_id: params.sensorId,
+        p_rejected: params.rejected,
+        p_deadline_cut: params.deadlineCut,
+        p_window_start: params.windowStartIso,
+        p_window_end: params.windowEndIso,
+      });
+      if (error) {
+        throw new Error(`record_sensor_overload failed: ${error.code ?? "db_error"}`);
+      }
+    },
     async recordSensorStatus(params): Promise<void> {
       const { error } = await supabase.rpc("record_sensor_patch_status", {
         p_sensor_id: params.sensorId,

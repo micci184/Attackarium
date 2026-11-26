@@ -309,6 +309,8 @@ resource "aws_instance" "sensor" {
     decoy_tcp_ports     = local.decoy_tcp_ports
     ingest_egress_cidrs = var.ingest_egress_cidrs
     os_update_cidrs     = var.os_update_egress_cidrs
+    # Per-source concurrent decoy connections (#95)
+    decoy_max_conns_per_source = var.decoy_max_conns_per_source
     # Single source of truth for host files shipped by cloud-init (ADR-027).
     record_os_update_script = file("${path.module}/../../sensors/host/record_os_update_status.sh")
     unattended_upgrades_cfg = file("${path.module}/../../sensors/host/52attackarium-unattended-upgrades")

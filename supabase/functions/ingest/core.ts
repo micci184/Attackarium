@@ -49,6 +49,14 @@ export interface IngestRepository {
     patchLastSuccessAtIso: string | null;
     receivedAtIso: string;
   }): Promise<void>;
+  /** Operator coverage signal (#95): refused connections become a degraded interval. */
+  recordSensorOverload?(params: {
+    sensorId: string;
+    rejected: number;
+    deadlineCut: number;
+    windowStartIso: string;
+    windowEndIso: string;
+  }): Promise<void>;
 }
 
 const encoder = new TextEncoder();
@@ -255,7 +263,7 @@ export async function handleIngestRequest(
   if (!validation.ok) {
     return jsonResponse(400, { error: validation.error });
   }
-  const statusValidation = validateSensorStatus(parsedJson);
+  const statusValidation = validateSensorStatus(parsedJson, nowMs);
   if (!statusValidation.ok) {
     return jsonResponse(400, { error: statusValidation.error });
   }
@@ -300,6 +308,29 @@ export async function handleIngestRequest(
   }
 
   const patchLastSuccessAtIso = statusValidation.value.patchLastSuccessAt;
+  const overload = statusValidation.value.httpCollector;
+  if (overload && repo.recordSensorOverload) {
+    try {
+      await repo.recordSensorOverload({
+        sensorId,
+        rejected: overload.rejected,
+        deadlineCut: overload.deadlineCut,
+        windowStartIso: overload.windowStart,
+        windowEndIso: overload.windowEnd,
+      });
+    } catch {
+      // Do not acknowledge a coverage report that was not stored. The shipper
+      // retries with a NEW request id, so this is not a replay; events are
+      // idempotent by id and come back as duplicates, and the overload report
+      // is recorded on the retry.
+      console.error("record_sensor_overload failed");
+      return jsonResponse(
+        503,
+        { error: "Coverage report could not be stored; retry" },
+        { "retry-after": "30" },
+      );
+    }
+  }
   if (statusValidation.value.reported && repo.recordSensorStatus) {
     // Best effort: host status must never cost observation data, and the
     // shipper must not retry a committed batch because of it.

@@ -25,7 +25,9 @@ export type AllowedProtocol =
   | "other";
 
 const ALLOWED_TOP_LEVEL_KEYS = new Set(["events", "sensor_status"]);
-const ALLOWED_SENSOR_STATUS_KEYS = new Set(["patch_last_success_at"]);
+const ALLOWED_SENSOR_STATUS_KEYS = new Set(["patch_last_success_at", "http_collector"]);
+const ALLOWED_HTTP_COLLECTOR_KEYS = new Set(["rejected", "deadline_cut", "window_start", "window_end"]);
+const MAX_OVERLOAD_COUNT = 10_000_000;
 // Strict UTC ISO-8601 (what the shipper emits), e.g. 2026-11-25T07:00:17Z.
 const ISO_UTC_SECONDS_REGEX =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
@@ -39,6 +41,16 @@ export interface SensorStatusReport {
    * a restore from a pre-patch snapshot) and clears the stored value.
    */
   patchLastSuccessAt: string | null;
+  /**
+   * HTTP collector overload since the shipper's last delivered report (#95):
+   * connections refused at capacity and slow connections cut at the deadline.
+   */
+  httpCollector: {
+    rejected: number;
+    deadlineCut: number;
+    windowStart: string;
+    windowEnd: string;
+  } | null;
 }
 
 /** True only for a real UTC calendar date/time (rejects 2026-02-30 and similar). */
@@ -66,9 +78,11 @@ function isRealUtcTimestamp(value: string): boolean {
  */
 export function validateSensorStatus(
   payload: unknown,
+  nowMs: number = Date.now(),
 ): ValidationResult<SensorStatusReport> {
+  const none: SensorStatusReport = { reported: false, patchLastSuccessAt: null, httpCollector: null };
   if (!isPlainObject(payload) || !("sensor_status" in payload)) {
-    return { ok: true, value: { reported: false, patchLastSuccessAt: null } };
+    return { ok: true, value: none };
   }
   const raw = payload.sensor_status;
   if (!isPlainObject(raw)) {
@@ -79,27 +93,67 @@ export function validateSensorStatus(
       return { ok: false, error: `sensor_status contains unexpected field: ${key}` };
     }
   }
-  if (!("patch_last_success_at" in raw)) {
-    return { ok: false, error: "sensor_status.patch_last_success_at is required" };
+
+  const result: SensorStatusReport = { ...none };
+
+  // patch_last_success_at: absent = no change; null = clear; else a timestamp.
+  if ("patch_last_success_at" in raw) {
+    const value = raw.patch_last_success_at;
+    if (value === null) {
+      result.reported = true;
+    } else if (typeof value === "string" && isStrictUtcTimestamp(value)) {
+      result.reported = true;
+      result.patchLastSuccessAt = new Date(value).toISOString();
+    } else {
+      return {
+        ok: false,
+        error: "sensor_status.patch_last_success_at must be a UTC ISO timestamp",
+      };
+    }
   }
-  const value = raw.patch_last_success_at;
-  if (value === null) {
-    return { ok: true, value: { reported: true, patchLastSuccessAt: null } };
-  }
-  if (
-    typeof value !== "string" ||
-    !ISO_UTC_SECONDS_REGEX.test(value) ||
-    !isRealUtcTimestamp(value)
-  ) {
-    return {
-      ok: false,
-      error: "sensor_status.patch_last_success_at must be a UTC ISO timestamp",
+
+  if ("http_collector" in raw) {
+    const hc = raw.http_collector;
+    if (!isPlainObject(hc)) {
+      return { ok: false, error: "sensor_status.http_collector must be an object" };
+    }
+    for (const key of Object.keys(hc)) {
+      if (!ALLOWED_HTTP_COLLECTOR_KEYS.has(key)) {
+        return { ok: false, error: `sensor_status.http_collector contains unexpected field: ${key}` };
+      }
+    }
+    const { rejected, deadline_cut: deadlineCut, window_start: start, window_end: end } = hc;
+    const isCount = (v: unknown): v is number =>
+      typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= MAX_OVERLOAD_COUNT;
+    if (!isCount(rejected) || !isCount(deadlineCut)) {
+      return { ok: false, error: "sensor_status.http_collector counts must be small non-negative integers" };
+    }
+    if (
+      typeof start !== "string" ||
+      typeof end !== "string" ||
+      !isStrictUtcTimestamp(start) ||
+      !isStrictUtcTimestamp(end)
+    ) {
+      return { ok: false, error: "sensor_status.http_collector window must be UTC ISO timestamps" };
+    }
+    const startMs = Date.parse(start);
+    const endMs = Date.parse(end);
+    if (endMs < startMs || endMs > nowMs + 5 * 60_000 || startMs < nowMs - 7 * 86_400_000) {
+      return { ok: false, error: "sensor_status.http_collector window is out of range" };
+    }
+    result.httpCollector = {
+      rejected,
+      deadlineCut,
+      windowStart: new Date(startMs).toISOString(),
+      windowEnd: new Date(endMs).toISOString(),
     };
   }
-  return {
-    ok: true,
-    value: { reported: true, patchLastSuccessAt: new Date(value).toISOString() },
-  };
+
+  return { ok: true, value: result };
+}
+
+function isStrictUtcTimestamp(value: string): boolean {
+  return ISO_UTC_SECONDS_REGEX.test(value) && isRealUtcTimestamp(value);
 }
 
 export const ATTACK_CATEGORIES = [
