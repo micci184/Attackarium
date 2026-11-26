@@ -337,6 +337,7 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 "updated_at": _utc_now_iso(),
             }
             self._metrics_dirty = False
+        tmp: str | None = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".http-collector-metrics.")
@@ -344,7 +345,15 @@ class BoundedThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPSe
                 json.dump(payload, fp, separators=(",", ":"))
             os.chmod(tmp, 0o640)
             os.replace(tmp, path)
+            tmp = None
         except OSError as exc:
+            # Never leave a temp file behind: retries run every 2 s while the
+            # fault lasts, and the directory also holds events.jsonl.
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
             with self._metrics_lock:
                 self._metrics_dirty = True  # retry on the next loop tick
             sys.stderr.write(f"metrics write failed ({type(exc).__name__})\n")

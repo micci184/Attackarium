@@ -1146,6 +1146,22 @@ class SlowClientDeadlineTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_failed_replace_leaves_no_temp_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            server, thread = self._server(Path(d))
+            try:
+                server.count("rejected_overload")
+                with mock.patch("collector.os.replace", side_effect=PermissionError(13, "x")):
+                    for _ in range(3):
+                        server.write_metrics()
+                leftovers = list(Path(d).glob(".http-collector-metrics.*"))
+                self.assertEqual(leftovers, [])
+                self.assertTrue(server._metrics_dirty)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_fast_requests_are_unaffected_by_the_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             server, thread = self._server(Path(d))
