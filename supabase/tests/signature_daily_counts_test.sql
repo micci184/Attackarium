@@ -113,7 +113,65 @@ begin
   end if;
 end $$;
 
--- 4. Window bounds are enforced.
+-- 4. The window boundary is computed in UTC even under a DST time zone:
+--    p_now 2026-03-10 23:30 UTC minus 8 days must rebuild from March 2.
+--    Runs in a subtransaction that is rolled back, because a rollup with a
+--    past p_now also rebuilds (here: empties) every later day.
+do $$
+begin
+  begin
+    perform set_config('timezone', 'America/New_York', true);
+    insert into public.signature_daily_counts (
+      date_utc, rule_id, rule_version, classification, cve_id, protocol,
+      event_count, unique_source_count, first_seen_at, last_seen_at
+    ) values (
+      date '2026-03-02', 'rule-dst', '1.0.0', 'observed', '', 'http',
+      1, 1, timestamptz '2026-03-02 12:00:00+00', timestamptz '2026-03-02 12:00:00+00'
+    );
+    perform public.rollup_signature_daily_counts(timestamptz '2026-03-10 23:30:00+00', 8);
+    if exists (select 1 from public.signature_daily_counts where rule_id = 'rule-dst') then
+      raise exception 'March 2 was not rebuilt: window start shifted by DST';
+    end if;
+    raise exception 'dst-check-rollback';
+  exception
+    when raise_exception then
+      if sqlerrm <> 'dst-check-rollback' then
+        raise;
+      end if;
+  end;
+  perform set_config('timezone', '+09:00', true);
+end $$;
+
+-- 4b. The full backfill covers events older than any rollup window.
+do $$
+declare
+  v_rows bigint;
+begin
+  insert into public.attack_events (id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, src_ip_hash)
+  values ('c0000000-0000-4000-8000-000000000099', 'sensor-sighist-01', timestamptz '2026-12-17 12:00:00+00', 'http', 80, 'http_probe', 'web_attack_attempt', 'hash-z');
+  insert into public.detections (event_id, rule_id, rule_version, classification, confidence)
+  values ('c0000000-0000-4000-8000-000000000099', 'rule-old', '1.0.0', 'observed', 0.5);
+  -- 45 days before p_now: outside the bounded 30-day window.
+  perform public.rollup_signature_daily_counts(timestamptz '2027-01-31 12:00:00+00', 30);
+  select count(*) into v_rows from public.signature_daily_counts where rule_id = 'rule-old';
+  if v_rows <> 0 then
+    raise exception 'bounded rollup unexpectedly reached a 45-day-old event';
+  end if;
+  perform public.rebuild_signature_daily_counts(null, timestamptz '2027-01-31 12:00:00+00');
+  select count(*) into v_rows from public.signature_daily_counts where rule_id = 'rule-old';
+  if v_rows <> 1 then
+    raise exception 'full backfill missed a 45-day-old event (% rows)', v_rows;
+  end if;
+  -- Frozen history (days whose events were pruned in step 3) is untouched.
+  select count(*) into v_rows
+  from public.signature_daily_counts
+  where rule_id in ('rule-x', 'rule-sqli', 'rule-multi');
+  if v_rows <> 7 then
+    raise exception 'full backfill deleted frozen history (% rows left)', v_rows;
+  end if;
+end $$;
+
+-- 5. Window bounds are enforced.
 do $$
 begin
   begin
@@ -130,7 +188,7 @@ begin
   end;
 end $$;
 
--- 5. Public access: the day-granular view only (cve_id NULL for
+-- 6. Public access: the day-granular view only (cve_id NULL for
 --    technique-only rules); no base table, no rollup execution.
 set local role anon;
 do $$
@@ -157,6 +215,12 @@ begin
   exception
     when insufficient_privilege then null;
   end;
+  begin
+    perform public.rebuild_signature_daily_counts(null, now());
+    raise exception 'SECURITY FAILURE: anon executed rebuild_signature_daily_counts';
+  exception
+    when insufficient_privilege then null;
+  end;
 end $$;
 reset role;
 
@@ -172,7 +236,7 @@ begin
 end $$;
 reset role;
 
--- 6. The public view exposes no intra-day timestamps and is a barrier view.
+-- 7. The public view exposes no intra-day timestamps and is a barrier view.
 do $$
 begin
   if exists (

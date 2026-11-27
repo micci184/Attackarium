@@ -56,9 +56,13 @@ alter table public.signature_daily_counts force row level security;
 revoke all on table public.signature_daily_counts from public, anon, authenticated;
 grant all on table public.signature_daily_counts to service_role;
 
-create or replace function public.rollup_signature_daily_counts(
-  p_now timestamptz,
-  p_window_days integer default 8
+-- Internal: rebuild every day from p_from_date (UTC) on. Used by the bounded
+-- recurring rollup and, once, by the full backfill below. NULL means "from the
+-- oldest day that still has events": days whose events were already pruned
+-- are frozen history and are never deleted.
+create or replace function public.rebuild_signature_daily_counts(
+  p_from_date date,
+  p_now timestamptz
 )
 returns void
 language plpgsql
@@ -66,25 +70,26 @@ security invoker
 set search_path = ''
 as $$
 declare
-  v_window_start timestamptz;
+  v_from date := p_from_date;
 begin
   if p_now is null then
     raise exception 'p_now is required' using errcode = '22023';
-  end if;
-  if p_window_days is null or p_window_days < 8 or p_window_days > 30 then
-    raise exception 'rollup window must be between 8 and 30 days' using errcode = '22023';
   end if;
 
   -- Same lock as the other rollups and retention: never interleave with pruning.
   perform pg_catalog.pg_advisory_xact_lock(8217001);
 
-  v_window_start := pg_catalog.date_trunc(
-    'day',
-    (p_now - pg_catalog.make_interval(days => p_window_days)) at time zone 'UTC'
-  ) at time zone 'UTC';
+  if v_from is null then
+    select pg_catalog.min((e.observed_at at time zone 'UTC')::date)
+    into v_from
+    from public.attack_events e;
+    if v_from is null then
+      return; -- no stored events: nothing to rebuild, keep all history
+    end if;
+  end if;
 
   delete from public.signature_daily_counts s
-  where s.date_utc >= (v_window_start at time zone 'UTC')::date;
+  where s.date_utc >= v_from;
 
   insert into public.signature_daily_counts (
     date_utc,
@@ -114,8 +119,38 @@ begin
   from public.detections d
   inner join public.attack_events e on e.id = d.event_id
   left join public.event_cve_matches m on m.detection_id = d.id
-  where e.observed_at >= v_window_start
+  where e.observed_at >= (v_from::timestamp at time zone 'UTC')
   group by 1, 2, 3, 5, 6;
+end;
+$$;
+
+revoke all on function public.rebuild_signature_daily_counts(date, timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.rebuild_signature_daily_counts(date, timestamptz) to service_role;
+
+create or replace function public.rollup_signature_daily_counts(
+  p_now timestamptz,
+  p_window_days integer default 8
+)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if p_now is null then
+    raise exception 'p_now is required' using errcode = '22023';
+  end if;
+  if p_window_days is null or p_window_days < 8 or p_window_days > 30 then
+    raise exception 'rollup window must be between 8 and 30 days' using errcode = '22023';
+  end if;
+
+  -- Subtract calendar days in UTC (not in the session time zone, where a DST
+  -- change would shift the boundary day).
+  perform public.rebuild_signature_daily_counts(
+    ((p_now at time zone 'UTC') - pg_catalog.make_interval(days => p_window_days))::date,
+    p_now
+  );
 end;
 $$;
 
@@ -166,6 +201,7 @@ from public.signature_daily_counts s;
 revoke all on public.public_signature_daily_counts from public;
 grant select on public.public_signature_daily_counts to anon, authenticated, service_role;
 
--- Backfill every day that still has events (retention keeps at most 30 days
--- plus the current one), so history starts from the first observation.
-select public.rollup_signature_daily_counts(pg_catalog.now(), 30);
+-- One-time backfill from the oldest stored event (retention is at least 30
+-- days and may be longer), so history starts from the first observation still
+-- stored. The recurring rollup stays bounded to its window.
+select public.rebuild_signature_daily_counts(null, pg_catalog.now());
