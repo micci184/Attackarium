@@ -400,7 +400,8 @@ to PyPI, so download on the operator machine and install offline:
    and `sudo systemctl restart opencanary`.
 4. Verify: `systemctl is-active opencanary`, `ss -ltn` shows 21, 22, 23,
    3306, and 6379, `journalctl -u opencanary` shows no new tracebacks, and
-   `pip list` shows the new versions. Delete `/tmp/wheels` and `/tmp/update.txt`.
+   `/opt/attackarium/venv/bin/python -m pip list` shows the new versions
+   (`pip check` may list only OpenCanary's own overridden pins). Delete `/tmp/wheels` and `/tmp/update.txt`.
 
 Rollback: `sudo systemctl stop opencanary`, move the backup venv back to
 `/opt/attackarium/venv`, start the service. Keep the backup until the next
