@@ -19,6 +19,23 @@ def _keys(value: object) -> set[str]:
 
 
 class OpenCanaryConfigTests(unittest.TestCase):
+    def test_audit_ignores_only_advisories_for_decoys_that_are_off(self) -> None:
+        """An ignored Twisted advisory must stay irrelevant to the enabled decoys."""
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        workflow = (
+            Path(__file__).resolve().parents[2]
+            / ".github"
+            / "workflows"
+            / "sensor-dependency-audit.yml"
+        ).read_text(encoding="utf-8")
+        # GHSA-8pqf-f4m5-798g: Twisted IMAP4 server ReDoS (no fixed release).
+        if "GHSA-8pqf-f4m5-798g" in workflow:
+            enabled = {key for key, value in config.items() if key.endswith(".enabled") and value}
+            self.assertFalse(
+                any(key.startswith("imap") for key in enabled),
+                "remove the IMAP advisory ignore before enabling an IMAP decoy",
+            )
+
     def test_enables_decoys_and_leaves_http_to_the_collector(self) -> None:
         config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         self.assertEqual(config["device.node_id"], "sensor-replace-with-immutable-id")
