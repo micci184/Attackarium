@@ -3,12 +3,18 @@ name: Operator alerts (Slack)
 # #32: every 15 minutes, check sensor heartbeat, OS update freshness, active
 # sensors, and database size, and notify Slack when an alert starts, resolves,
 # or is still active a day later (state in public.ops_alert_state). The run
-# fails (GitHub emails the maintainer) only when the check itself cannot run,
-# including a missing or broken Slack webhook. Logs are public: counts only.
+# fails only when the check itself cannot run, including a missing or broken
+# Slack webhook (GitHub emails the workflow's owner if Actions notifications are
+# on; see docs/RUNBOOK.md). Logs are public: counts only.
 on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      send_test:
+        description: "Also post a test message to Slack (verifies the webhook)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,4 +40,5 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           # Optional repository variable; defaults to the Free plan's 500 MB.
           OPS_DB_QUOTA_MB: ${{ vars.OPS_DB_QUOTA_MB }}
+          OPS_ALERTS_SEND_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test && 'true' || 'false' }}
         run: node jobs/ops-alerts/run.ts

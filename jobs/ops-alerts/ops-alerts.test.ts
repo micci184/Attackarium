@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   DEFAULT_OPTIONS,
   buildSlackMessage,
+  buildSlackTestMessage,
   evaluateAlerts,
   fetchSensors,
   isSlackWebhookUrl,
@@ -45,6 +46,19 @@ describe("evaluateAlerts", () => {
     assert.deepEqual(
       active(evaluateAlerts([healthy, { ...healthy, id: "old", is_active: false, last_heartbeat_at: null }], 70 * MB, opts)),
       [],
+    );
+  });
+
+  it("compares the heartbeat age before rounding", () => {
+    const at = (ms: number) => new Date(NOW - ms).toISOString();
+    assert.deepEqual(active(evaluateAlerts([{ ...healthy, last_heartbeat_at: at(20 * 60_000) }], 70 * MB, opts)), []);
+    assert.deepEqual(
+      active(evaluateAlerts([{ ...healthy, last_heartbeat_at: at(20 * 60_000 + 1) }], 70 * MB, opts)),
+      ["heartbeat_stale"],
+    );
+    assert.deepEqual(
+      active(evaluateAlerts([{ ...healthy, last_heartbeat_at: at(20 * 60_000 + 30_000) }], 70 * MB, opts)),
+      ["heartbeat_stale"],
     );
   });
 
@@ -111,6 +125,12 @@ describe("Slack delivery", () => {
     ]) {
       assert.equal(isSlackWebhookUrl(bad), false, bad);
     }
+  });
+
+  it("builds an explicit test message that implies no alert", () => {
+    const text = buildSlackTestMessage(NOW).text;
+    assert.match(text, /Test message/);
+    assert.match(text, /no alert is implied/);
   });
 
   it("escapes Slack control characters and labels each kind", () => {

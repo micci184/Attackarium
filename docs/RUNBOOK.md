@@ -505,17 +505,30 @@ operator-only `public.ops_alert_state` table):
 | Sensor OS updates not current | No successful automatic update in the last 3 days (ADR-027) |
 | No active sensors | No sensor is marked active |
 
-Setup (once): create a Slack incoming webhook for a private channel, then
-store it as the repository secret `SLACK_WEBHOOK_URL` (GitHub → Settings →
-Secrets and variables → Actions, or `gh secret set SLACK_WEBHOOK_URL` and
-paste it at the prompt). Never commit the URL. Only `https://hooks.slack.com/services/...`
-URLs are accepted. Optionally set the repository variable `OPS_DB_QUOTA_MB`
-after a plan change. Test with "Run workflow" (`workflow_dispatch`).
+Setup (once):
+1. Apply migration `20261128000001_ops_alert_state.sql` (creates
+   `ops_alert_state` and `ops_database_size_bytes()`); without it every run
+   fails.
+2. Create a Slack incoming webhook for a private channel and store it as the
+   repository secret `SLACK_WEBHOOK_URL` (`gh secret set SLACK_WEBHOOK_URL`
+   and paste it at the prompt, or GitHub → Settings → Secrets and variables →
+   Actions). Never paste it into a command line, chat, or file; if it leaks,
+   delete it in Slack and create a new one. Only
+   `https://hooks.slack.com/services/...` URLs are accepted.
+3. Verify delivery: Actions → "Operator alerts (Slack)" → Run workflow with
+   **send_test** checked. A run without it posts only when an alert starts,
+   resolves, or is reminded, so a successful normal run does not prove the
+   webhook works.
+4. Optional: set the repository variable `OPS_DB_QUOTA_MB` after a plan change.
 
-The workflow run fails, and GitHub emails the maintainer, only when the check
-cannot run (Supabase unreachable, secret missing, Slack rejected the post);
-the alert state is saved only after Slack accepted the message, so a failed
-post is retried on the next run. Run logs are public and print counts only.
+A run fails only when the check cannot run (Supabase unreachable, a secret
+missing, Slack rejected the post). GitHub emails scheduled-run failures to the
+user who created the workflow or last changed its schedule, and only if that
+user has Actions email notifications enabled; otherwise the failure is visible
+only on the Actions tab. Alert state is saved only after Slack accepted the
+message, so a failed post is retried on the next run **while the condition
+lasts**; if it clears before then, that alert is not posted at all (the failed
+run itself is the signal). Run logs are public and print counts only.
 Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
 
 ### Conditions to check

@@ -45,10 +45,11 @@ export const DEFAULT_OPTIONS: Omit<AlertOptions, "nowMs"> = {
   dbWarnRatio: 0.7, // docs/RUNBOOK.md operational alerts: 350 MB of 500 MB
 };
 
-function minutesSince(iso: string | null, nowMs: number): number | null {
+/** Unrounded age in milliseconds; round only for display. */
+function ageMs(iso: string | null, nowMs: number): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);
-  return Number.isFinite(t) ? Math.floor((nowMs - t) / 60_000) : null;
+  return Number.isFinite(t) ? nowMs - t : null;
 }
 
 export function evaluateAlerts(
@@ -67,8 +68,8 @@ export function evaluateAlerts(
   });
 
   const stale = active
-    .map((s) => minutesSince(s.last_heartbeat_at, options.nowMs))
-    .filter((age) => age === null || age > options.heartbeatStaleMinutes);
+    .map((s) => ageMs(s.last_heartbeat_at, options.nowMs))
+    .filter((age) => age === null || age > options.heartbeatStaleMinutes * 60_000);
   const oldest = stale.reduce<number | null>(
     (max, age) => (age === null ? max : max === null ? age : Math.max(max, age)),
     null,
@@ -80,7 +81,7 @@ export function evaluateAlerts(
     detail:
       stale.length > 0
         ? `${stale.length} of ${active.length} active sensor(s) sent no heartbeat for more than ${options.heartbeatStaleMinutes} min` +
-          (oldest !== null ? ` (longest: ${oldest} min).` : " (never reported).") +
+          (oldest !== null ? ` (longest: ${Math.floor(oldest / 60_000)} min).` : " (never reported).") +
           " Collection or delivery may be down; check /sensors and the shipper on the host."
         : `All ${active.length} active sensor(s) reported within ${options.heartbeatStaleMinutes} min.`,
   });
@@ -171,6 +172,13 @@ const LABEL: Record<NotificationKind, string> = {
   reminder: ":warning: STILL ACTIVE",
   resolved: ":white_check_mark: RESOLVED",
 };
+
+/** Sent only on an explicit manual "send test" run, to prove delivery end to end. */
+export function buildSlackTestMessage(nowMs: number): { text: string } {
+  return {
+    text: `*Attackarium operator alerts*\n\n:white_check_mark: Test message (manual run, ${new Date(nowMs).toISOString()}). Slack delivery works; no alert is implied.`,
+  };
+}
 
 export function buildSlackMessage(notifications: readonly Notification[]): { text: string } {
   const lines = notifications.map(
