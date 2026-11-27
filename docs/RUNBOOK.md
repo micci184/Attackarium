@@ -491,6 +491,35 @@ Storage pressure checks (no extra monitoring service; sensor has no DB password)
 
 ## Operational alerts checklist (`docs/SECURITY.md`)
 
+### Slack alerts (#32)
+
+The "Operator alerts (Slack)" workflow (`.github/workflows/ops-alerts.yml`,
+`jobs/ops-alerts`) runs every 15 minutes and posts to Slack when an alert
+starts, when it resolves, and once a day while it stays active (state in the
+operator-only `public.ops_alert_state` table):
+
+| Alert | Condition |
+|---|---|
+| Sensor heartbeat missing | An active sensor sent no heartbeat for more than 20 min |
+| Database storage high | Database size >= 70% of `OPS_DB_QUOTA_MB` (default 500 MB) |
+| Sensor OS updates not current | No successful automatic update in the last 3 days (ADR-027) |
+| No active sensors | No sensor is marked active |
+
+Setup (once): create a Slack incoming webhook for a private channel, then
+store it as the repository secret `SLACK_WEBHOOK_URL` (GitHub → Settings →
+Secrets and variables → Actions, or `gh secret set SLACK_WEBHOOK_URL` and
+paste it at the prompt). Never commit the URL. Only `https://hooks.slack.com/services/...`
+URLs are accepted. Optionally set the repository variable `OPS_DB_QUOTA_MB`
+after a plan change. Test with "Run workflow" (`workflow_dispatch`).
+
+The workflow run fails, and GitHub emails the maintainer, only when the check
+cannot run (Supabase unreachable, secret missing, Slack rejected the post);
+the alert state is saved only after Slack accepted the message, so a failed
+post is retried on the next run. Run logs are public and print counts only.
+Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
+
+### Conditions to check
+
 Check these five operational conditions regularly (no mandatory third-party
 SIEM or Lambda required in MVP):
 
