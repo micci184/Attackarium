@@ -142,6 +142,31 @@ begin
   perform set_config('timezone', '+09:00', true);
 end $$;
 
+-- 4a. The retention cutoff is also computed in UTC: under America/New_York,
+--     p_now 2026-03-10 23:30 UTC minus 30 days keeps February 8 (UTC).
+do $$
+declare
+  v_left bigint;
+begin
+  begin
+    perform set_config('timezone', 'America/New_York', true);
+    insert into public.attack_events (id, sensor_id, observed_at, protocol, dst_port, event_type, src_ip_hash)
+    values ('c0000000-0000-4000-8000-0000000000d1', 'sensor-sighist-01', timestamptz '2026-02-08 12:00:00+00', 'http', 80, 'http_probe', 'hash-d');
+    perform public.prune_observation_retention(timestamptz '2026-03-10 23:30:00+00', 30);
+    select count(*) into v_left from public.attack_events where id = 'c0000000-0000-4000-8000-0000000000d1';
+    if v_left <> 1 then
+      raise exception 'retention cutoff shifted by DST: a February 8 event was pruned';
+    end if;
+    raise exception 'dst-prune-rollback';
+  exception
+    when raise_exception then
+      if sqlerrm <> 'dst-prune-rollback' then
+        raise;
+      end if;
+  end;
+  perform set_config('timezone', '+09:00', true);
+end $$;
+
 -- 4b. The full backfill covers events older than any rollup window.
 do $$
 declare

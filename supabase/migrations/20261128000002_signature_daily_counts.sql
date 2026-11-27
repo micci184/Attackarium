@@ -182,6 +182,53 @@ begin
 end;
 $$;
 
+-- Retention cutoff in UTC calendar days, matching the rollup window above, so
+-- a non-UTC session can never prune a day the same run has just rebuilt.
+-- Same signature, result, lock, and minimum retention as before.
+create or replace function public.prune_observation_retention(
+  p_now timestamptz,
+  p_event_retention_days integer
+)
+returns table (
+  deleted_events bigint,
+  deleted_receipts bigint
+)
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_cutoff timestamptz;
+  v_events bigint;
+  v_receipts bigint;
+begin
+  if p_now is null then
+    raise exception 'p_now is required' using errcode = '22023';
+  end if;
+  if p_event_retention_days is null or p_event_retention_days < 30 then
+    raise exception 'event retention must be at least 30 days' using errcode = '22023';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(8217001);
+
+  -- Subtract calendar days in UTC (not in the session time zone, where a DST
+  -- change would move the cutoff a day past the rollup window start).
+  v_cutoff := (
+    ((p_now at time zone 'UTC') - pg_catalog.make_interval(days => p_event_retention_days))::date
+  )::timestamp at time zone 'UTC';
+
+  delete from public.attack_events ae
+  where ae.observed_at < v_cutoff;
+  get diagnostics v_events = row_count;
+
+  delete from public.ingest_receipts r
+  where r.expires_at < p_now;
+  get diagnostics v_receipts = row_count;
+
+  return query select v_events, v_receipts;
+end;
+$$;
+
 -- Public, day-granular view: no intra-day timestamps (first/last seen stay
 -- private), no event ids, no rule evidence. cve_id is NULL for
 -- technique-only rules.
