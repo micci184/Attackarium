@@ -371,6 +371,41 @@ EICE, with explicit owner approval:
 3. Verify: `verify_egress.sh` passes, the decoy ports still answer, and
    `journalctl -u http-collector` shows no tracebacks.
 
+## Sensor Python dependencies (OpenCanary venv)
+
+OpenCanary and its network stack (Twisted, pyasn1, ...) parse attacker input,
+but they live in `/opt/attackarium/venv` and are **not** updated by the OS
+automatic updates (ADR-027). `sensors/opencanary/requirements.txt` pins every
+package with hashes and is the source of truth. The "Dependency vulnerability
+audit" workflow checks it on every PR and weekly; a failed weekly run (email)
+means a new advisory: bump the pin in a PR, then update the host as below.
+
+OpenCanary pins exact versions of some dependencies. Install it with
+`--no-deps` and let `requirements.txt` override those pins, after a loopback
+smoke test of every enabled decoy (connect to FTP, SSH, Telnet, MySQL, and
+Redis and check that `opencanary.jsonl` records the expected `logtype`s).
+
+Updating the host (EICE, explicit operator approval). The sensor has no egress
+to PyPI, so download on the operator machine and install offline:
+1. Put only the changed pins (with their `--hash` lines) from
+   `requirements.txt` into `update.txt`, then download them with hash checks:
+   `pip download --no-deps --require-hashes --only-binary=:all: --platform manylinux_2_17_x86_64 --python-version 3.12 --implementation cp -d wheels -r update.txt`.
+   Pure-Python wheels (`py3-none-any`) work as is; a package that only has an
+   sdist or a compiled wheel needs a rebuild plan before the window.
+2. Copy `wheels/` and `update.txt` to the host `/tmp/` over the EICE tunnel
+   (code deployment procedure above).
+3. On the host: `TS=$(date -u +%Y%m%dT%H%M%SZ)`,
+   `sudo cp -a /opt/attackarium/venv /opt/attackarium/backup-$TS-venv`, then
+   `sudo /opt/attackarium/venv/bin/pip install --no-index --find-links /tmp/wheels --no-deps --require-hashes -r /tmp/update.txt`
+   and `sudo systemctl restart opencanary`.
+4. Verify: `systemctl is-active opencanary`, `ss -ltn` shows 21, 22, 23,
+   3306, and 6379, `journalctl -u opencanary` shows no new tracebacks, and
+   `pip list` shows the new versions. Delete `/tmp/wheels` and `/tmp/update.txt`.
+
+Rollback: `sudo systemctl stop opencanary`, move the backup venv back to
+`/opt/attackarium/venv`, start the service. Keep the backup until the next
+update.
+
 ## HTTPS collector on 443 (#93, ADR-028)
 
 A second collector process serves 443 with a per-sensor self-signed

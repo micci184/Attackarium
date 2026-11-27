@@ -1,0 +1,61 @@
+name: Dependency vulnerability audit
+
+# The sensor's Python packages (OpenCanary, Twisted, ...) parse attacker input
+# but are not covered by OS automatic updates (ADR-027), so known advisories are
+# checked here: on every PR that changes them, and weekly, because new
+# advisories appear without any code change. A weekly failure emails the
+# maintainer. The web app's production npm dependencies are checked the same way.
+on:
+  pull_request:
+    paths:
+      - "sensors/opencanary/requirements.txt"
+      - "apps/web/package.json"
+      - "apps/web/package-lock.json"
+      - ".github/workflows/sensor-dependency-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sensors/opencanary/requirements.txt"
+      - "apps/web/package-lock.json"
+  schedule:
+    - cron: "43 1 * * 1" # Mondays 01:43 UTC (10:43 JST)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sensor-python:
+    name: Sensor Python packages (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # the sensor host's Python (Ubuntu 24.04)
+      - name: Install pip-audit
+        run: python -m pip install --disable-pip-version-check pip-audit==2.9.0
+      - name: Audit sensors/opencanary/requirements.txt
+        # Ignored, with reasons (re-check when a fix is released):
+        # - GHSA-8pqf-f4m5-798g: ReDoS in Twisted's IMAP4 server. No fixed
+        #   release yet; the sensor does not run an IMAP decoy.
+        run: >-
+          pip-audit -r sensors/opencanary/requirements.txt
+          --no-deps --disable-pip --progress-spinner off
+          --ignore-vuln GHSA-8pqf-f4m5-798g
+
+  web-npm:
+    name: Web production dependencies (npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

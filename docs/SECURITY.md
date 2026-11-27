@@ -50,7 +50,9 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
     `/admin`, and a weekly GitHub Actions check fails (email) when an active sensor is not
     current. The manual patch window (ADR-026, `scripts/patch_sensor.sh`) remains for urgent
     fixes, rollbacks, and mirror changes. Enabling new Internet-facing parsers (for example TLS on
-    443, #93) requires a verified current sensor first.
+    443, #93) requires a verified current sensor first. The OpenCanary venv (Twisted, pyasn1, ...)
+    is outside OS updates: `sensors/opencanary/requirements.txt` pins it with hashes, CI audits it
+    on every PR and weekly, and the host is updated offline over EICE (`docs/RUNBOOK.md`).
 11. **Incident response:** abuse contact, AWS Budgets/cost alerts, sensor shutdown runbook, and
     log/secret rotation plan; never run real malware or attacker commands on the sensor.
 12. **Remote MCP auth & authz (Vercel Functions + `mcp-handler` + Supabase Auth OAuth 2.1):**
