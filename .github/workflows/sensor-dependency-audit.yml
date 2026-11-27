@@ -37,11 +37,15 @@ jobs:
           python -m venv /tmp/sensor-venv
           /tmp/sensor-venv/bin/python -m pip install --disable-pip-version-check --no-deps --require-hashes \
             -r sensors/opencanary/requirements.txt
-      - name: Dependency consistency (only OpenCanary's own pins may be overridden)
+      - name: Dependency consistency (only the approved OpenCanary overrides)
         # --no-deps would hide a conflict between the overrides themselves
-        # (for example Twisted 26.10 requiring zope.interface >= 8).
+        # (for example Twisted 26.10 requiring zope.interface >= 8) and a
+        # missing package. Only OpenCanary's version pins for the five
+        # overridden packages may differ; anything else, including a missing
+        # OpenCanary dependency, fails.
         run: |
-          problems="$(/tmp/sensor-venv/bin/python -m pip check | grep -v '^opencanary ' || true)"
+          approved='^opencanary [0-9.]+ has requirement (twisted|pyasn1|urllib3|setuptools|zope[.-]interface)=='
+          problems="$(/tmp/sensor-venv/bin/python -m pip check | grep -Eiv "$approved" || true)"
           if [ -n "$problems" ]; then
             echo "$problems"
             exit 1
