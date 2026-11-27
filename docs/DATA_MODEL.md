@@ -18,6 +18,7 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | `event_aggregates` (Phase 1 ext) | `bucket_start`, `granularity` (`hour` / `day`), `sensor_id`, `protocol`, `attack_category`, `event_count`, `unique_source_count` | Supports 24h/7d/30d trends and day-over-day comparison without scanning raw events |
 | `observed_patterns` (Phase 1 ext) | `pattern_type` (`http_path` / `signature` / `attack_category`), `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `total_count` | Tracks representative HTTP paths and attack patterns. Lifetime values are derived from `pattern_daily_counts` |
 | `pattern_daily_counts` (Phase 1 ext) | `date_utc`, `pattern_type`, `pattern_key`, `protocol`, `first_seen_at`, `last_seen_at`, `event_count` | PRIVATE. Per-day pattern counts kept after detail retention, so pattern totals stay exact |
+| `signature_daily_counts` (#84) | `date_utc`, `rule_id`, `rule_version`, `classification`, `cve_id` (`''` = technique-only), `protocol`, `event_count`, `unique_source_count`, `first_seen_at`, `last_seen_at` | PRIVATE. Detections per observed UTC day, rule version, candidate CVE, and protocol (distinct events and sources), kept after detail retention so rule and candidate-CVE history outlives the 30-day event window. `rule_version` is part of the key so rule changes are not read as trends. Rebuilt for the trailing rollup window by `rollup_signature_daily_counts()` inside the 15-minute maintenance. Public through `public_signature_daily_counts` (day granularity, `cve_id` NULL for technique-only rules, no first/last seen times). Candidate hypotheses, not proof of exploitation |
 | `sensor_status_events` (Phase 1 ext) | `id`, `sensor_id`, `status` (`healthy` / `degraded` / `offline` / `error`), `started_at`, `ended_at`, `summary` | Records collection outages so UI separates zero-traffic periods from coverage gaps |
 | `ingest_receipts` | `sensor_id`, `request_id`, `received_at`, `expires_at` | Bounded anti-replay nonce & atomic per-sensor sliding-window rate-limit store |
 
@@ -91,7 +92,7 @@ switch.
 
 ## Retention and backups (configurable by cost and volume)
 
-1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `pattern_daily_counts`, `sensor_status_events`):**
+1. **Daily and hourly aggregates (`daily_stats`, `event_aggregates`, `observed_patterns`, `pattern_daily_counts`, `signature_daily_counts`, `sensor_status_events`):**
    Keep for **at least 1 year**. Prefer these over raw detail when the database nears its quota.
 2. **Sanitized events (`attack_events`, including `src_ip_hash`):**
    Keep for **at least 30 days**. Shorten this window first if storage fills, and do not go below 30 days without a new decision. `prune_observation_retention` rejects a shorter window and deletes only whole UTC days older than the cutoff.
