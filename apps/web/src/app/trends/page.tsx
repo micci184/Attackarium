@@ -183,8 +183,8 @@ export default async function TrendsPage({ searchParams }: TrendsPageProps) {
         sampledNote={
           data.isEventSampled
             ? data.seriesSource === "event_aggregates"
-              ? "Destination ports use the newest stored events in this window. HTTP paths and category totals use full rollups."
-              : "The port list uses the newest stored events in this window, not every row. HTTP paths use the full pattern rollup."
+              ? "Destination ports use the newest stored events in this window. Category totals use the full UTC-hour rollup. HTTP paths list paths seen in this window; their counts are all-time totals."
+              : "Port and category lists use the newest stored events in this window, not every row. HTTP paths list paths seen in this window; their counts are all-time totals."
             : null
         }
       />
