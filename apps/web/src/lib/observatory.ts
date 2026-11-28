@@ -32,6 +32,7 @@ import {
   periodLengthMs,
   selectNoteworthyObservations,
   sumTrendBuckets,
+  rankPublicHttpPaths,
   topHttpPaths,
   topPatterns,
   topPatternsFromCounts,
@@ -43,6 +44,7 @@ import {
   AttackCategorySchema,
   type EnrichedEventCveMatch,
   type EventDetailData,
+  type HttpPathTotal,
   type OverviewData,
   type OverviewSensor,
   type PaginatedEventsResult,
@@ -69,12 +71,16 @@ import {
 
 export const HEARTBEAT_STALE_THRESHOLD_MS = 15 * 60 * 1000;
 export function evaluateSensorHealth(
-  sensor: Pick<PublicSensor, "is_active" | "last_heartbeat_at">,
+  sensor: Pick<PublicSensor, "is_active" | "last_heartbeat_at"> & { heartbeat_stale?: boolean | null },
   nowMs: number,
   staleThresholdMs: number = HEARTBEAT_STALE_THRESHOLD_MS,
 ): SensorHealthStatus {
   if (!sensor.is_active) {
     return "inactive";
+  }
+  // Prefer the view's flag: it uses the unrounded heartbeat (#88).
+  if (typeof sensor.heartbeat_stale === "boolean") {
+    return sensor.heartbeat_stale ? "stale" : "healthy";
   }
   if (!sensor.last_heartbeat_at) {
     return "stale";
@@ -620,7 +626,7 @@ export async function getOverviewData(): Promise<OverviewData> {
       z.array(PublicEventCveMatchSchema).parse(cveMatchesRes.data ?? []),
       z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []),
     ),
-    httpPaths24h: topHttpPaths(sampleRows, 8, await fetchPathSourceCounts(client)),
+    httpPaths24h: await fetchTopHttpPaths(client, since24h),
     dataUpdatedAt: latestTimestamp([
       ...hourRows.map((row) => row.updated_at),
       ...sampleRows.map((row) => row.received_at),
@@ -630,27 +636,32 @@ export async function getOverviewData(): Promise<OverviewData> {
 }
 
 /**
- * Distinct-source counts of public HTTP paths (#88 L5), keyed by the path as
- * stored. Only paths seen from enough sources are listed by the view.
+ * Top public HTTP paths seen since `sinceIso` (#88 L5), ranked by distinct
+ * sources. On a read error the list is empty: never fall back to event counts.
  */
-async function fetchPathSourceCounts(
+async function fetchTopHttpPaths(
   client: NonNullable<ReturnType<typeof getPublicSupabaseClient>>,
-): Promise<Map<string, number>> {
+  sinceIso: string,
+): Promise<HttpPathTotal[]> {
   const { data, error } = await client
     .from("public_observed_patterns")
-    .select("pattern_key, unique_source_count")
+    .select("pattern_key, total_count, unique_source_count")
     .eq("pattern_type", "http_path")
+    .gte("last_seen_at", sinceIso)
     .order("unique_source_count", { ascending: false })
-    .limit(2000);
-  if (error || !Array.isArray(data)) return new Map();
-  const map = new Map<string, number>();
-  for (const row of data as Array<{ pattern_key?: unknown; unique_source_count?: unknown }>) {
-    const sources = Number(row.unique_source_count);
-    if (typeof row.pattern_key === "string" && Number.isFinite(sources)) {
-      map.set(row.pattern_key, Math.max(map.get(row.pattern_key) ?? 0, sources));
-    }
-  }
-  return map;
+    .order("total_count", { ascending: false })
+    .limit(50);
+  if (error || !Array.isArray(data)) return [];
+  const rows = z
+    .array(
+      z.object({
+        pattern_key: z.string(),
+        total_count: z.coerce.number().int().nonnegative(),
+        unique_source_count: z.coerce.number().int().nonnegative().nullable(),
+      }),
+    )
+    .safeParse(data);
+  return rows.success ? rankPublicHttpPaths(rows.data) : [];
 }
 
 export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsData> {
@@ -925,7 +936,9 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
           )
         : topPatterns(windowEvents),
     patternCveContext: buildPatternCveContext(cveMatches, vulnerabilities),
-    httpPaths: client ? topHttpPaths(windowEvents, 8, await fetchPathSourceCounts(client)) : topHttpPaths(windowEvents),
+    httpPaths: client
+      ? await fetchTopHttpPaths(client, new Date(windowStartMs).toISOString())
+      : topHttpPaths(windowEvents),
   };
 }
 

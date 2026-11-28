@@ -509,16 +509,8 @@ interface HttpPathInput {
   http_path_redacted: string | null;
 }
 
-/**
- * Top public HTTP paths. Withheld paths (NULL, #88) are skipped. When
- * `sourcesByPath` (raw path -> distinct sources) is given, paths are ranked by
- * distinct sources first, so one source cannot push a path up by flooding.
- */
-export function topHttpPaths(
-  events: HttpPathInput[],
-  limit = 8,
-  sourcesByPath?: ReadonlyMap<string, number>,
-): HttpPathTotal[] {
+/** Top HTTP paths from event rows (mock mode). Withheld paths (NULL) are skipped. */
+export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[] {
   const totals = new Map<string, HttpPathTotal>();
   for (const event of events) {
     if (event.protocol !== "http" && event.protocol !== "https") continue;
@@ -526,20 +518,42 @@ export function topHttpPaths(
     if (!maskedPath) continue;
     const method = event.http_method ?? "GET";
     const key = `${method} ${maskedPath}`;
-    const sources = event.http_path_redacted ? sourcesByPath?.get(event.http_path_redacted) : undefined;
     const current = totals.get(key);
     if (current) {
       current.count += 1;
-      if (sources !== undefined) current.sources = Math.max(current.sources ?? 0, sources);
       continue;
     }
-    totals.set(key, { method, path: maskedPath, count: 1, ...(sources !== undefined ? { sources } : {}) });
+    totals.set(key, { method, path: maskedPath, count: 1 });
   }
   return Array.from(totals.values())
-    .toSorted(
-      (a, b) =>
-        (b.sources ?? 0) - (a.sources ?? 0) || b.count - a.count || a.path.localeCompare(b.path),
-    )
+    .toSorted((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+    .slice(0, limit);
+}
+
+export interface PublicHttpPathPatternRow {
+  pattern_key: string;
+  total_count: number;
+  unique_source_count: number | null;
+}
+
+/**
+ * Top public HTTP paths (#88 L5): built from public_observed_patterns, which
+ * lists only paths sent by at least 3 distinct sources, and ranked by distinct
+ * sources, then events. It does not use a capped event sample, so a source
+ * flooding one path cannot crowd out others or buy a higher rank.
+ * Rows without a source count are dropped rather than ranked by events.
+ */
+export function rankPublicHttpPaths(rows: readonly PublicHttpPathPatternRow[], limit = 8): HttpPathTotal[] {
+  return rows
+    .filter((row) => typeof row.unique_source_count === "number" && Number.isFinite(row.unique_source_count))
+    .map((row) => ({
+      method: "",
+      path: safeDisplayHttpPath(row.pattern_key, ""),
+      count: row.total_count,
+      sources: row.unique_source_count as number,
+    }))
+    .filter((row) => row.path.length > 0)
+    .toSorted((a, b) => b.sources - a.sources || b.count - a.count || a.path.localeCompare(b.path))
     .slice(0, limit);
 }
 

@@ -67,7 +67,7 @@ begin
   select * into strict r from public.public_vulnerabilities where cve_id = 'CVE-2025-31324';
   -- Hour precision (#88): within the hour of the 3-hour-old observation.
   if r.last_observed_at is null or r.last_observed_at < now() - interval '4 hours'
-     or r.last_observed_at <> date_trunc('hour', r.last_observed_at) then
+     or r.last_observed_at <> date_trunc('hour', r.last_observed_at, 'UTC') then
     raise exception 'last_observed_at should be the hour of the latest observation, got %', r.last_observed_at;
   end if;
   if r.matched_event_count is distinct from 2 then raise exception 'matched_event_count changed: %', r.matched_event_count; end if;

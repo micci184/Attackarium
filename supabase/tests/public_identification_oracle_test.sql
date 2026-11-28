@@ -140,6 +140,9 @@ begin
   if r.last_heartbeat_at <> timestamptz '2026-11-28 05:05:00+00' then
     raise exception 'heartbeat should floor to 05:05, got %', r.last_heartbeat_at;
   end if;
+  if r.heartbeat_stale is distinct from (timestamptz '2026-11-28 05:07:42+00' < now() - interval '15 minutes') then
+    raise exception 'heartbeat_stale must use the unrounded heartbeat';
+  end if;
   select * into strict r from public.public_sensor_status_events where sensor_id = 'sensor-oracle-01';
   if r.started_at <> timestamptz '2026-11-27 05:00:00+00' or r.ended_at <> timestamptz '2026-11-27 05:45:00+00' then
     raise exception 'outage should widen to 05:00-05:45, got % - %', r.started_at, r.ended_at;
@@ -178,6 +181,26 @@ begin
   end;
 end $$;
 reset role;
+
+-- 6b. Source counts use only publishable observations, and a path that falls
+--     below k keeps eligibility but reports its current count.
+do $$
+declare
+  v bigint;
+begin
+  -- A 4th source inside the publication delay must not change the public count.
+  insert into public.attack_events (id, sensor_id, observed_at, protocol, dst_port, event_type,
+                                    src_ip_hash, http_method, http_path_redacted)
+  values ('d0000000-0000-4000-8000-000000000201', 'sensor-oracle-01', now(), 'http', 80, 'http_probe',
+          'hash-new', 'GET', '/common-path');
+  perform public.rollup_public_pattern_eligibility(now(), 3);
+  select unique_source_count into strict v from public.public_pattern_eligibility where pattern_key = '/common-path';
+  if v <> 3 then raise exception 'count changed before the new event is public: %', v; end if;
+  -- 40 days later the window holds no events: still eligible, count 0.
+  perform public.rollup_public_pattern_eligibility(now() + interval '40 days', 3);
+  select unique_source_count into strict v from public.public_pattern_eligibility where pattern_key = '/common-path';
+  if v <> 0 then raise exception 'stale source count kept after falling below k: %', v; end if;
+end $$;
 
 -- 7. Eligibility is never revoked once crossed (rerun keeps it).
 do $$

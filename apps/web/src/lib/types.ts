@@ -43,6 +43,12 @@ export const PublicSensorSchema = z.object({
   region: z.string(),
   is_active: z.boolean(),
   last_heartbeat_at: z.string().nullable(),
+  /**
+   * Computed by public_sensors from the unrounded heartbeat (#88): the
+   * published last_heartbeat_at is floored to 5 minutes and would make a
+   * sensor look stale early.
+   */
+  heartbeat_stale: z.boolean().nullable().optional(),
   last_event_at: z.string().nullable(),
   created_at: z.string(),
   monitored_services: z.array(ProtocolSchema).optional().default([]),

@@ -29,6 +29,7 @@ import {
   selectNoteworthyObservations,
   seriesHasLeadingGap,
   sumTrendBuckets,
+  rankPublicHttpPaths,
   topHttpPaths,
   topPatterns,
 } from "./dashboard-metrics.ts";
@@ -343,32 +344,28 @@ describe("observatory data layer (mock mode)", () => {
   });
 
   it("ranks public HTTP paths by distinct sources before event count (#88 L5)", () => {
-    const flood = Array.from({ length: 50 }, () => ({
-      protocol: "http" as const,
-      http_method: "GET",
-      http_path_redacted: "/flooded",
-    }));
-    const paths = topHttpPaths(
-      [
-        ...flood,
-        { protocol: "http", http_method: "GET", http_path_redacted: "/.env" },
-        { protocol: "http", http_method: "GET", http_path_redacted: "/.env" },
-        // Withheld (fewer than k sources): never listed.
-        { protocol: "http", http_method: "GET", http_path_redacted: null },
-      ],
-      8,
-      new Map([
-        ["/flooded", 3],
-        ["/.env", 40],
-      ]),
-    );
+    const paths = rankPublicHttpPaths([
+      { pattern_key: "/flooded", total_count: 5000, unique_source_count: 3 },
+      { pattern_key: "/.env", total_count: 40, unique_source_count: 40 },
+      // No source count: dropped, never ranked by events.
+      { pattern_key: "/unknown", total_count: 9999, unique_source_count: null },
+    ]);
     assert.deepEqual(
       paths.map((p) => [p.path, p.sources, p.count]),
       [
-        ["/.env", 40, 2],
-        ["/flooded", 3, 50],
+        ["/.env", 40, 40],
+        ["/flooded", 3, 5000],
       ],
     );
+  });
+
+  it("uses the view's unrounded stale flag for sensor health (#88)", () => {
+    const now = Date.parse("2026-11-28T12:16:00Z");
+    // Published heartbeat floored to 12:00 (actual 12:04): 16 min by the
+    // rounded value, but the view says it is not stale yet.
+    const sensor = { is_active: true, last_heartbeat_at: "2026-11-28T12:00:00Z", heartbeat_stale: false };
+    assert.equal(evaluateSensorHealth(sensor, now), "healthy");
+    assert.equal(evaluateSensorHealth({ ...sensor, heartbeat_stale: true }, now), "stale");
   });
 
   it("distinguishes zero-event buckets from sensor outage coverage gaps", async () => {

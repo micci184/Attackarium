@@ -177,8 +177,9 @@ export function PatternLists({
         />
         <div className="p-4">
           <p className="pb-2.5 text-[11px] leading-relaxed text-slate-500">
-            Paths are sanitized before storage and display. A repeated path is a probe pattern,
-            not proof that a request succeeded.
+            Paths are sanitized before storage and display. Only paths sent by at least 3 distinct
+            sources are listed, ranked by sources; counts are all events for the path. A repeated
+            path is a probe pattern, not proof that a request succeeded.
           </p>
           {httpPaths.length === 0 ? (
             <p className="text-xs text-slate-500">

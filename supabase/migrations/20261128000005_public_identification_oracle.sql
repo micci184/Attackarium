@@ -64,6 +64,8 @@ language plpgsql
 security invoker
 set search_path = ''
 as $$
+declare
+  v_cutoff timestamptz;
 begin
   if p_now is null then
     raise exception 'p_now is required' using errcode = '22023';
@@ -75,6 +77,11 @@ begin
   -- Same lock as the other rollups and retention.
   perform pg_catalog.pg_advisory_xact_lock(8217001);
 
+  v_cutoff := pg_catalog.date_trunc('hour', (p_now at time zone 'UTC') - interval '1 hour') at time zone 'UTC';
+
+  -- Counts use only observations that are already publishable (before the
+  -- publication cutoff), so a public count never changes before the events
+  -- that changed it become public.
   insert into public.public_pattern_eligibility as t (
     pattern_type,
     pattern_key,
@@ -112,6 +119,7 @@ begin
         and ae.http_path_redacted is not null
         and ae.src_ip_hash is not null
         and ae.observed_at >= p_now - interval '30 days'
+        and ae.observed_at < v_cutoff
       group by 1, 2, 3
     ) as per_source
     group by 1, 2
@@ -122,6 +130,21 @@ begin
         crossed_at = least(t.crossed_at, excluded.crossed_at),
         last_seen_at = greatest(t.last_seen_at, excluded.last_seen_at),
         updated_at = excluded.updated_at;
+
+  -- Eligibility is permanent, but the source count of a path that is now below
+  -- k (or absent from the window) must not stay at an old, higher value.
+  update public.public_pattern_eligibility t
+  set unique_source_count = (
+        select pg_catalog.count(distinct ae.src_ip_hash)
+        from public.attack_events ae
+        where ae.http_path_redacted = t.pattern_key
+          and ae.protocol = t.protocol
+          and ae.src_ip_hash is not null
+          and ae.observed_at >= p_now - interval '30 days'
+          and ae.observed_at < v_cutoff
+      ),
+      updated_at = p_now
+  where t.updated_at is distinct from p_now;
 end;
 $$;
 
@@ -206,7 +229,11 @@ select
   s.created_at,
   null::timestamptz as last_event_at,
   s.monitored_services,
-  null::timestamptz as last_error_at
+  null::timestamptz as last_error_at,
+  -- Health from the unrounded heartbeat (15-minute threshold), so the 5-minute
+  -- floor above never reports a sensor as stale early.
+  (s.last_heartbeat_at is null
+    or s.last_heartbeat_at < pg_catalog.now() - interval '15 minutes') as heartbeat_stale
 from public.sensors s;
 
 create or replace view public.public_detections
