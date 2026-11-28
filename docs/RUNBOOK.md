@@ -509,7 +509,10 @@ The "Operator alerts (Slack)" GitHub workflow is a **watchdog only** (hourly
 schedule and manual runs): it posts "Alert runner not running" when the Edge
 Function has not completed a run for 60 minutes (each successful run records
 `runner_heartbeat:edge` in `ops_alert_state`). It never evaluates or posts the
-health alerts, so the two runners cannot duplicate a transition. A manual
+health alerts, so the two runners cannot duplicate a transition. Edge runs
+themselves take a single-runner lease (`ops_alerts_lease`, 120 s, expires on
+its own): a scheduled run and an on-demand dispatch that overlap cannot both
+post, the later one skips. A manual
 **Run workflow** with **send_test** also posts a Slack test message (verifies
 the repository secret). For an on-demand health check, run
 `select public.ops_alerts_dispatch();`. GitHub Actions

@@ -361,6 +361,11 @@ export interface RunConfig {
   sendTest?: boolean;
   /** Primary runner only: record a heartbeat for the watchdog. */
   recordRunnerHeartbeat?: boolean;
+  /**
+   * Take the single-runner lease first and skip when another run holds it,
+   * so overlapping runs never post the same transition.
+   */
+  useLease?: boolean;
 }
 
 export interface RunResult {
@@ -368,6 +373,26 @@ export interface RunResult {
   active: number;
   notified: number;
   testSent: boolean;
+  /** True when another run held the lease and this one did nothing. */
+  skipped?: boolean;
+}
+
+async function rpc(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  name: string,
+  args: Record<string, unknown>,
+  fetchFn: typeof fetch,
+): Promise<unknown> {
+  const response = await fetchFn(new URL(`/rest/v1/rpc/${name}`, supabaseUrl), {
+    method: "POST",
+    headers: restHeaders(serviceRoleKey, { "content-type": "application/json" }),
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 }
 
 export async function runOpsAlerts(
@@ -378,6 +403,31 @@ export async function runOpsAlerts(
   if (!config.supabaseUrl || !config.serviceRoleKey || !config.webhookUrl) {
     throw new Error("SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SLACK_WEBHOOK_URL is not configured");
   }
+  if (!config.useLease) {
+    return runChecks(config, nowMs, fetchFn);
+  }
+  const holder = crypto.randomUUID();
+  const acquired = await rpc(
+    config.supabaseUrl,
+    config.serviceRoleKey,
+    "ops_alerts_acquire_lease",
+    { p_holder: holder, p_ttl_seconds: 120 },
+    fetchFn,
+  );
+  if (acquired !== true) {
+    return { checks: 0, active: 0, notified: 0, testSent: false, skipped: true };
+  }
+  try {
+    return await runChecks(config, nowMs, fetchFn);
+  } finally {
+    // Best effort: the lease also expires on its own.
+    await rpc(config.supabaseUrl, config.serviceRoleKey, "ops_alerts_release_lease", { p_holder: holder }, fetchFn).catch(
+      () => undefined,
+    );
+  }
+}
+
+async function runChecks(config: RunConfig, nowMs: number, fetchFn: typeof fetch): Promise<RunResult> {
   const [sensors, dbBytes, previous] = await Promise.all([
     fetchSensors(config.supabaseUrl, config.serviceRoleKey, fetchFn),
     fetchDatabaseSizeBytes(config.supabaseUrl, config.serviceRoleKey, fetchFn),

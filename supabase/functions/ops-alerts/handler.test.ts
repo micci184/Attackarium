@@ -19,6 +19,7 @@ describe("ops-alerts handler", () => {
     const res = await handleOpsAlerts(req({ headers: { authorization: `Bearer ${SECRET}` } }), env, async (config) => {
       calls += 1;
       assert.equal(config.recordRunnerHeartbeat, true, "the primary runner must record its heartbeat");
+      assert.equal(config.useLease, true, "the primary runner must take the single-runner lease");
       return ok();
     });
     assert.equal(res.status, 200);

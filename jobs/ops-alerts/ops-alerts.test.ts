@@ -289,3 +289,39 @@ describe("runWatchdog", () => {
     assert.match(posted[0], /Test message/);
   });
 });
+
+describe("runOpsAlerts lease", () => {
+  const config = {
+    supabaseUrl: "https://x.supabase.co",
+    serviceRoleKey: "k",
+    webhookUrl: "https://hooks.slack.com/services/T/B/X",
+    useLease: true,
+  };
+
+  it("skips everything when another run holds the lease", async () => {
+    const requested: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/rpc/ops_alerts_acquire_lease")) return new Response("false", { status: 200 });
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const result = await runOpsAlerts(config, NOW, fetchFn);
+    assert.equal(result.skipped, true);
+    assert.equal(requested.length, 1, "no checks, no Slack, no state writes, no release");
+  });
+
+  it("releases the lease after a run, also when the run fails", async () => {
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url.replace("https://x.supabase.co", ""));
+      if (url.includes("/rpc/ops_alerts_acquire_lease")) return new Response("true", { status: 200 });
+      if (url.includes("/rpc/ops_alerts_release_lease")) return new Response("", { status: 200 });
+      if (url.includes("/rest/v1/sensors")) return new Response("boom", { status: 500 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+    await assert.rejects(runOpsAlerts(config, NOW, fetchFn), /sensors query failed/);
+    assert.ok(calls.some((c) => c.startsWith("/rest/v1/rpc/ops_alerts_release_lease")), "lease released after failure");
+  });
+});

@@ -67,6 +67,7 @@ export async function handleOpsAlerts(
       webhookUrl: env.webhookUrl,
       dbQuotaMb: env.dbQuotaMb,
       recordRunnerHeartbeat: true,
+      useLease: true,
       sendTest,
     });
     return json(200, result);
