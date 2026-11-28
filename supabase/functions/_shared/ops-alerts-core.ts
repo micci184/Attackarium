@@ -40,7 +40,19 @@ export interface AlertState {
   last_notified_at: string | null;
 }
 
-export type AlertKey = "no_active_sensors" | "heartbeat_stale" | "db_storage" | "patch_freshness";
+export type AlertKey =
+  | "no_active_sensors"
+  | "heartbeat_stale"
+  | "db_storage"
+  | "patch_freshness"
+  | "edge_runner_stale";
+
+/**
+ * Written by the primary (Edge Function) runner after every successful run.
+ * The GitHub watchdog reads it; it is never an alert itself.
+ */
+export const EDGE_RUNNER_HEARTBEAT_KEY = "runner_heartbeat:edge";
+export const EDGE_RUNNER_STALE_MINUTES = 60;
 
 export interface AlertCheck {
   key: AlertKey;
@@ -347,6 +359,8 @@ export interface RunConfig {
   dbQuotaMb?: number;
   /** Also post an explicit test message (manual verification only). */
   sendTest?: boolean;
+  /** Primary runner only: record a heartbeat for the watchdog. */
+  recordRunnerHeartbeat?: boolean;
 }
 
 export interface RunResult {
@@ -388,11 +402,59 @@ export async function runOpsAlerts(
   }
   // Saved only after Slack accepted the message, so a failed post is retried
   // on the next run while the condition lasts.
-  await saveAlertStates(config.supabaseUrl, config.serviceRoleKey, plan.nextStates, fetchFn);
+  const nowIso = new Date(nowMs).toISOString();
+  const rows = config.recordRunnerHeartbeat
+    ? [
+        ...plan.nextStates,
+        { alert_key: EDGE_RUNNER_HEARTBEAT_KEY, active: false, since: nowIso, last_notified_at: null },
+      ]
+    : plan.nextStates;
+  await saveAlertStates(config.supabaseUrl, config.serviceRoleKey, rows, fetchFn);
   return {
     checks: checks.length,
     active: checks.filter((c) => c.active).length,
     notified: plan.notifications.length,
     testSent: config.sendTest === true,
   };
+}
+
+/**
+ * Watchdog check (GitHub backup). The Edge Function owns the four health
+ * alerts; the watchdog only alerts when that runner has not completed a run
+ * recently, so the two runners never post the same transition.
+ */
+export function evaluateEdgeRunner(previous: readonly AlertState[], nowMs: number): AlertCheck {
+  const row = previous.find((r) => r.alert_key === EDGE_RUNNER_HEARTBEAT_KEY);
+  const lastMs = row ? Date.parse(row.since) : Number.NaN;
+  const ageMs = Number.isFinite(lastMs) ? nowMs - lastMs : null;
+  const stale = ageMs === null || ageMs > EDGE_RUNNER_STALE_MINUTES * 60_000;
+  return {
+    key: "edge_runner_stale",
+    active: stale,
+    title: "Alert runner not running",
+    detail: stale
+      ? (ageMs === null
+          ? "The ops-alerts Edge Function has never completed a run."
+          : `The ops-alerts Edge Function last completed a run ${Math.floor(ageMs / 60_000)} min ago.`) +
+        " Sensor alerts are not being checked; see the Slack alerts section of docs/RUNBOOK.md (pg_cron job, net._http_response, function logs)."
+      : `The ops-alerts Edge Function completed a run within ${EDGE_RUNNER_STALE_MINUTES} min.`,
+  };
+}
+
+export async function runWatchdog(
+  config: Pick<RunConfig, "supabaseUrl" | "serviceRoleKey" | "webhookUrl">,
+  nowMs: number = Date.now(),
+  fetchFn: typeof fetch = fetch,
+): Promise<RunResult> {
+  if (!config.supabaseUrl || !config.serviceRoleKey || !config.webhookUrl) {
+    throw new Error("SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SLACK_WEBHOOK_URL is not configured");
+  }
+  const previous = await fetchAlertStates(config.supabaseUrl, config.serviceRoleKey, fetchFn);
+  const check = evaluateEdgeRunner(previous, nowMs);
+  const plan = planNotifications([check], previous, nowMs);
+  if (plan.notifications.length > 0) {
+    await postSlack(config.webhookUrl, buildSlackMessage(plan.notifications), fetchFn);
+  }
+  await saveAlertStates(config.supabaseUrl, config.serviceRoleKey, plan.nextStates, fetchFn);
+  return { checks: 1, active: check.active ? 1 : 0, notified: plan.notifications.length, testSent: false };
 }

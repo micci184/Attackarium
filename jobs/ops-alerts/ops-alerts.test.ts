@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import { classifyPatchFreshness } from "../../apps/web/src/lib/patch-freshness.ts";
 import {
   DEFAULT_OPTIONS,
+  EDGE_RUNNER_HEARTBEAT_KEY,
+  evaluateEdgeRunner,
   isPatchCurrent,
   buildSlackMessage,
   buildSlackTestMessage,
@@ -11,6 +13,7 @@ import {
   isSlackWebhookUrl,
   planNotifications,
   postSlack,
+  runOpsAlerts,
   type AlertState,
   type SensorHealthRow,
 } from "./core.ts";
@@ -132,6 +135,32 @@ describe("planNotifications", () => {
   });
 });
 
+describe("evaluateEdgeRunner (watchdog)", () => {
+  const beat = (ago: number): AlertState => ({
+    alert_key: EDGE_RUNNER_HEARTBEAT_KEY,
+    active: false,
+    since: new Date(NOW - ago).toISOString(),
+    last_notified_at: null,
+  });
+
+  it("is quiet while the Edge runner completed a run within 60 minutes", () => {
+    assert.equal(evaluateEdgeRunner([beat(59 * 60_000)], NOW).active, false);
+    assert.equal(evaluateEdgeRunner([beat(60 * 60_000)], NOW).active, false);
+  });
+
+  it("alerts when the Edge runner is late or never ran", () => {
+    assert.equal(evaluateEdgeRunner([beat(60 * 60_000 + 1)], NOW).active, true);
+    const never = evaluateEdgeRunner([], NOW);
+    assert.equal(never.active, true);
+    assert.match(never.detail, /never completed/);
+  });
+
+  it("owns a separate alert key from the health checks", () => {
+    const keys = evaluateAlerts([healthy], 70 * MB, opts).map((c) => c.key);
+    assert.ok(!keys.includes(evaluateEdgeRunner([], NOW).key));
+  });
+});
+
 describe("Slack delivery", () => {
   it("accepts only Slack incoming-webhook URLs", () => {
     assert.equal(isSlackWebhookUrl("https://hooks.slack.com/services/T000/B000/XXXX"), true);
@@ -188,5 +217,38 @@ describe("fetchSensors", () => {
         headers: { "content-range": "0-0/2" },
       })) as typeof fetch;
     await assert.rejects(fetchSensors("https://x.supabase.co", "k", fetchFn), /truncated/);
+  });
+});
+
+describe("runOpsAlerts", () => {
+  it("records the Edge runner heartbeat only when asked, after the checks", async () => {
+    const saved: unknown[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/rest/v1/sensors")) {
+        return new Response(JSON.stringify([healthy]), { status: 200, headers: { "content-range": "0-0/1" } });
+      }
+      if (url.includes("/rpc/ops_database_size_bytes")) return new Response(String(70 * MB), { status: 200 });
+      if (url.includes("/rest/v1/ops_alert_state") && (init?.method ?? "GET") === "GET") {
+        return new Response("[]", { status: 200 });
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && init?.method === "POST") {
+        saved.push(...(JSON.parse(String(init.body)) as unknown[]));
+        return new Response(null, { status: 201 });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const config = {
+      supabaseUrl: "https://x.supabase.co",
+      serviceRoleKey: "k",
+      webhookUrl: "https://hooks.slack.com/services/T/B/X",
+    };
+    await runOpsAlerts(config, NOW, fetchFn);
+    assert.equal(saved.length, 0, "no rows without transitions or heartbeat");
+    await runOpsAlerts({ ...config, recordRunnerHeartbeat: true }, NOW, fetchFn);
+    assert.deepEqual(
+      saved.map((row) => (row as { alert_key: string }).alert_key),
+      ["runner_heartbeat:edge"],
+    );
   });
 });

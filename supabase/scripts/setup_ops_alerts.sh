@@ -11,6 +11,9 @@
 #   Vault secrets:         ops_alerts_cron_secret (same value),
 #                          ops_alerts_function_url
 #
+# Running it is the operator's approval: both hosted changes pass --yes (CLI v3
+# cannot prompt while output is hidden).
+#
 # Usage: supabase/scripts/setup_ops_alerts.sh [--project-ref REF] [--keep-slack]
 set -euo pipefail
 
@@ -74,7 +77,7 @@ SQL
 unset CRON_SECRET
 
 echo "Setting Edge Function secrets on ${REF} ..."
-supabase secrets set --remote="$REF" --env-file "$TMP/functions.env" >/dev/null
+supabase secrets set --remote="$REF" --env-file "$TMP/functions.env" --yes >/dev/null
 echo "Storing the cron secret and function URL in Vault ..."
-supabase db query --remote="$REF" -f "$TMP/vault.sql" >/dev/null
+supabase db query --remote="$REF" -f "$TMP/vault.sql" --yes >/dev/null
 echo "Done. Values were not printed. Verify with: supabase secrets list --remote=${REF}"

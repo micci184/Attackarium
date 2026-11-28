@@ -16,8 +16,9 @@ const req = (init: RequestInit = {}) =>
 describe("ops-alerts handler", () => {
   it("runs with the correct bearer secret and returns counts only", async () => {
     let calls = 0;
-    const res = await handleOpsAlerts(req({ headers: { authorization: `Bearer ${SECRET}` } }), env, async () => {
+    const res = await handleOpsAlerts(req({ headers: { authorization: `Bearer ${SECRET}` } }), env, async (config) => {
       calls += 1;
+      assert.equal(config.recordRunnerHeartbeat, true, "the primary runner must record its heartbeat");
       return ok();
     });
     assert.equal(res.status, 200);

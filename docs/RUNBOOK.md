@@ -506,12 +506,15 @@ it stays active (state in the operator-only `public.ops_alert_state` table):
 | No active sensors | No sensor is marked active |
 
 The "Operator alerts (Slack)" GitHub workflow runs the same code
-(`supabase/functions/_shared/ops-alerts-core.ts`): use **Run workflow** with
-**send_test** to verify Slack delivery, and it runs hourly as a best-effort
-backup. GitHub Actions schedules run hours late on this repository (the
-"hourly" CVE matching ran every 6 to 11 hours), which is why it is not the
-primary runner. Both runners share `ops_alert_state`, so a transition is
-posted once.
+(`supabase/functions/_shared/ops-alerts-core.ts`). **Run workflow** runs the
+full check (with **send_test** to verify Slack delivery). Its hourly schedule
+is a **watchdog only**: it posts "Alert runner not running" when the Edge
+Function has not completed a run for 60 minutes (each successful run records
+`runner_heartbeat:edge` in `ops_alert_state`), and it never posts the health
+alerts, so the two runners cannot duplicate a transition. GitHub Actions
+schedules run hours late on this repository (the "hourly" CVE matching ran
+every 6 to 11 hours), which is why GitHub is not the primary runner and the
+watchdog is best effort.
 
 Setup (once, operator approval):
 1. Apply migrations `20261128000001_ops_alert_state.sql` and

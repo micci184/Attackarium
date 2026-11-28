@@ -54,6 +54,7 @@ export async function handleOpsAlerts(
       serviceRoleKey: env.serviceRoleKey,
       webhookUrl: env.webhookUrl,
       dbQuotaMb: env.dbQuotaMb,
+      recordRunnerHeartbeat: true,
     });
     return json(200, result);
   } catch (err) {

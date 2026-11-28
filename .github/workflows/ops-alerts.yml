@@ -7,10 +7,13 @@ name: Operator alerts (Slack)
 #
 # The PRIMARY runner is the `ops-alerts` Edge Function, called every 15 minutes
 # by pg_cron, because GitHub Actions schedules run hours late here. This
-# workflow is the manual tool (Run workflow with send_test verifies Slack) and a
-# best-effort hourly backup. A run fails only when the check itself cannot run
-# (GitHub emails the workflow's owner if Actions notifications are on).
-# Logs are public: counts only.
+# workflow:
+# - scheduled (best effort, hourly): WATCHDOG only. It alerts when the Edge
+#   Function has not completed a run for 60 minutes. It never posts the health
+#   alerts, so the two runners cannot post the same transition twice.
+# - manual (Run workflow): the full check; send_test verifies Slack delivery.
+# A run fails only when it cannot run (GitHub emails the workflow's owner if
+# Actions notifications are on). Logs are public: counts only.
 on:
   schedule:
     - cron: "37 * * * *"
@@ -46,4 +49,5 @@ jobs:
           # Optional repository variable; defaults to the Free plan's 500 MB.
           OPS_DB_QUOTA_MB: ${{ vars.OPS_DB_QUOTA_MB }}
           OPS_ALERTS_SEND_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test && 'true' || 'false' }}
+          OPS_ALERTS_MODE: ${{ github.event_name == 'schedule' && 'watchdog' || 'full' }}
         run: node jobs/ops-alerts/run.ts
