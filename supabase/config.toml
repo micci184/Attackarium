@@ -35,3 +35,9 @@ verify_jwt = false
 # function refuses every call when that secret is unset.
 [functions.ops-alerts]
 verify_jwt = false
+
+# observation-jobs (candidate CVE matching hourly, KEV/EPSS daily) is called by
+# pg_cron with the same shared Bearer secret as ops-alerts, not a Supabase Auth
+# JWT. It refuses every call while that secret is unset.
+[functions.observation-jobs]
+verify_jwt = false

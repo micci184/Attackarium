@@ -67,7 +67,7 @@ per catalog CVE. NVD metadata is fetched afterwards, one catalog CVE at a time.
 real collector, shipper (spool, HMAC, HTTP delivery), ingest handler, and
 `jobs/cve-matching` against synthetic probes on loopback only. It fails if a rule
 ID, `rule_version`, or indicator drifts between `sensors/http-collector/signatures.py`
-and `jobs/cve-matching/rules.ts`, if `attack_category` or `signature_detections`
+and `supabase/functions/_shared/cve-matching/rules.ts`, if `attack_category` or `signature_detections`
 is dropped on the way to the database, or if the matching job's event query no
 longer selects those events. PostgREST and NVD are stubbed; no external request
 is made.

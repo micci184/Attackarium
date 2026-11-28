@@ -1,8 +1,9 @@
 // Run the daily KEV / EPSS sync.
 // Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY. Never log those values.
 //
-// Schedule: .github/workflows/threat-intel-daily.yml at 08:15 UTC.
-// The workflow skips when those secrets are not configured.
+// Scheduled daily (08:15 UTC) by pg_cron through the observation-jobs Edge
+// Function (same shared code). This Node entry point is the manual fallback
+// used by .github/workflows/threat-intel-daily.yml (workflow_dispatch).
 
 import { pathToFileURL } from "node:url";
 import { createResilientFeedClient, syncThreatIntel } from "./core.ts";
