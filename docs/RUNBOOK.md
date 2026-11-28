@@ -554,8 +554,6 @@ is saved only after Slack accepted the message, so a failed post is retried on
 the next run **while the condition lasts**. Logs print counts only.
 Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
 
-**Known limitation (2026-11-27):** GitHub Actions `schedule` triggers on this repository run hours late (the "hourly" CVE matching ran every 6 to 11 hours; the 15-minute alert schedule had not run 70 minutes after merge). Until the check runs on a reliable scheduler, treat Slack alerts as best-effort and use **Run workflow** for an immediate check.
-
 ### Conditions to check
 
 Check these five operational conditions regularly (no mandatory third-party
