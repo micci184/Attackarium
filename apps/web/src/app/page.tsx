@@ -328,7 +328,7 @@ export default async function ActivityPage() {
         httpPaths={data.httpPaths24h}
         sampledNote={
           data.is24hBreakdownSampled
-            ? `HTTP paths use the latest ${formatCount(data.sampled24hCount)} events. Protocol and category totals use the full UTC-hour rollup.`
+            ? `Region and port breakdowns use the latest ${formatCount(data.sampled24hCount)} events. HTTP paths, protocol, and category totals use full rollups.`
             : null
         }
       />

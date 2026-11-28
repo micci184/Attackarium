@@ -193,9 +193,11 @@ export function PatternLists({
                   className="flex items-center justify-between gap-3 py-2 text-xs"
                 >
                   <span translate="no" className="min-w-0 truncate font-mono text-slate-800">
-                    <span className="mr-1.5 text-slate-500">
-                      {safeDisplayText(item.method)}
-                    </span>
+                    {item.method ? (
+                      <span className="mr-1.5 text-slate-500">
+                        {safeDisplayText(item.method)}
+                      </span>
+                    ) : null}
                     {safeDisplayHttpPath(item.path)}
                   </span>
                   <span className="shrink-0 font-mono font-medium tabular-nums text-slate-900">
