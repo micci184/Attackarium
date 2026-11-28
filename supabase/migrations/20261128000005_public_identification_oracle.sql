@@ -603,6 +603,9 @@ alter view public.public_event_aggregates set (security_barrier = true);
 alter view public.public_observed_patterns set (security_barrier = true);
 alter view public.public_sensor_status_events set (security_barrier = true);
 
--- Populate eligibility now so published paths do not disappear until the next
--- maintenance run.
+-- Initialize now instead of waiting for the next maintenance run: rebuild the
+-- pattern rows under the publication cutoff (rows written before this
+-- migration may include observations still inside the delay), then populate
+-- eligibility so published paths do not disappear.
+select public.rollup_observation_aggregates(pg_catalog.now(), 8);
 select public.rollup_public_pattern_eligibility(pg_catalog.now(), 3);
