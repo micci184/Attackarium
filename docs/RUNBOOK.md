@@ -511,8 +511,9 @@ Function has not completed a run for 60 minutes (each successful run records
 `runner_heartbeat:edge` in `ops_alert_state`). It never evaluates or posts the
 health alerts, so the two runners cannot duplicate a transition. Edge runs
 themselves take a single-runner lease (`ops_alerts_lease`, 120 s, expires on
-its own): a scheduled run and an on-demand dispatch that overlap cannot both
-post, the later one skips. A manual
+its own): when a scheduled run and an on-demand dispatch overlap, the later
+one skips. This holds while a run finishes within its 120 s lease (requests
+time out after 20 s each, so a run normally ends within about 80 s). A manual
 **Run workflow** with **send_test** also posts a Slack test message (verifies
 the repository secret). For an on-demand health check, run
 `select public.ops_alerts_dispatch();`. GitHub Actions
