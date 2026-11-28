@@ -556,6 +556,18 @@ Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
 
 **Known limitation (2026-11-27):** GitHub Actions `schedule` triggers on this repository run hours late (the "hourly" CVE matching ran every 6 to 11 hours; the 15-minute alert schedule had not run 70 minutes after merge). Until the check runs on a reliable scheduler, treat Slack alerts as best-effort and use **Run workflow** for an immediate check.
 
+### Scheduled observation jobs (pg_cron)
+
+pg_cron also runs candidate CVE matching (`cve-matching`, hourly at :25) and
+the KEV/EPSS sync (`threat-intel`, daily 08:15 UTC) through the
+`observation-jobs` Edge Function, with the same Vault secrets and shared
+Bearer secret as ops-alerts (no extra setup after `setup_ops_alerts.sh`).
+Deploy with `supabase functions deploy observation-jobs --remote=<ref>`. Run a
+job on demand with `select public.observation_jobs_dispatch('cve-matching');`
+(or `'threat-intel'`) and read `net._http_response` by the returned id; the
+response body has counts only. The GitHub workflows of the same names remain as
+manual fallbacks (idempotent).
+
 ### Conditions to check
 
 Check these five operational conditions regularly (no mandatory third-party

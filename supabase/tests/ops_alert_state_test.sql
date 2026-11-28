@@ -30,6 +30,22 @@ begin
   end if;
 end $$;
 
+-- 1b2. The observation-jobs dispatcher: unknown jobs are rejected, known jobs
+--      are a no-op without configuration.
+do $$
+begin
+  if public.observation_jobs_dispatch('cve-matching') is not null
+     or public.observation_jobs_dispatch('threat-intel') is not null then
+    raise exception 'observation dispatcher sent a request without configuration';
+  end if;
+  begin
+    perform public.observation_jobs_dispatch('ops-alerts');
+    raise exception 'unknown observation job was accepted';
+  exception
+    when invalid_parameter_value then null;
+  end;
+end $$;
+
 -- 1c. Single-runner lease: one holder at a time, expiry frees it, only the
 --     holder releases it.
 set local role service_role;
@@ -92,6 +108,12 @@ begin
   begin
     perform public.ops_alerts_dispatch();
     raise exception 'SECURITY FAILURE: anon executed ops_alerts_dispatch';
+  exception
+    when insufficient_privilege then null;
+  end;
+  begin
+    perform public.observation_jobs_dispatch('cve-matching');
+    raise exception 'SECURITY FAILURE: anon executed observation_jobs_dispatch';
   exception
     when insufficient_privilege then null;
   end;

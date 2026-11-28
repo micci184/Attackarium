@@ -1,9 +1,10 @@
 name: Daily KEV and EPSS sync
 
+# The daily run (08:15 UTC, after FIRST publishes EPSS) is pg_cron ->
+# observation-jobs Edge Function (migration 20261128000004), because GitHub
+# Actions schedules run hours late here. This workflow is a manual fallback
+# only; the sync is idempotent.
 on:
-  schedule:
-    # FIRST publishes the daily EPSS file before this hour.
-    - cron: "15 8 * * *"
   workflow_dispatch:
 
 permissions:
