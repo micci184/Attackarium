@@ -120,8 +120,12 @@ exception
     null;
 end $$;
 
--- The job ran on 2026-10-02 and again today, twice.
+-- The job ran on 2026-10-02, on 2026-11-12, and again today, twice. Pattern
+-- rows only include observations before each run's publication cutoff (#88),
+-- as in production where p_now is the wall clock, so history is replayed in
+-- order instead of letting the October run see November events.
 select public.rollup_observation_aggregates(timestamptz '2026-10-02 12:00:00+00');
+select public.rollup_observation_aggregates(timestamptz '2026-11-12 12:00:00+00', 30);
 select public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00');
 select public.rollup_observation_aggregates(timestamptz '2026-11-21 15:00:00+00');
 

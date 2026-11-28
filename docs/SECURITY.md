@@ -96,7 +96,7 @@ direct `anon` REST read get the same data:
 | Unique HTTP path, "new pattern" promotion, content injection | A path is public only after **k = 3 distinct sources** sent it (rolling 30 days; eligibility never revoked once crossed). Otherwise the path is NULL ("(uncommon path)"). A pattern's public first-seen is when it crossed k |
 | Precomputable `http-*` fingerprints | Never public; only fixed OpenCanary `oc-<logtype>` fingerprints |
 | Second-precision timing | Public event, detection, and match times are truncated to the UTC hour; `last_event_at` / `last_error_at` are not published; heartbeat floored to 5 minutes; outage intervals widened to 15 minutes (still distinguishes "0 events" from a gap) |
-| Watching the current hour fill up | Events, detections, matches, and hourly buckets are published about one hour after their hour closes |
+| Watching the current hour fill up | Events, detections, matches, and hourly buckets are published about one hour after their hour closes; pattern rows (counts, first/last seen) and path source counts are built only from observations that are already publishable |
 | Flooding a marker into top lists | Top paths are ranked by distinct sources, then events |
 | Per-event country / ASN | Not published per event (tracking risk); aggregates only, see #113 |
 

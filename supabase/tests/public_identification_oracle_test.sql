@@ -196,6 +196,17 @@ begin
   perform public.rollup_public_pattern_eligibility(now(), 3);
   select unique_source_count into strict v from public.public_pattern_eligibility where pattern_key = '/common-path';
   if v <> 3 then raise exception 'count changed before the new event is public: %', v; end if;
+  -- Pattern totals and last-seen also ignore the unpublished event.
+  perform public.rollup_observation_aggregates(now(), 8);
+  select total_count into strict v from public.public_observed_patterns
+  where pattern_type = 'http_path' and pattern_key = '/common-path';
+  if v <> 3 then raise exception 'public pattern total moved before the event is public: %', v; end if;
+  if exists (
+    select 1 from public.public_observed_patterns
+    where last_seen_at >= date_trunc('hour', (now() at time zone 'UTC') - interval '1 hour') at time zone 'UTC'
+  ) then
+    raise exception 'public pattern last_seen_at reveals the publication-delay window';
+  end if;
   -- 40 days later the window holds no events: still eligible, count 0.
   perform public.rollup_public_pattern_eligibility(now() + interval '40 days', 3);
   select unique_source_count into strict v from public.public_pattern_eligibility where pattern_key = '/common-path';

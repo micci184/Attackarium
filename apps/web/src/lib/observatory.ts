@@ -937,7 +937,7 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
         : topPatterns(windowEvents),
     patternCveContext: buildPatternCveContext(cveMatches, vulnerabilities),
     httpPaths: client
-      ? await fetchTopHttpPaths(client, new Date(windowStartMs).toISOString())
+      ? await fetchTopHttpPaths(client, new Date(seriesStartMs).toISOString())
       : topHttpPaths(windowEvents),
   };
 }

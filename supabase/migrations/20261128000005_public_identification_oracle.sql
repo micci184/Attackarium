@@ -152,6 +152,204 @@ revoke all on function public.rollup_public_pattern_eligibility(timestamptz, int
   from public, anon, authenticated;
 grant execute on function public.rollup_public_pattern_eligibility(timestamptz, integer) to service_role;
 
+-- Same rollup as 20261122000003, except that the pattern rows
+-- (pattern_daily_counts -> observed_patterns) are built only from observations
+-- before the publication cutoff. Signature and other outputs unchanged.
+create or replace function public.rollup_observation_aggregates(
+  p_now timestamptz,
+  p_window_days integer default 8
+)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_window_start timestamptz;
+  v_pattern_cutoff timestamptz;
+begin
+  if p_now is null then
+    raise exception 'p_now is required' using errcode = '22023';
+  end if;
+  if p_window_days is null or p_window_days < 8 or p_window_days > 30 then
+    raise exception 'rollup window must be between 8 and 30 days' using errcode = '22023';
+  end if;
+
+  -- Patterns feed only public_observed_patterns, so they are built from
+  -- publishable observations (before the #88 publication cutoff). Counts,
+  -- first seen, and last seen therefore never move before the events behind
+  -- them are public. Event aggregates and daily stats stay current.
+  v_pattern_cutoff := pg_catalog.date_trunc('hour', (p_now at time zone 'UTC') - interval '1 hour') at time zone 'UTC';
+
+  -- Serialize rollup and retention runs.
+  perform pg_catalog.pg_advisory_xact_lock(8217001);
+
+  v_window_start := pg_catalog.date_trunc(
+    'day',
+    (p_now - pg_catalog.make_interval(days => p_window_days)) at time zone 'UTC'
+  ) at time zone 'UTC';
+
+  delete from public.event_aggregates a
+  where a.bucket_start >= v_window_start;
+
+  delete from public.daily_stats d
+  where d.date_utc >= (v_window_start at time zone 'UTC')::date;
+
+  delete from public.pattern_daily_counts p
+  where p.date_utc >= (v_window_start at time zone 'UTC')::date;
+
+  insert into public.event_aggregates (
+    bucket_start,
+    granularity,
+    sensor_id,
+    protocol,
+    attack_category,
+    event_count,
+    unique_source_count,
+    updated_at
+  )
+  select
+    pg_catalog.date_trunc('hour', ae.observed_at at time zone 'UTC') at time zone 'UTC',
+    'hour',
+    ae.sensor_id,
+    ae.protocol,
+    ae.attack_category,
+    pg_catalog.count(*)::bigint,
+    pg_catalog.count(distinct ae.src_ip_hash)::bigint,
+    p_now
+  from public.attack_events ae
+  where ae.observed_at >= v_window_start
+    and ae.attack_category is not null
+  group by 1, 3, 4, 5;
+
+  insert into public.event_aggregates (
+    bucket_start,
+    granularity,
+    sensor_id,
+    protocol,
+    attack_category,
+    event_count,
+    unique_source_count,
+    updated_at
+  )
+  select
+    pg_catalog.date_trunc('day', ae.observed_at at time zone 'UTC') at time zone 'UTC',
+    'day',
+    ae.sensor_id,
+    ae.protocol,
+    ae.attack_category,
+    pg_catalog.count(*)::bigint,
+    pg_catalog.count(distinct ae.src_ip_hash)::bigint,
+    p_now
+  from public.attack_events ae
+  where ae.observed_at >= v_window_start
+    and ae.attack_category is not null
+  group by 1, 3, 4, 5;
+
+  insert into public.daily_stats (
+    date_utc,
+    sensor_id,
+    protocol,
+    event_type,
+    event_count,
+    unique_source_count,
+    updated_at
+  )
+  select
+    (ae.observed_at at time zone 'UTC')::date,
+    ae.sensor_id,
+    ae.protocol,
+    ae.event_type,
+    pg_catalog.count(*)::integer,
+    pg_catalog.count(distinct ae.src_ip_hash)::integer,
+    p_now
+  from public.attack_events ae
+  where ae.observed_at >= v_window_start
+  group by 1, 2, 3, 4;
+
+  insert into public.pattern_daily_counts (
+    date_utc,
+    pattern_type,
+    pattern_key,
+    protocol,
+    first_seen_at,
+    last_seen_at,
+    event_count,
+    updated_at
+  )
+  select
+    src.date_utc,
+    src.pattern_type,
+    src.pattern_key,
+    src.protocol,
+    pg_catalog.min(src.observed_at),
+    pg_catalog.max(src.observed_at),
+    pg_catalog.count(*)::bigint,
+    p_now
+  from (
+    select
+      (ae.observed_at at time zone 'UTC')::date as date_utc,
+      'http_path'::text as pattern_type,
+      ae.http_path_redacted as pattern_key,
+      ae.protocol,
+      ae.observed_at
+    from public.attack_events ae
+    where ae.observed_at >= v_window_start
+      and ae.observed_at < v_pattern_cutoff
+      and ae.protocol in ('http', 'https')
+      and ae.http_path_redacted is not null
+      and pg_catalog.char_length(ae.http_path_redacted) >= 1
+    union all
+    select
+      (ae.observed_at at time zone 'UTC')::date,
+      'signature',
+      ae.fingerprint,
+      ae.protocol,
+      ae.observed_at
+    from public.attack_events ae
+    where ae.observed_at >= v_window_start
+      and ae.observed_at < v_pattern_cutoff
+      and ae.fingerprint is not null
+      and pg_catalog.char_length(ae.fingerprint) >= 1
+    union all
+    select
+      (ae.observed_at at time zone 'UTC')::date,
+      'attack_category',
+      ae.attack_category,
+      ae.protocol,
+      ae.observed_at
+    from public.attack_events ae
+    where ae.observed_at >= v_window_start
+      and ae.observed_at < v_pattern_cutoff
+      and ae.attack_category is not null
+  ) as src
+  group by src.date_utc, src.pattern_type, src.pattern_key, src.protocol;
+
+  insert into public.observed_patterns (
+    pattern_type,
+    pattern_key,
+    protocol,
+    first_seen_at,
+    last_seen_at,
+    total_count
+  )
+  select
+    p.pattern_type,
+    p.pattern_key,
+    p.protocol,
+    pg_catalog.min(p.first_seen_at),
+    pg_catalog.max(p.last_seen_at),
+    pg_catalog.sum(p.event_count)::bigint
+  from public.pattern_daily_counts p
+  group by p.pattern_type, p.pattern_key, p.protocol
+  on conflict (pattern_type, pattern_key, protocol)
+  do update set
+    first_seen_at = excluded.first_seen_at,
+    last_seen_at = excluded.last_seen_at,
+    total_count = excluded.total_count;
+end;
+$$;
+
 -- Maintenance: rollups, then eligibility, then retention. Signature unchanged.
 create or replace function public.run_observation_maintenance(
   p_now timestamptz,
