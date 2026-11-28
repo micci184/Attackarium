@@ -153,45 +153,58 @@ function createSupabaseStub(events: () => NormalizedAttackEvent[]) {
     if (table === "attack_events" && method === "GET") {
       const params = url.searchParams;
       eventQueries.push(params);
-      const known = new Set(["select", "attack_category", "metadata->signature_detections", "observed_at", "order", "limit", "offset"]);
+      const known = new Set(["select", "attack_category", "metadata->signature_detections", "observed_at", "order", "limit", "or"]);
       for (const key of params.keys()) assert.ok(known.has(key), `unhandled PostgREST filter: ${key}`);
-      assert.equal(params.get("select"), "id,metadata");
+      assert.equal(params.get("select"), "id,observed_at,metadata");
+      assert.equal(params.get("order"), "observed_at.desc,id.desc");
       const categoryFilter = /^in\.\((.*)\)$/.exec(params.get("attack_category") ?? "");
       assert.ok(categoryFilter, "attack_category filter must be in.(...)");
       const categories = new Set(categoryFilter[1].split(","));
       assert.equal(params.get("metadata->signature_detections"), "not.is.null");
       const since = Date.parse((params.get("observed_at") ?? "").replace(/^gte\./, ""));
       const limit = Number(params.get("limit"));
-      const offset = Number(params.get("offset"));
+      // Keyset cursor: (observed_at, id) strictly before the last row seen.
+      const cursor = /^\(observed_at\.lt\."([^"]+)",and\(observed_at\.eq\."([^"]+)",id\.lt\.([0-9a-f-]+)\)\)$/.exec(
+        params.get("or") ?? "",
+      );
+      if (params.has("or")) assert.ok(cursor, `unexpected keyset filter: ${params.get("or")}`);
+      const before = (event: { observed_at: string; id: string }) => {
+        if (!cursor) return true;
+        const t = Date.parse(event.observed_at);
+        const c = Date.parse(cursor[1]);
+        return t < c || (t === c && event.id < cursor[3]);
+      };
       const rows = events()
         .filter((event) => event.attack_category !== null && categories.has(event.attack_category))
         .filter((event) => event.metadata.signature_detections != null)
         .filter((event) => Date.parse(event.observed_at) >= since)
-        .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
-        .slice(offset, offset + limit)
-        .map((event) => ({ id: event.id, metadata: event.metadata }));
+        .filter(before)
+        .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at) || (a.id < b.id ? 1 : -1))
+        .slice(0, limit)
+        .map((event) => ({ id: event.id, observed_at: event.observed_at, metadata: event.metadata }));
       return json(200, rows);
     }
     if (table === "detections" && method === "POST") {
       expectUpsert("event_id,rule_id,rule_version", "merge-duplicates");
-      const row = body[0];
-      const key = `${row.event_id}|${row.rule_id}|${row.rule_version}`;
-      const existing = detections.get(key);
-      sequence += existing ? 0 : 1;
-      const id = existing?.id ?? `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-      detections.set(key, { ...row, id });
-      return json(201, [{ id }]);
+      const saved = body.map((row) => {
+        const key = `${row.event_id}|${row.rule_id}|${row.rule_version}`;
+        const existing = detections.get(key);
+        sequence += existing ? 0 : 1;
+        const id = existing?.id ?? `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
+        detections.set(key, { ...row, id });
+        return { id, event_id: row.event_id, rule_id: row.rule_id, rule_version: row.rule_version };
+      });
+      return json(201, saved);
     }
     if (table === "vulnerabilities" && method === "POST") {
       expectUpsert("cve_id", "ignore-duplicates");
-      vulnerabilities.add(String(body[0].cve_id));
+      for (const row of body) vulnerabilities.add(String(row.cve_id));
       return new Response(null, { status: 201 });
     }
     if (table === "vulnerabilities" && method === "GET") return json(200, []);
     if (table === "event_cve_matches" && method === "POST") {
       expectUpsert("event_id,cve_id,detection_id", "merge-duplicates");
-      const row = body[0];
-      matches.set(`${row.event_id}|${row.cve_id}|${row.detection_id}`, row);
+      for (const row of body) matches.set(`${row.event_id}|${row.cve_id}|${row.detection_id}`, row);
       return new Response(null, { status: 201 });
     }
     throw new Error(`unhandled stub request: ${method} ${table}`);

@@ -388,3 +388,60 @@ describe("runThreatIntelSync", () => {
     await assert.rejects(runThreatIntelSync({}), /No rows were changed/);
   });
 });
+
+describe("scheduled-run hardening (observation-jobs)", () => {
+  it("keeps kev_present for a CVE still listed with invalid metadata", async () => {
+    const repo = new MemoryRepo([{ cveId: "CVE-2024-7777", kevPresent: true }]);
+    const payload = kevPayload([{ id: "CVE-2024-0001" }, { id: "CVE-2024-7777" }]);
+    (payload.vulnerabilities[1] as Record<string, unknown>).vendorProject = ""; // invalid row
+    const client = {
+      async getJson(url: string): Promise<unknown> {
+        if (url === KEV_FEED_URL) return payload;
+        const cves = new URL(url).searchParams.get("cve")?.split(",").filter(Boolean) ?? [];
+        return epssPayload(cves);
+      },
+    };
+    const result = await syncThreatIntel({ client, repository: repo, now: NOW });
+    assert.equal(result.kevCleared, 0, "a listed CVE must not be cleared");
+    assert.equal(repo.rows.get("CVE-2024-7777")?.kevPresent, true);
+    assert.equal(result.skippedKevRows, 1);
+    assert.ok(parseKevCatalog(payload).listedIds.has("CVE-2024-7777"));
+  });
+
+  it("never waits or retries past the deadline", async () => {
+    let now = 0;
+    const waits: number[] = [];
+    let calls = 0;
+    const client = createResilientFeedClient(
+      async () => {
+        calls += 1;
+        return new Response("busy", { status: 429, headers: { "retry-after": "60" } });
+      },
+      {
+        sleep: async (ms) => {
+          waits.push(ms);
+          now += ms;
+        },
+        deadlineMs: 90_000,
+        clock: () => now,
+      },
+    );
+    await assert.rejects(client.getJson(KEV_FEED_URL), /HTTP 429/);
+    assert.equal(calls, 2, "one 60 s wait fits; the next would pass the deadline");
+    assert.deepEqual(waits, [60_000]);
+    assert.ok(now <= 90_000);
+  });
+
+  it("does not start a request once the budget is exhausted", async () => {
+    let calls = 0;
+    const client = createResilientFeedClient(
+      async () => {
+        calls += 1;
+        return Response.json({});
+      },
+      { deadlineMs: 1_000, clock: () => 2_000 },
+    );
+    await assert.rejects(client.getJson(KEV_FEED_URL), /time budget/);
+    assert.equal(calls, 0);
+  });
+});

@@ -21,6 +21,12 @@ export interface ParsedKevCatalog {
   releasedAt: string;
   rows: KevRecord[];
   skipped: number;
+  /**
+   * Every well-formed CVE ID the catalog lists, including rows skipped for
+   * invalid metadata. Membership (and so clearing kev_present) uses this, so
+   * a listed CVE with a bad field is never treated as removed.
+   */
+  listedIds: Set<string>;
 }
 
 export interface EpssRecord {
@@ -90,12 +96,14 @@ export function parseKevCatalog(payload: unknown): ParsedKevCatalog {
   }
 
   const byId = new Map<string, KevRecord>();
+  const listedIds = new Set<string>();
   let skipped = 0;
   for (const item of payload.vulnerabilities) {
     if (!isRecord(item) || typeof item.cveID !== "string" || !CVE_ID.test(item.cveID)) {
       skipped += 1;
       continue;
     }
+    listedIds.add(item.cveID);
     const description = cleanText(item.shortDescription, MAX_DESCRIPTION_LENGTH);
     const vendor = cleanText(item.vendorProject, MAX_LABEL_LENGTH);
     const product = cleanText(item.product, MAX_LABEL_LENGTH);
@@ -122,6 +130,7 @@ export function parseKevCatalog(payload: unknown): ParsedKevCatalog {
     releasedAt,
     rows: [...byId.values()],
     skipped,
+    listedIds,
   };
 }
 

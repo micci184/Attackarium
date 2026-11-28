@@ -32,12 +32,40 @@ export function checkCronRequest(request: Request, cronSecret: string): Response
   return null;
 }
 
-/** Reads a small JSON object body; anything else yields {}. */
-export async function readSmallJsonBody(request: Request, maxChars = 1024): Promise<Record<string, unknown>> {
+/**
+ * Reads a small JSON object body; anything else (too large, not JSON, not an
+ * object) yields {}. The size cap applies while reading: the stream is
+ * cancelled as soon as it exceeds `maxBytes`, so a large body is never
+ * buffered.
+ */
+export async function readSmallJsonBody(request: Request, maxBytes = 1024): Promise<Record<string, unknown>> {
+  const reader = request.body?.getReader();
+  if (!reader) return {};
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    const text = await request.text();
-    if (text.length === 0 || text.length > maxChars) return {};
-    const body: unknown = JSON.parse(text);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return {};
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return {};
+  }
+  if (total === 0) return {};
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
     return typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
   } catch {
     return {};

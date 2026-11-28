@@ -560,7 +560,15 @@ pg_cron also runs candidate CVE matching (`cve-matching`, hourly at :25) and
 the KEV/EPSS sync (`threat-intel`, daily 08:15 UTC) through the
 `observation-jobs` Edge Function, with the same Vault secrets and shared
 Bearer secret as ops-alerts (no extra setup after `setup_ops_alerts.sh`).
-Deploy with `supabase functions deploy observation-jobs --remote=<ref>`. Run a
+Setup: apply migration `20261128000004_observation_jobs_cron.sql` (creates
+`observation_jobs_dispatch()` and the two pg_cron jobs; without it nothing is
+scheduled), then deploy with
+`supabase functions deploy observation-jobs --remote=<ref>`. Each request has a
+90 s work budget (the dispatcher waits 120 s; the gateway allows 150 s): NVD
+lookups that would start later are deferred to the next run (`nvdDeferred`),
+and feed retries stop early. CVE matching reads the newest 500 eligible events
+of the last 48 hours (a recent sample; `capped` = 1 when the limit was reached)
+and writes in bulk batches of 200. Run a
 job on demand with `select public.observation_jobs_dispatch('cve-matching');`
 (or `'threat-intel'`) and read `net._http_response` by the returned id; the
 response body has counts only. The GitHub workflows of the same names remain as

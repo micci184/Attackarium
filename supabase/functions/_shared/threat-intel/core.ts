@@ -150,8 +150,10 @@ export async function syncThreatIntel(input: {
 
   const allowed = new Set(targets);
   const kevRows = catalog.rows.map((row) => kevUpsert(row, catalog.releasedAt, sourceUpdatedAt));
+  // Clear only CVEs the catalog no longer lists at all (not those listed with a
+  // row that failed validation).
   const clearedIds = tracked
-    .filter((row) => row.kevPresent && !kevIds.has(row.cveId))
+    .filter((row) => row.kevPresent && !catalog.listedIds.has(row.cveId))
     .map((row) => row.cveId);
   const epssByCve = new Map<string, EpssRecord>();
   let droppedEpss = 0;
@@ -246,24 +248,41 @@ export function createResilientFeedClient(
     maxRetries?: number;
     maxBytes?: number;
     sleep?: (ms: number) => Promise<void>;
+    /**
+     * Epoch ms. No request or retry wait extends past it, so a scheduled run
+     * returns a (failure) result before its caller's timeout.
+     */
+    deadlineMs?: number;
+    clock?: () => number;
   } = {},
 ): FeedClient {
   const timeoutMs = options.timeoutMs ?? 20_000;
   const maxRetries = options.maxRetries ?? 3;
   const maxBytes = options.maxBytes ?? MAX_FEED_BYTES;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const clock = options.clock ?? Date.now;
+  const deadline = options.deadlineMs ?? Number.POSITIVE_INFINITY;
+  const remaining = () => deadline - clock();
 
   return {
     async getJson(url: string): Promise<unknown> {
       let lastError: Error | null = null;
       for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        if (remaining() <= 0) {
+          lastError = lastError ?? new Error("Feed request time budget exhausted.");
+          break;
+        }
         try {
-          const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+          const response = await fetchImpl(url, {
+            signal: AbortSignal.timeout(Math.max(1_000, Math.min(timeoutMs, remaining()))),
+          });
           if (response.status === 429 || response.status >= 500) {
             await response.body?.cancel().catch(() => {});
             lastError = new Error(`Feed request failed with HTTP ${response.status}.`);
             if (attempt === maxRetries) break;
-            await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
+            const wait = retryDelayMs(attempt, response.headers.get("retry-after"));
+            if (wait >= remaining()) break; // would outlive the time budget
+            await sleep(wait);
             continue;
           }
           if (!response.ok) {
@@ -278,7 +297,9 @@ export function createResilientFeedClient(
               ? new Error("Feed response was not valid JSON.")
               : new Error("Feed request failed before a complete response arrived.");
           if (attempt === maxRetries) break;
-          await sleep(retryDelayMs(attempt, null));
+          const wait = retryDelayMs(attempt, null);
+          if (wait >= remaining()) break;
+          await sleep(wait);
         }
       }
       throw lastError ?? new Error("Feed request failed.");

@@ -39,6 +39,39 @@ describe("observation-jobs handler", () => {
     assert.equal(calls, 0);
   });
 
+  it("caps the request body while reading it (oversized body -> unknown job)", async () => {
+    let calls = 0;
+    const run: JobRunner = async () => {
+      calls += 1;
+      return {};
+    };
+    let pulled = 0;
+    const huge = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 1000) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode('{"job":"cve-matching","pad":"' + "x".repeat(512)));
+      },
+    });
+    const res = await handleObservationJobs(
+      new Request("https://x/functions/v1/observation-jobs", {
+        method: "POST",
+        headers: auth,
+        body: huge,
+        // @ts-expect-error Node requires duplex for stream bodies
+        duplex: "half",
+      }),
+      env,
+      run,
+    );
+    assert.equal(res.status, 400);
+    assert.equal(calls, 0);
+    assert.ok(pulled < 10, `stream was read past the cap (${pulled} chunks)`);
+  });
+
   it("hides failure details", async () => {
     const res = await handleObservationJobs(req('{"job":"threat-intel"}'), env, async () => {
       throw new Error("KEV feed HTTP 503 at https://example");

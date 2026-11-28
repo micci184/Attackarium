@@ -39,10 +39,18 @@ function boundedInteger(value: string | undefined, fallback: number, max: number
   return Math.min(parsed, max);
 }
 
+/**
+ * Work budget per request. The dispatcher (pg_net) waits 120 s and the hosted
+ * gateway allows 150 s, so network waits stop well before either, leaving
+ * time to write and return the counts.
+ */
+export const JOB_BUDGET_MS = 90_000;
+
 export const runJob: JobRunner = async (job, env) => {
   if (!env.supabaseUrl || !env.serviceRoleKey) {
     throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
   }
+  const deadlineMs = Date.now() + JOB_BUDGET_MS;
   if (job === "cve-matching") {
     const now = new Date();
     const lookbackHours = boundedInteger(env.lookbackHours, DEFAULT_LOOKBACK_HOURS, MAX_LOOKBACK_HOURS);
@@ -53,6 +61,7 @@ export const runJob: JobRunner = async (job, env) => {
       since: new Date(now.getTime() - lookbackHours * 3_600_000).toISOString(),
       limit: boundedInteger(env.eventLimit, DEFAULT_EVENT_LIMIT, MAX_EVENT_LIMIT),
       apiKey: env.nvdApiKey || undefined,
+      deadlineMs,
     });
     return {
       eventsRead: result.eventsRead,
@@ -61,10 +70,12 @@ export const runJob: JobRunner = async (job, env) => {
       skipped: result.skipped,
       nvdCached: result.nvdCached,
       nvdFailed: result.nvdFailed,
+      nvdDeferred: result.nvdDeferred,
+      capped: result.capped ? 1 : 0,
     };
   }
   const result = await syncThreatIntel({
-    client: createResilientFeedClient(fetch),
+    client: createResilientFeedClient(fetch, { deadlineMs }),
     repository: new SupabaseThreatIntelRepository(env.supabaseUrl, env.serviceRoleKey, fetch),
   });
   return {

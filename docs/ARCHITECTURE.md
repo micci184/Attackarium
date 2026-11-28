@@ -119,7 +119,8 @@ the job daily at 08:15 UTC through the `observation-jobs` Edge Function
 GitHub Actions schedules run hours late on this repository.
 
 `jobs/cve-matching` reads `attack_events.metadata.signature_detections` from the
-last 48 hours and persists only detections whose rule ID, version, and indicator
+newest 500 eligible events of the last 48 hours (a recent sample; the result
+reports `capped` when the limit is reached) and persists only detections whose rule ID, version, and indicator
 match the collector catalog. Technique-only matches stay in `detections`.
 Catalog CVEs are written to `event_cve_matches` as candidate hypotheses.
 NVD is requested only for those catalog CVE IDs, and only the description,
