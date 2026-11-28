@@ -509,7 +509,16 @@ interface HttpPathInput {
   http_path_redacted: string | null;
 }
 
-export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[] {
+/**
+ * Top public HTTP paths. Withheld paths (NULL, #88) are skipped. When
+ * `sourcesByPath` (raw path -> distinct sources) is given, paths are ranked by
+ * distinct sources first, so one source cannot push a path up by flooding.
+ */
+export function topHttpPaths(
+  events: HttpPathInput[],
+  limit = 8,
+  sourcesByPath?: ReadonlyMap<string, number>,
+): HttpPathTotal[] {
   const totals = new Map<string, HttpPathTotal>();
   for (const event of events) {
     if (event.protocol !== "http" && event.protocol !== "https") continue;
@@ -517,15 +526,20 @@ export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[
     if (!maskedPath) continue;
     const method = event.http_method ?? "GET";
     const key = `${method} ${maskedPath}`;
+    const sources = event.http_path_redacted ? sourcesByPath?.get(event.http_path_redacted) : undefined;
     const current = totals.get(key);
     if (current) {
       current.count += 1;
+      if (sources !== undefined) current.sources = Math.max(current.sources ?? 0, sources);
       continue;
     }
-    totals.set(key, { method, path: maskedPath, count: 1 });
+    totals.set(key, { method, path: maskedPath, count: 1, ...(sources !== undefined ? { sources } : {}) });
   }
   return Array.from(totals.values())
-    .toSorted((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+    .toSorted(
+      (a, b) =>
+        (b.sources ?? 0) - (a.sources ?? 0) || b.count - a.count || a.path.localeCompare(b.path),
+    )
     .slice(0, limit);
 }
 

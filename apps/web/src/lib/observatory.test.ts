@@ -342,6 +342,35 @@ describe("observatory data layer (mock mode)", () => {
     assert.deepEqual(paths, [{ method: "GET", path: "/.env", count: 2 }]);
   });
 
+  it("ranks public HTTP paths by distinct sources before event count (#88 L5)", () => {
+    const flood = Array.from({ length: 50 }, () => ({
+      protocol: "http" as const,
+      http_method: "GET",
+      http_path_redacted: "/flooded",
+    }));
+    const paths = topHttpPaths(
+      [
+        ...flood,
+        { protocol: "http", http_method: "GET", http_path_redacted: "/.env" },
+        { protocol: "http", http_method: "GET", http_path_redacted: "/.env" },
+        // Withheld (fewer than k sources): never listed.
+        { protocol: "http", http_method: "GET", http_path_redacted: null },
+      ],
+      8,
+      new Map([
+        ["/flooded", 3],
+        ["/.env", 40],
+      ]),
+    );
+    assert.deepEqual(
+      paths.map((p) => [p.path, p.sources, p.count]),
+      [
+        ["/.env", 40, 2],
+        ["/flooded", 3, 50],
+      ],
+    );
+  });
+
   it("distinguishes zero-event buckets from sensor outage coverage gaps", async () => {
     process.env.USE_MOCK = "true";
     const nowMs = Date.parse("2026-11-22T12:00:00.000Z");

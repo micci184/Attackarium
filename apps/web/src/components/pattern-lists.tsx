@@ -198,6 +198,11 @@ export function PatternLists({
                     {safeDisplayHttpPath(item.path)}
                   </span>
                   <span className="shrink-0 font-mono font-medium tabular-nums text-slate-900">
+                    {item.sources !== undefined ? (
+                      <span className="mr-2 font-normal text-slate-500">
+                        {formatCount(item.sources)} {item.sources === 1 ? "source" : "sources"}
+                      </span>
+                    ) : null}
                     {formatCount(item.count)}
                   </span>
                 </li>

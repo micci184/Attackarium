@@ -15,8 +15,8 @@ insert into public.vulnerabilities (cve_id) values ('CVE-2025-31324'), ('CVE-202
 insert into public.attack_events (id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, http_method, http_path_redacted)
 values
   ('aaaaaaaa-0000-4000-8000-000000000001', 'sensor-cve-01', now() - interval '20 days', 'http', 80, 'http_probe', 'suspected_cve_probe', 'GET', '/developmentserver/metadatauploader'),
-  ('aaaaaaaa-0000-4000-8000-000000000002', 'sensor-cve-01', now() - interval '1 hour', 'http', 80, 'http_probe', 'suspected_cve_probe', 'GET', '/developmentserver/metadatauploader'),
-  ('aaaaaaaa-0000-4000-8000-000000000003', 'sensor-cve-01', now() - interval '2 hours', 'http', 80, 'http_probe', 'suspected_cve_probe', 'GET', '/');
+  ('aaaaaaaa-0000-4000-8000-000000000002', 'sensor-cve-01', now() - interval '3 hours', 'http', 80, 'http_probe', 'suspected_cve_probe', 'GET', '/developmentserver/metadatauploader'),
+  ('aaaaaaaa-0000-4000-8000-000000000003', 'sensor-cve-01', now() - interval '4 hours', 'http', 80, 'http_probe', 'suspected_cve_probe', 'GET', '/');
 
 insert into public.detections (id, event_id, rule_id, rule_version, classification, confidence, evidence_redacted)
 values
@@ -65,8 +65,10 @@ begin
 
   -- public_vulnerabilities: last_observed_at is the latest observation.
   select * into strict r from public.public_vulnerabilities where cve_id = 'CVE-2025-31324';
-  if r.last_observed_at is null or r.last_observed_at < now() - interval '2 hours' then
-    raise exception 'last_observed_at should be ~1 hour ago, got %', r.last_observed_at;
+  -- Hour precision (#88): within the hour of the 3-hour-old observation.
+  if r.last_observed_at is null or r.last_observed_at < now() - interval '4 hours'
+     or r.last_observed_at <> date_trunc('hour', r.last_observed_at) then
+    raise exception 'last_observed_at should be the hour of the latest observation, got %', r.last_observed_at;
   end if;
   if r.matched_event_count is distinct from 2 then raise exception 'matched_event_count changed: %', r.matched_event_count; end if;
 

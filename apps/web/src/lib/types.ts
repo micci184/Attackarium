@@ -234,6 +234,8 @@ export interface HttpPathTotal {
   method: string;
   path: string;
   count: number;
+  /** Distinct sources that sent this path (30-day window), when known (#88). */
+  sources?: number;
 }
 
 export interface TrendBucket {

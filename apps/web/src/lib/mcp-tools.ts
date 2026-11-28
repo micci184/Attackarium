@@ -183,7 +183,6 @@ export function buildObservationSummaryPayload(
         region: sensor.region,
         health: sensor.healthStatus,
         lastHeartbeatAt: sensor.last_heartbeat_at,
-        lastEventAt: sensor.last_event_at,
         monitoredServices: sensor.monitored_services,
       })),
     },

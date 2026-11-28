@@ -620,13 +620,37 @@ export async function getOverviewData(): Promise<OverviewData> {
       z.array(PublicEventCveMatchSchema).parse(cveMatchesRes.data ?? []),
       z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []),
     ),
-    httpPaths24h: topHttpPaths(sampleRows),
+    httpPaths24h: topHttpPaths(sampleRows, 8, await fetchPathSourceCounts(client)),
     dataUpdatedAt: latestTimestamp([
       ...hourRows.map((row) => row.updated_at),
       ...sampleRows.map((row) => row.received_at),
     ]),
     recentEvents,
   };
+}
+
+/**
+ * Distinct-source counts of public HTTP paths (#88 L5), keyed by the path as
+ * stored. Only paths seen from enough sources are listed by the view.
+ */
+async function fetchPathSourceCounts(
+  client: NonNullable<ReturnType<typeof getPublicSupabaseClient>>,
+): Promise<Map<string, number>> {
+  const { data, error } = await client
+    .from("public_observed_patterns")
+    .select("pattern_key, unique_source_count")
+    .eq("pattern_type", "http_path")
+    .order("unique_source_count", { ascending: false })
+    .limit(2000);
+  if (error || !Array.isArray(data)) return new Map();
+  const map = new Map<string, number>();
+  for (const row of data as Array<{ pattern_key?: unknown; unique_source_count?: unknown }>) {
+    const sources = Number(row.unique_source_count);
+    if (typeof row.pattern_key === "string" && Number.isFinite(sources)) {
+      map.set(row.pattern_key, Math.max(map.get(row.pattern_key) ?? 0, sources));
+    }
+  }
+  return map;
 }
 
 export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsData> {
@@ -901,7 +925,7 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
           )
         : topPatterns(windowEvents),
     patternCveContext: buildPatternCveContext(cveMatches, vulnerabilities),
-    httpPaths: topHttpPaths(windowEvents),
+    httpPaths: client ? topHttpPaths(windowEvents, 8, await fetchPathSourceCounts(client)) : topHttpPaths(windowEvents),
   };
 }
 
@@ -961,6 +985,9 @@ export async function getPaginatedEvents(options: {
     .from(cveFilter ? "public_cve_events" : "public_events")
     .select("*", { count: "exact" })
     .order("observed_at", { ascending: false })
+    // Public times are hour-precision (#88), so many rows tie: a unique
+    // secondary key keeps offset pagination stable across pages.
+    .order("id", { ascending: false })
     .range(offset, offset + pageSize - 1);
 
   if (protocolFilter !== "all") {

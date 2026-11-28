@@ -31,7 +31,8 @@ insert into public.attack_events (
 values (
   '11111111-1111-4111-8111-111111111111',
   'sensor-test-01',
-  now() - interval '5 minutes',
+  -- Older than the public delay (#88): visible in public_events.
+  now() - interval '3 hours',
   'http',
   80,
   'http_probe',
@@ -266,7 +267,7 @@ declare
   v_batch jsonb := jsonb_build_array(
     jsonb_build_object(
       'id', '33333333-3333-4333-8333-333333333333',
-      'observed_at', (v_now - interval '1 minute')::text,
+      'observed_at', (v_now - interval '3 hours')::text,
       'protocol', 'ssh',
       'dst_port', 22,
       'event_type', 'ssh_login_attempt',
@@ -364,13 +365,20 @@ where id = 'sensor-test-01';
 insert into public.event_aggregates (
   bucket_start, granularity, sensor_id, protocol, attack_category, event_count, unique_source_count
 ) values (
-  date_trunc('hour', now()), 'hour', 'sensor-test-01', 'http', 'http_path_probe', 3, 2
+  date_trunc('hour', now()) - interval '3 hours', 'hour', 'sensor-test-01', 'http', 'http_path_probe', 3, 2
 );
 
 insert into public.observed_patterns (
   pattern_type, pattern_key, protocol, first_seen_at, last_seen_at, total_count
 ) values (
   'http_path', '/wp-login.php', 'http', now() - interval '1 day', now(), 4
+);
+
+-- #88: an HTTP path pattern is public only once seen from >= 3 sources.
+insert into public.public_pattern_eligibility (
+  pattern_type, pattern_key, protocol, unique_source_count, crossed_at, last_seen_at
+) values (
+  'http_path', '/wp-login.php', 'http', 3, now() - interval '1 day', now()
 );
 
 insert into public.sensor_status_events (

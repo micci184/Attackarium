@@ -455,6 +455,23 @@ Rollback: `sudo systemctl disable --now https-collector`, remove `443` from the
 `/etc/attackarium/tls`. Rotation: `sudo bash generate_tls_cert.sh --force` and
 `sudo systemctl restart https-collector`.
 
+## Sensor IP rotation (identification response, #88)
+
+If the link between the sensor's public IP and Attackarium is suspected (for
+example many distinct sources repeatedly sending the same unique path, or
+signs of targeted probing), rotate the Elastic IP. Operator approval required.
+
+1. Announce nothing publicly; never publish the old or new address.
+2. `cd infra/aws-sensor && terraform plan -replace=aws_eip.sensor` and review:
+   only the Elastic IP and its association are replaced; the instance and
+   Security Groups are unchanged. Then apply that plan.
+3. Verify: admin access over EICE still works (it does not use the public IP),
+   services are active, `verify_egress.sh` passes, and events resume. The new
+   address receives little traffic until scanners find it; expect a quiet
+   period, which `/sensors` shows as healthy (not a coverage gap).
+4. Record the rotation date in the drills table (it changes observation
+   continuity).
+
 ## Retention policy & storage pressure (ADR-022 / ADR-023)
 
 Active retention boundaries (no raw source IPs or raw payloads in Supabase):

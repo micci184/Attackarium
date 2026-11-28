@@ -11,9 +11,9 @@ import { WorldGeoMap } from "@/components/world-geo-map";
 import {
   formatCount,
   formatEventTypeLabel,
+  displayEventHttpPath,
   formatFingerprintLabel,
   formatUtcDateTime,
-  safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
 import { getOverviewData } from "@/lib/observatory";
@@ -404,7 +404,7 @@ export default async function ActivityPage() {
                         className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                       >
                         {ev.http_method
-                          ? `${ev.http_method} ${safeDisplayHttpPath(ev.http_path_redacted, "/")}`
+                          ? `${ev.http_method} ${displayEventHttpPath(ev.http_path_redacted)}`
                           : formatFingerprintLabel(ev.fingerprint)}
                       </Link>
                     </td>
@@ -495,14 +495,6 @@ export default async function ActivityPage() {
                     </dt>
                     <dd className="font-mono tabular-nums text-slate-800">
                       <FormattedTime iso={sensor.last_heartbeat_at} variant="short" />
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-slate-500">
-                      Last Event (<TimezoneLabel />)
-                    </dt>
-                    <dd className="font-mono tabular-nums text-slate-800">
-                      <FormattedTime iso={sensor.last_event_at} variant="short" />
                     </dd>
                   </div>
                 </dl>

@@ -173,27 +173,11 @@ export default async function SensorsPage() {
                     </span>
                   </div>
 
-                  <dl className="grid gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 px-3 py-2.5 text-xs sm:grid-cols-3">
+                  <dl className="grid gap-2 rounded-md border border-slate-200/80 bg-slate-50/80 px-3 py-2.5 text-xs">
                     <div>
                       <dt className="text-slate-500">Last heartbeat</dt>
                       <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
                         <FormattedTime iso={sensor.last_heartbeat_at} />
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-slate-500">Last observed event</dt>
-                      <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        <FormattedTime iso={sensor.last_event_at} />
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-slate-500">Last recorded error</dt>
-                      <dd className="mt-0.5 font-mono tabular-nums text-slate-800">
-                        {sensor.last_error_at ? (
-                          <FormattedTime iso={sensor.last_error_at} />
-                        ) : (
-                          "None"
-                        )}
                       </dd>
                     </div>
                   </dl>

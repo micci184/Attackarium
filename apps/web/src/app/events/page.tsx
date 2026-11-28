@@ -8,9 +8,9 @@ import { attackCategoryLabel } from "@/lib/dashboard-metrics";
 import {
   formatCount,
   formatEventTypeLabel,
+  displayEventHttpPath,
   formatFingerprintLabel,
   resolveDisplayCategory,
-  safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
 import { getPaginatedEvents } from "@/lib/observatory";
@@ -245,7 +245,7 @@ export default async function EventsPage({ searchParams }: EventsPageProps) {
                           className="rounded text-[#632ca6] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#632ca6]"
                         >
                           {ev.http_method
-                            ? `${safeDisplayText(ev.http_method)} ${safeDisplayHttpPath(ev.http_path_redacted, "/")}`
+                            ? `${safeDisplayText(ev.http_method)} ${displayEventHttpPath(ev.http_path_redacted)}`
                             : formatFingerprintLabel(ev.fingerprint)}
                         </Link>
                       </td>
