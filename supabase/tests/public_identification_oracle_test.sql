@@ -182,6 +182,20 @@ begin
 end $$;
 reset role;
 
+-- 6a. A pattern row built before the cutoff existed (stale) is removed when
+--     all of its observations are still inside the publication delay.
+do $$
+begin
+  insert into public.attack_events (id, sensor_id, observed_at, protocol, dst_port, event_type, attack_category, src_ip_hash)
+  values ('d0000000-0000-4000-8000-000000000301', 'sensor-oracle-01', now(), 'redis', 6379, 'redis_command', 'web_attack_attempt', 'hash-r');
+  insert into public.observed_patterns (pattern_type, pattern_key, protocol, first_seen_at, last_seen_at, total_count)
+  values ('attack_category', 'web_attack_attempt', 'redis', now() - interval '1 day', now(), 7);
+  perform public.rollup_observation_aggregates(now(), 8);
+  if exists (select 1 from public.observed_patterns where pattern_key = 'web_attack_attempt' and protocol = 'redis') then
+    raise exception 'stale pattern row survived the rebuild';
+  end if;
+end $$;
+
 -- 6b. Source counts use only publishable observations, and a path that falls
 --     below k keeps eligibility but reports its current count.
 do $$

@@ -347,6 +347,19 @@ begin
     first_seen_at = excluded.first_seen_at,
     last_seen_at = excluded.last_seen_at,
     total_count = excluded.total_count;
+
+  -- observed_patterns is derived only from pattern_daily_counts. Drop keys
+  -- with no daily rows left (for example a key whose only observations are
+  -- still inside the publication delay), so no stale total or first-seen
+  -- value from an earlier build survives (applies to every pattern type).
+  delete from public.observed_patterns o
+  where not exists (
+    select 1
+    from public.pattern_daily_counts p
+    where p.pattern_type = o.pattern_type
+      and p.pattern_key = o.pattern_key
+      and p.protocol = o.protocol
+  );
 end;
 $$;
 
