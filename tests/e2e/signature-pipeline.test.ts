@@ -201,7 +201,14 @@ function createSupabaseStub(events: () => NormalizedAttackEvent[]) {
       for (const row of body) vulnerabilities.add(String(row.cve_id));
       return new Response(null, { status: 201 });
     }
-    if (table === "vulnerabilities" && method === "GET") return json(200, []);
+    if (table === "vulnerabilities" && method === "GET") {
+      // Stored rows (created by ensureVulnerabilities) without NVD data yet.
+      const ids = /^in\.\((.*)\)$/.exec(url.searchParams.get("cve_id") ?? "")?.[1].split(",") ?? [];
+      return json(
+        200,
+        ids.filter((id) => vulnerabilities.has(id)).map((cve_id) => ({ cve_id, published_at: null, cvss_score: null })),
+      );
+    }
     if (table === "event_cve_matches" && method === "POST") {
       expectUpsert("event_id,cve_id,detection_id", "merge-duplicates");
       for (const row of body) matches.set(`${row.event_id}|${row.cve_id}|${row.detection_id}`, row);

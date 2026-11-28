@@ -83,6 +83,7 @@ export const runJob: JobRunner = async (job, env) => {
     kevUpserts: result.kevUpserts,
     kevCleared: result.kevCleared,
     epssUpserts: result.epssUpserts,
+    epssBatches: result.epssBatches,
   };
 };
 

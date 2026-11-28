@@ -233,10 +233,12 @@ describe("syncThreatIntel", () => {
         repository: repo,
         now: NOW,
       }),
-      /FIRST EPSS fetch failed/,
+      /FIRST EPSS fetch failed after 0 of 1 batches\. KEV rows and the completed EPSS batches were saved/,
     );
-    assert.equal(repo.writes, 0);
-    assert.equal(repo.rows.get("CVE-2024-0001")?.kevUpdatedAt, "2026-01-02T00:00:00.000Z");
+    // KEV is written before EPSS, so its flags stay current during an EPSS outage.
+    assert.equal(repo.writes, 1);
+    assert.equal(repo.rows.get("CVE-2024-0001")?.kevUpdatedAt, "2026-11-20T17:48:39.151Z");
+    assert.equal(repo.rows.get("CVE-2024-0001")?.epssScore, 0.2, "EPSS left unchanged");
   });
 
   it("retries a rate-limited feed response and then accepts it", async () => {
@@ -390,6 +392,38 @@ describe("runThreatIntelSync", () => {
 });
 
 describe("scheduled-run hardening (observation-jobs)", () => {
+  it("saves completed EPSS batches and rotates the start batch by day", async () => {
+    const ids = Array.from({ length: 5 }, (_, i) => `CVE-2024-000${i + 1}`);
+    const seenFirst: string[] = [];
+    const run = async (day: Date, failOnCall?: number) => {
+      const repo = new MemoryRepo();
+      let calls = 0;
+      const client = {
+        async getJson(url: string): Promise<unknown> {
+          if (url === KEV_FEED_URL) return kevPayload(ids.map((id) => ({ id })));
+          calls += 1;
+          const cves = new URL(url).searchParams.get("cve")?.split(",") ?? [];
+          if (calls === 1) seenFirst.push(cves[0] ?? "");
+          if (calls === failOnCall) throw new Error("budget exhausted");
+          return epssPayload(cves);
+        },
+      };
+      const result = await syncThreatIntel({ client, repository: repo, now: day, epssBatchSize: 2 }).catch(
+        (error: unknown) => error,
+      );
+      return { repo, result };
+    };
+    const partial = await run(NOW, 2);
+    assert.ok(partial.result instanceof FeedSyncError);
+    assert.match((partial.result as Error).message, /after 1 of 3 batches/);
+    assert.equal(partial.repo.scores.size, 2, "the first batch was saved before the failure");
+    assert.equal([...partial.repo.rows.values()].filter((r) => r.kevPresent).length, 5, "KEV saved");
+    const full = await run(new Date(NOW.getTime() + 86_400_000));
+    assert.equal((full.result as { epssUpserts: number }).epssUpserts, 5);
+    assert.equal((full.result as { epssBatches: number }).epssBatches, 3);
+    assert.notEqual(seenFirst[0], seenFirst[1], "the next day starts from a different batch");
+  });
+
   it("keeps kev_present for a CVE still listed with invalid metadata", async () => {
     const repo = new MemoryRepo([{ cveId: "CVE-2024-7777", kevPresent: true }]);
     const payload = kevPayload([{ id: "CVE-2024-0001" }, { id: "CVE-2024-7777" }]);

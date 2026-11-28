@@ -568,7 +568,11 @@ scheduled), then deploy with
 lookups that would start later are deferred to the next run (`nvdDeferred`),
 and feed retries stop early. CVE matching reads the newest 500 eligible events
 of the last 48 hours (a recent sample; `capped` = 1 when the limit was reached)
-and writes in bulk batches of 200. Run a
+and writes in bulk batches of 200; NVD lookups cover every stored catalog CVE
+still lacking NVD data, so a deferred lookup is retried even after its event
+leaves the sample. The KEV/EPSS sync writes KEV first, then EPSS batch by batch
+(the start batch rotates daily); if EPSS cannot finish, the run fails with the
+completed count and the next day continues from a different batch. Run a
 job on demand with `select public.observation_jobs_dispatch('cve-matching');`
 (or `'threat-intel'`) and read `net._http_response` by the returned id; the
 response body has counts only. The GitHub workflows of the same names remain as

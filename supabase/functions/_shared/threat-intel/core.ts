@@ -67,6 +67,7 @@ export interface SyncResult {
   epssUpserts: number;
   skippedKevRows: number;
   skippedEpssRows: number;
+  epssBatches: number;
 }
 
 export class FeedSyncError extends Error {
@@ -141,34 +142,14 @@ export async function syncThreatIntel(input: {
     );
   }
 
-  let epss;
-  try {
-    epss = await fetchEpssScores(input.client, targets, input.epssBatchSize);
-  } catch (error) {
-    throw new FeedSyncError("FIRST EPSS fetch failed. No rows were changed.", { cause: error });
-  }
-
-  const allowed = new Set(targets);
+  // KEV first, so its presence flags stay current even when EPSS cannot
+  // finish (outage or the scheduled run's time budget).
   const kevRows = catalog.rows.map((row) => kevUpsert(row, catalog.releasedAt, sourceUpdatedAt));
   // Clear only CVEs the catalog no longer lists at all (not those listed with a
   // row that failed validation).
   const clearedIds = tracked
     .filter((row) => row.kevPresent && !catalog.listedIds.has(row.cveId))
     .map((row) => row.cveId);
-  const epssByCve = new Map<string, EpssRecord>();
-  let droppedEpss = 0;
-  for (const row of epss.rows) {
-    if (!allowed.has(row.cveId)) {
-      droppedEpss += 1;
-      continue;
-    }
-    epssByCve.set(row.cveId, row);
-  }
-  const epssRows: EpssUpsert[] = [...epssByCve.values()].map((row) => ({
-    ...row,
-    sourceUpdatedAt,
-  }));
-
   await input.repository.upsertKev(kevRows);
   if (clearedIds.length > 0) {
     await input.repository.clearKevPresence({
@@ -177,16 +158,58 @@ export async function syncThreatIntel(input: {
       sourceUpdatedAt,
     });
   }
-  await input.repository.upsertEpss(epssRows);
+
+  // EPSS in batches, each written as soon as it arrives. The start batch
+  // rotates by UTC day, so if a run cannot finish, a different tail is left
+  // for the next day and every CVE is eventually refreshed.
+  const batchSize = Math.max(1, input.epssBatchSize ?? DEFAULT_EPSS_BATCH_SIZE);
+  const ordered = [...targets].sort();
+  const batches: string[][] = [];
+  for (let index = 0; index < ordered.length; index += batchSize) {
+    batches.push(ordered.slice(index, index + batchSize));
+  }
+  const dayIndex = Math.floor(Date.parse(sourceUpdatedAt) / 86_400_000);
+  const startBatch = batches.length > 0 ? dayIndex % batches.length : 0;
+  const allowed = new Set(targets);
+  let epssUpserts = 0;
+  let skippedEpss = 0;
+  let done = 0;
+  for (let step = 0; step < batches.length; step += 1) {
+    const batch = batches[(startBatch + step) % batches.length] ?? [];
+    let page;
+    try {
+      page = parseEpssPage(await input.client.getJson(epssRequestUrl(batch)));
+    } catch (error) {
+      throw new FeedSyncError(
+        `FIRST EPSS fetch failed after ${done} of ${batches.length} batches. ` +
+          "KEV rows and the completed EPSS batches were saved.",
+        { cause: error },
+      );
+    }
+    const byCve = new Map<string, EpssRecord>();
+    skippedEpss += page.skipped;
+    for (const row of page.rows) {
+      if (!allowed.has(row.cveId)) {
+        skippedEpss += 1;
+        continue;
+      }
+      byCve.set(row.cveId, row);
+    }
+    const rows: EpssUpsert[] = [...byCve.values()].map((row) => ({ ...row, sourceUpdatedAt }));
+    if (rows.length > 0) await input.repository.upsertEpss(rows);
+    epssUpserts += rows.length;
+    done += 1;
+  }
 
   return {
     catalogVersion: catalog.catalogVersion,
     catalogReleasedAt: catalog.releasedAt,
     kevUpserts: kevRows.length,
     kevCleared: clearedIds.length,
-    epssUpserts: epssRows.length,
+    epssUpserts,
     skippedKevRows: catalog.skipped,
-    skippedEpssRows: epss.skipped + droppedEpss,
+    skippedEpssRows: skippedEpss,
+    epssBatches: batches.length,
   };
 }
 
