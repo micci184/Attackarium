@@ -21,6 +21,15 @@ begin
 end $$;
 reset role;
 
+-- 1b. The pg_cron dispatcher is a no-op without pg_net / Vault configuration
+--     (plain Postgres in CI), never an error.
+do $$
+begin
+  if public.ops_alerts_dispatch() is not null then
+    raise exception 'dispatcher sent a request without configuration';
+  end if;
+end $$;
+
 -- 2. Invalid keys are rejected
 do $$
 begin
@@ -48,6 +57,12 @@ begin
   exception
     when insufficient_privilege then null;
   end;
+  begin
+    perform public.ops_alerts_dispatch();
+    raise exception 'SECURITY FAILURE: anon executed ops_alerts_dispatch';
+  exception
+    when insufficient_privilege then null;
+  end;
 end $$;
 reset role;
 
@@ -63,6 +78,12 @@ begin
   begin
     perform public.ops_database_size_bytes();
     raise exception 'SECURITY FAILURE: authenticated executed ops_database_size_bytes';
+  exception
+    when insufficient_privilege then null;
+  end;
+  begin
+    perform public.ops_alerts_dispatch();
+    raise exception 'SECURITY FAILURE: authenticated executed ops_alerts_dispatch';
   exception
     when insufficient_privilege then null;
   end;

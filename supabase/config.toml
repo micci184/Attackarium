@@ -29,3 +29,9 @@ file_size_limit = "256KiB"
 # rather than Supabase Auth JWTs. Keep verify_jwt = false and enforce HMAC strictly in code.
 [functions.ingest]
 verify_jwt = false
+
+# ops-alerts is called by pg_cron (pg_net) with a shared Bearer secret
+# (OPS_ALERTS_CRON_SECRET, also in Vault), not a Supabase Auth JWT. The
+# function refuses every call when that secret is unset.
+[functions.ops-alerts]
+verify_jwt = false

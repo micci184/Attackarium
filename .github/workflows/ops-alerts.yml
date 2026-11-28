@@ -1,14 +1,19 @@
 name: Operator alerts (Slack)
 
-# #32: every 15 minutes, check sensor heartbeat, OS update freshness, active
-# sensors, and database size, and notify Slack when an alert starts, resolves,
-# or is still active a day later (state in public.ops_alert_state). The run
-# fails only when the check itself cannot run, including a missing or broken
-# Slack webhook (GitHub emails the workflow's owner if Actions notifications are
-# on; see docs/RUNBOOK.md). Logs are public: counts only.
+# #32: check sensor heartbeat, OS update freshness, active sensors, and
+# database size, and notify Slack when an alert starts, resolves, or is still
+# active a day later (state in public.ops_alert_state, shared with the primary
+# runner).
+#
+# The PRIMARY runner is the `ops-alerts` Edge Function, called every 15 minutes
+# by pg_cron, because GitHub Actions schedules run hours late here. This
+# workflow is the manual tool (Run workflow with send_test verifies Slack) and a
+# best-effort hourly backup. A run fails only when the check itself cannot run
+# (GitHub emails the workflow's owner if Actions notifications are on).
+# Logs are public: counts only.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "37 * * * *"
   workflow_dispatch:
     inputs:
       send_test:

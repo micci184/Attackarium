@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { classifyPatchFreshness } from "../../apps/web/src/lib/patch-freshness.ts";
 import {
   DEFAULT_OPTIONS,
+  isPatchCurrent,
   buildSlackMessage,
   buildSlackTestMessage,
   evaluateAlerts,
@@ -75,6 +77,24 @@ describe("evaluateAlerts", () => {
       ["patch_freshness"],
     );
     assert.deepEqual(active(evaluateAlerts([], 70 * MB, opts)), ["no_active_sensors"]);
+  });
+});
+
+describe("isPatchCurrent", () => {
+  it("matches the operator console's classifyPatchFreshness at every boundary", () => {
+    const H = 3_600_000;
+    const ages = [0, 1, H, 71 * H, 72 * H - 1, 72 * H, 72 * H + 1, 5 * 24 * H, 8 * 24 * H, -4 * 60_000, -6 * 60_000];
+    for (const age of ages) {
+      const iso = new Date(NOW - age).toISOString();
+      assert.equal(
+        isPatchCurrent(iso, NOW),
+        classifyPatchFreshness(iso, NOW).state === "current",
+        `age ${age} ms`,
+      );
+    }
+    for (const bad of [null, undefined, "", "not-a-date"]) {
+      assert.equal(isPatchCurrent(bad, NOW), classifyPatchFreshness(bad, NOW).state === "current");
+    }
   });
 });
 
