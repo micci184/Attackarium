@@ -36,6 +36,7 @@ The first operator-managed sensor is planned for AWS **`us-east-1` (N. Virginia)
 | `mcp_rate_limit_windows` (Phase 2) | `user_id`, `window_start`, `request_count`, `expires_at` | Short-lived per-user counters. Invisible to `anon` and `authenticated` |
 | `admin_audit_logs` (Phase 2) | `id`, `actor_user_id`, `action`, `target_type`, `target_id`, `metadata`, `created_at` | Append-only operator audit log. Triggers reject update, delete, and truncate for every role. `metadata` is at most 2 KB. Never publicly readable |
 | `ops_alert_state` (#32) | `alert_key`, `active`, `since`, `last_notified_at`, `updated_at` | Operator-only notification state of the scheduled Slack alert job: one row per alert key that was ever active. No sensor data, IPs, or secrets. RLS enabled with no policies; only `service_role` has grants. `ops_database_size_bytes()` (service_role only) feeds the storage alert |
+| `ops_alerts_lease` (#32) | `id` (always 1), `holder`, `expires_at` | Operator-only single-runner lease for the ops-alerts Edge Function (`ops_alerts_acquire_lease` / `ops_alerts_release_lease`, 10 to 600 s, expires on its own) so overlapping runs do not post the same alert while a run finishes within its 120 s lease (each request times out after 20 s, so a run normally ends within about 80 s); there is no fencing token, so a run that outlived its lease could overlap the next one. RLS enabled, `service_role` only |
 
 ## Data minimization and breach blast-radius reduction
 

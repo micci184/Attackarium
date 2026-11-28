@@ -1,14 +1,22 @@
 name: Operator alerts (Slack)
 
-# #32: every 15 minutes, check sensor heartbeat, OS update freshness, active
-# sensors, and database size, and notify Slack when an alert starts, resolves,
-# or is still active a day later (state in public.ops_alert_state). The run
-# fails only when the check itself cannot run, including a missing or broken
-# Slack webhook (GitHub emails the workflow's owner if Actions notifications are
-# on; see docs/RUNBOOK.md). Logs are public: counts only.
+# #32: check sensor heartbeat, OS update freshness, active sensors, and
+# database size, and notify Slack when an alert starts, resolves, or is still
+# active a day later (state in public.ops_alert_state, shared with the primary
+# runner).
+#
+# The PRIMARY runner is the `ops-alerts` Edge Function, called every 15 minutes
+# by pg_cron, because GitHub Actions schedules run hours late here. This
+# workflow is a WATCHDOG only (hourly schedule, best effort, and manual runs):
+# it alerts when the Edge Function has not completed a run for 60 minutes. It
+# never evaluates or posts the health alerts, so it cannot duplicate a
+# transition. A manual run with send_test also posts a Slack test message.
+# Run the health check on demand with `select public.ops_alerts_dispatch();`.
+# A run fails only when it cannot run (GitHub emails the workflow's owner if
+# Actions notifications are on). Logs are public: counts only.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "37 * * * *"
   workflow_dispatch:
     inputs:
       send_test:
@@ -25,7 +33,7 @@ concurrency:
 
 jobs:
   check:
-    name: Check sensor and database health
+    name: Watchdog for the ops-alerts Edge Function
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -38,7 +46,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          # Optional repository variable; defaults to the Free plan's 500 MB.
-          OPS_DB_QUOTA_MB: ${{ vars.OPS_DB_QUOTA_MB }}
           OPS_ALERTS_SEND_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test && 'true' || 'false' }}
         run: node jobs/ops-alerts/run.ts

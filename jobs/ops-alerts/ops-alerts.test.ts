@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { classifyPatchFreshness } from "../../apps/web/src/lib/patch-freshness.ts";
 import {
   DEFAULT_OPTIONS,
+  EDGE_RUNNER_HEARTBEAT_KEY,
+  evaluateEdgeRunner,
+  isPatchCurrent,
   buildSlackMessage,
   buildSlackTestMessage,
   evaluateAlerts,
@@ -9,6 +13,8 @@ import {
   isSlackWebhookUrl,
   planNotifications,
   postSlack,
+  runOpsAlerts,
+  runWatchdog,
   type AlertState,
   type SensorHealthRow,
 } from "./core.ts";
@@ -78,6 +84,24 @@ describe("evaluateAlerts", () => {
   });
 });
 
+describe("isPatchCurrent", () => {
+  it("matches the operator console's classifyPatchFreshness at every boundary", () => {
+    const H = 3_600_000;
+    const ages = [0, 1, H, 71 * H, 72 * H - 1, 72 * H, 72 * H + 1, 5 * 24 * H, 8 * 24 * H, -4 * 60_000, -6 * 60_000];
+    for (const age of ages) {
+      const iso = new Date(NOW - age).toISOString();
+      assert.equal(
+        isPatchCurrent(iso, NOW),
+        classifyPatchFreshness(iso, NOW).state === "current",
+        `age ${age} ms`,
+      );
+    }
+    for (const bad of [null, undefined, "", "not-a-date"]) {
+      assert.equal(isPatchCurrent(bad, NOW), classifyPatchFreshness(bad, NOW).state === "current");
+    }
+  });
+});
+
 describe("planNotifications", () => {
   const firing = evaluateAlerts([{ ...healthy, last_heartbeat_at: minutesAgo(45) }], 70 * MB, opts);
   const quiet = evaluateAlerts([healthy], 70 * MB, opts);
@@ -109,6 +133,32 @@ describe("planNotifications", () => {
   it("creates no rows for alerts that were never active", () => {
     const plan = planNotifications(quiet, [], NOW);
     assert.deepEqual(plan, { notifications: [], nextStates: [] });
+  });
+});
+
+describe("evaluateEdgeRunner (watchdog)", () => {
+  const beat = (ago: number): AlertState => ({
+    alert_key: EDGE_RUNNER_HEARTBEAT_KEY,
+    active: false,
+    since: new Date(NOW - ago).toISOString(),
+    last_notified_at: null,
+  });
+
+  it("is quiet while the Edge runner completed a run within 60 minutes", () => {
+    assert.equal(evaluateEdgeRunner([beat(59 * 60_000)], NOW).active, false);
+    assert.equal(evaluateEdgeRunner([beat(60 * 60_000)], NOW).active, false);
+  });
+
+  it("alerts when the Edge runner is late or never ran", () => {
+    assert.equal(evaluateEdgeRunner([beat(60 * 60_000 + 1)], NOW).active, true);
+    const never = evaluateEdgeRunner([], NOW);
+    assert.equal(never.active, true);
+    assert.match(never.detail, /never completed/);
+  });
+
+  it("owns a separate alert key from the health checks", () => {
+    const keys = evaluateAlerts([healthy], 70 * MB, opts).map((c) => c.key);
+    assert.ok(!keys.includes(evaluateEdgeRunner([], NOW).key));
   });
 });
 
@@ -168,5 +218,110 @@ describe("fetchSensors", () => {
         headers: { "content-range": "0-0/2" },
       })) as typeof fetch;
     await assert.rejects(fetchSensors("https://x.supabase.co", "k", fetchFn), /truncated/);
+  });
+});
+
+describe("runOpsAlerts", () => {
+  it("records the Edge runner heartbeat only when asked, after the checks", async () => {
+    const saved: unknown[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/rest/v1/sensors")) {
+        return new Response(JSON.stringify([healthy]), { status: 200, headers: { "content-range": "0-0/1" } });
+      }
+      if (url.includes("/rpc/ops_database_size_bytes")) return new Response(String(70 * MB), { status: 200 });
+      if (url.includes("/rest/v1/ops_alert_state") && (init?.method ?? "GET") === "GET") {
+        return new Response("[]", { status: 200 });
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && init?.method === "POST") {
+        saved.push(...(JSON.parse(String(init.body)) as unknown[]));
+        return new Response(null, { status: 201 });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const config = {
+      supabaseUrl: "https://x.supabase.co",
+      serviceRoleKey: "k",
+      webhookUrl: "https://hooks.slack.com/services/T/B/X",
+    };
+    await runOpsAlerts(config, NOW, fetchFn);
+    assert.equal(saved.length, 0, "no rows without transitions or heartbeat");
+    await runOpsAlerts({ ...config, recordRunnerHeartbeat: true }, NOW, fetchFn);
+    assert.deepEqual(
+      saved.map((row) => (row as { alert_key: string }).alert_key),
+      ["runner_heartbeat:edge"],
+    );
+  });
+});
+
+describe("runWatchdog", () => {
+  it("never evaluates or posts the health alerts", async () => {
+    const requested: string[] = [];
+    const posted: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.startsWith("https://hooks.slack.com/")) {
+        posted.push(String(init?.body));
+        return new Response("ok", { status: 200 });
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && (init?.method ?? "GET") === "GET") {
+        // Edge runner healthy, and a stale heartbeat alert stored by it.
+        return new Response(
+          JSON.stringify([
+            { alert_key: EDGE_RUNNER_HEARTBEAT_KEY, active: false, since: new Date(NOW - 5 * 60_000).toISOString(), last_notified_at: null },
+            { alert_key: "heartbeat_stale", active: true, since: new Date(NOW - 86_400_000).toISOString(), last_notified_at: null },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && init?.method === "POST") return new Response(null, { status: 201 });
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const config = { supabaseUrl: "https://x.supabase.co", serviceRoleKey: "k", webhookUrl: "https://hooks.slack.com/services/T/B/X" };
+    const result = await runWatchdog(config, NOW, fetchFn);
+    assert.deepEqual(result, { checks: 1, active: 0, notified: 0, testSent: false });
+    assert.ok(!requested.some((u) => u.includes("/sensors") || u.includes("ops_database_size_bytes")));
+    assert.equal(posted.length, 0, "no reminder for the Edge runner's heartbeat_stale alert");
+    const withTest = await runWatchdog({ ...config, sendTest: true }, NOW, fetchFn);
+    assert.equal(withTest.testSent, true);
+    assert.equal(posted.length, 1);
+    assert.match(posted[0], /Test message/);
+  });
+});
+
+describe("runOpsAlerts lease", () => {
+  const config = {
+    supabaseUrl: "https://x.supabase.co",
+    serviceRoleKey: "k",
+    webhookUrl: "https://hooks.slack.com/services/T/B/X",
+    useLease: true,
+  };
+
+  it("skips everything when another run holds the lease", async () => {
+    const requested: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/rpc/ops_alerts_acquire_lease")) return new Response("false", { status: 200 });
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const result = await runOpsAlerts(config, NOW, fetchFn);
+    assert.equal(result.skipped, true);
+    assert.equal(requested.length, 1, "no checks, no Slack, no state writes, no release");
+  });
+
+  it("releases the lease after a run, also when the run fails", async () => {
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url.replace("https://x.supabase.co", ""));
+      if (url.includes("/rpc/ops_alerts_acquire_lease")) return new Response("true", { status: 200 });
+      if (url.includes("/rpc/ops_alerts_release_lease")) return new Response("", { status: 200 });
+      if (url.includes("/rest/v1/sensors")) return new Response("boom", { status: 500 });
+      return new Response("[]", { status: 200 });
+    }) as typeof fetch;
+    await assert.rejects(runOpsAlerts(config, NOW, fetchFn), /sensors query failed/);
+    assert.ok(calls.some((c) => c.startsWith("/rest/v1/rpc/ops_alerts_release_lease")), "lease released after failure");
   });
 });

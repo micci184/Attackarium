@@ -493,10 +493,10 @@ Storage pressure checks (no extra monitoring service; sensor has no DB password)
 
 ### Slack alerts (#32)
 
-The "Operator alerts (Slack)" workflow (`.github/workflows/ops-alerts.yml`,
-`jobs/ops-alerts`) runs every 15 minutes and posts to Slack when an alert
-starts, when it resolves, and once a day while it stays active (state in the
-operator-only `public.ops_alert_state` table):
+Every 15 minutes, **pg_cron** calls the `ops-alerts` Edge Function through
+pg_net (`public.ops_alerts_dispatch()`, job `ops-alerts`, at :05/:20/:35/:50).
+It posts to Slack when an alert starts, when it resolves, and once a day while
+it stays active (state in the operator-only `public.ops_alert_state` table):
 
 | Alert | Condition |
 |---|---|
@@ -505,30 +505,53 @@ operator-only `public.ops_alert_state` table):
 | Sensor OS updates not current | No successful automatic update in the last 3 days (ADR-027) |
 | No active sensors | No sensor is marked active |
 
-Setup (once):
-1. Apply migration `20261128000001_ops_alert_state.sql` (creates
-   `ops_alert_state` and `ops_database_size_bytes()`); without it every run
-   fails.
-2. Create a Slack incoming webhook for a private channel and store it as the
-   repository secret `SLACK_WEBHOOK_URL` (`gh secret set SLACK_WEBHOOK_URL`
-   and paste it at the prompt, or GitHub → Settings → Secrets and variables →
-   Actions). Never paste it into a command line, chat, or file; if it leaks,
-   delete it in Slack and create a new one. Only
-   `https://hooks.slack.com/services/...` URLs are accepted.
-3. Verify delivery: Actions → "Operator alerts (Slack)" → Run workflow with
-   **send_test** checked. A run without it posts only when an alert starts,
-   resolves, or is reminded, so a successful normal run does not prove the
-   webhook works.
-4. Optional: set the repository variable `OPS_DB_QUOTA_MB` after a plan change.
+The "Operator alerts (Slack)" GitHub workflow is a **watchdog only** (hourly
+schedule and manual runs): it posts "Alert runner not running" when the Edge
+Function has not completed a run for 60 minutes (each successful run records
+`runner_heartbeat:edge` in `ops_alert_state`). It never evaluates or posts the
+health alerts, so the two runners cannot duplicate a transition. Edge runs
+themselves take a single-runner lease (`ops_alerts_lease`, 120 s, expires on
+its own): when a scheduled run and an on-demand dispatch overlap, the later
+one skips. This holds while a run finishes within its 120 s lease (requests
+time out after 20 s each, so a run normally ends within about 80 s). A manual
+**Run workflow** with **send_test** also posts a Slack test message (verifies
+the repository secret). For an on-demand health check, run
+`select public.ops_alerts_dispatch();`. GitHub Actions
+schedules run hours late on this repository (the "hourly" CVE matching ran
+every 6 to 11 hours), which is why GitHub is not the primary runner and the
+watchdog is best effort.
 
-A run fails only when the check cannot run (Supabase unreachable, a secret
-missing, Slack rejected the post). GitHub emails scheduled-run failures to the
-user who created the workflow or last changed its schedule, and only if that
-user has Actions email notifications enabled; otherwise the failure is visible
-only on the Actions tab. Alert state is saved only after Slack accepted the
-message, so a failed post is retried on the next run **while the condition
-lasts**; if it clears before then, that alert is not posted at all (the failed
-run itself is the signal). Run logs are public and print counts only.
+Setup (once, operator approval):
+1. Apply migrations `20261128000001_ops_alert_state.sql` and
+   `20261128000003_ops_alerts_cron.sql` (the second enables pg_net and
+   schedules the job; it does nothing until step 3 is done).
+2. Deploy the function: `supabase functions deploy ops-alerts --remote=<ref>`
+   (`verify_jwt = false` in `supabase/config.toml`; it authenticates the
+   shared Bearer secret instead and refuses every call while that is unset).
+3. Run `supabase/scripts/setup_ops_alerts.sh` on the operator machine. It
+   prompts for the Slack webhook URL without echo (or `--keep-slack` to keep
+   the current one), generates a new cron secret, and sets the function
+   secrets `SLACK_WEBHOOK_URL` and `OPS_ALERTS_CRON_SECRET` plus the Vault
+   secrets `ops_alerts_cron_secret` and `ops_alerts_function_url`. Nothing is
+   printed or passed on a command line. Never paste the webhook URL into a
+   command line, chat, or file; if it leaks, delete it in Slack, create a new
+   one, and re-run the script. Rotation of the cron secret is the same script.
+4. Verify through the Edge runner (pg_net is asynchronous, so match the
+   response to the request id): `select public.ops_alerts_dispatch(true);`
+   returns a request id and posts a Slack test message using the function's
+   own `SLACK_WEBHOOK_URL`; a few seconds later
+   `select status_code from net._http_response where id = <that id>;` shows
+   `200`, and the Slack channel shows the test message. Separately, run the
+   GitHub workflow with `send_test` to verify the repository secret.
+5. GitHub: keep the repository secret `SLACK_WEBHOOK_URL` for the watchdog.
+   Optional: the function secret `OPS_DB_QUOTA_MB` after a plan change.
+
+Failure signals: a failed function run returns 500 and is logged in the Edge
+Function logs (message only); pg_net keeps the status in
+`net._http_response`. The GitHub backup fails (and GitHub emails the workflow's
+owner, if Actions email notifications are on) when it cannot run. Alert state
+is saved only after Slack accepted the message, so a failed post is retried on
+the next run **while the condition lasts**. Logs print counts only.
 Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
 
 **Known limitation (2026-11-27):** GitHub Actions `schedule` triggers on this repository run hours late (the "hourly" CVE matching ran every 6 to 11 hours; the 15-minute alert schedule had not run 70 minutes after merge). Until the check runs on a reliable scheduler, treat Slack alerts as best-effort and use **Run workflow** for an immediate check.

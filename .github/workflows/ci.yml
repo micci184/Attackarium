@@ -62,8 +62,10 @@ jobs:
         run: node --test jobs/cve-matching/cve-matching.test.ts
       - name: Run sensor patch freshness check tests
         run: node --test jobs/patch-freshness/patch-freshness.test.ts
-      - name: Run ops alert job tests
-        run: node --test jobs/ops-alerts/ops-alerts.test.ts
+      - name: Run ops alert tests (shared core, Edge Function handler)
+        run: |
+          node --test jobs/ops-alerts/ops-alerts.test.ts supabase/functions/ops-alerts/handler.test.ts
+          shellcheck supabase/scripts/setup_ops_alerts.sh
 
   sensor-tests:
     name: Sensor Collector & Shipper Tests
