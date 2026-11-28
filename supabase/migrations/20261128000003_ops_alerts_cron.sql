@@ -26,7 +26,9 @@ $ext$;
 
 -- Returns the pg_net request id, or NULL when not configured. Owner rights so
 -- pg_cron can read the two Vault secrets; never callable by API roles.
-create or replace function public.ops_alerts_dispatch()
+-- p_send_test = true also posts a Slack test message through the Edge runner
+-- (operator verification of the function's own SLACK_WEBHOOK_URL).
+create or replace function public.ops_alerts_dispatch(p_send_test boolean default false)
 returns bigint
 language plpgsql
 security definer
@@ -59,7 +61,7 @@ begin
 
   return net.http_post(
     url := v_url,
-    body := '{}'::jsonb,
+    body := pg_catalog.jsonb_build_object('send_test', coalesce(p_send_test, false)),
     headers := pg_catalog.jsonb_build_object(
       'Authorization', 'Bearer ' || v_secret,
       'Content-Type', 'application/json'
@@ -69,8 +71,8 @@ begin
 end;
 $$;
 
-revoke all on function public.ops_alerts_dispatch() from public, anon, authenticated;
-grant execute on function public.ops_alerts_dispatch() to service_role;
+revoke all on function public.ops_alerts_dispatch(boolean) from public, anon, authenticated;
+grant execute on function public.ops_alerts_dispatch(boolean) to service_role;
 
 do $schedule$
 declare

@@ -531,9 +531,13 @@ Setup (once, operator approval):
    printed or passed on a command line. Never paste the webhook URL into a
    command line, chat, or file; if it leaks, delete it in Slack, create a new
    one, and re-run the script. Rotation of the cron secret is the same script.
-4. Verify: `select public.ops_alerts_dispatch();` returns a request id, and
-   `select status_code from net._http_response order by created desc limit 1;`
-   shows `200`. For Slack delivery, run the GitHub workflow with `send_test`.
+4. Verify through the Edge runner (pg_net is asynchronous, so match the
+   response to the request id): `select public.ops_alerts_dispatch(true);`
+   returns a request id and posts a Slack test message using the function's
+   own `SLACK_WEBHOOK_URL`; a few seconds later
+   `select status_code from net._http_response where id = <that id>;` shows
+   `200`, and the Slack channel shows the test message. Separately, run the
+   GitHub workflow with `send_test` to verify the repository secret.
 5. GitHub: keep the repository secret `SLACK_WEBHOOK_URL` for the workflow.
    Optional: `OPS_DB_QUOTA_MB` (function secret and repository variable) after
    a plan change.

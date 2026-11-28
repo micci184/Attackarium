@@ -25,7 +25,7 @@ reset role;
 --     (plain Postgres in CI), never an error.
 do $$
 begin
-  if public.ops_alerts_dispatch() is not null then
+  if public.ops_alerts_dispatch() is not null or public.ops_alerts_dispatch(true) is not null then
     raise exception 'dispatcher sent a request without configuration';
   end if;
 end $$;

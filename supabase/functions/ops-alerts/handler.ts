@@ -48,6 +48,18 @@ export async function handleOpsAlerts(
   if (!secretsEqual(token, env.cronSecret)) {
     return json(401, { error: "unauthorized" });
   }
+  // Optional JSON body {"send_test": true} (operator verification through the
+  // dispatcher). Anything else, including no body, means a normal run.
+  let sendTest = false;
+  try {
+    const text = await request.text();
+    if (text.length > 0 && text.length <= 1024) {
+      const body: unknown = JSON.parse(text);
+      sendTest = typeof body === "object" && body !== null && (body as { send_test?: unknown }).send_test === true;
+    }
+  } catch {
+    sendTest = false;
+  }
   try {
     const result = await run({
       supabaseUrl: env.supabaseUrl,
@@ -55,6 +67,7 @@ export async function handleOpsAlerts(
       webhookUrl: env.webhookUrl,
       dbQuotaMb: env.dbQuotaMb,
       recordRunnerHeartbeat: true,
+      sendTest,
     });
     return json(200, result);
   } catch (err) {

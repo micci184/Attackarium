@@ -45,6 +45,20 @@ describe("ops-alerts handler", () => {
     }
   });
 
+  it("sends a Slack test only for an explicit send_test body", async () => {
+    const seen: boolean[] = [];
+    const run = async (config: { sendTest?: boolean }) => {
+      seen.push(config.sendTest === true);
+      return ok();
+    };
+    const auth = { authorization: `Bearer ${SECRET}` };
+    for (const body of [undefined, "{}", '{"send_test":false}', '{"send_test":"true"}', "not json", '{"send_test":true}']) {
+      const res = await handleOpsAlerts(req({ headers: auth, body }), env, run);
+      assert.equal(res.status, 200);
+    }
+    assert.deepEqual(seen, [false, false, false, false, false, true]);
+  });
+
   it("allows POST only", async () => {
     const res = await handleOpsAlerts(
       new Request("https://x/functions/v1/ops-alerts", { method: "GET", headers: { authorization: `Bearer ${SECRET}` } }),
