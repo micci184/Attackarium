@@ -12,10 +12,10 @@ import {
   formatEpss,
   formatEpssPercentile,
   formatEventTypeLabel,
+  displayEventHttpPath,
   formatFingerprintLabel,
   formatUtcDate,
   resolveDisplayCategory,
-  safeDisplayHttpPath,
   safeDisplayText,
 } from "@/lib/format";
 import { getEventDetail } from "@/lib/observatory";
@@ -122,7 +122,11 @@ export default async function EventDetailPage({ params }: EventDetailPageProps) 
               className="mt-1.5 break-all rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-800"
             >
               {event.http_method ? `${safeDisplayText(event.http_method)} ` : ""}
-              {safeDisplayHttpPath(event.http_path_redacted)}
+              {event.http_path_redacted
+                ? displayEventHttpPath(event.http_path_redacted)
+                : event.protocol === "http" || event.protocol === "https"
+                  ? displayEventHttpPath(null)
+                  : "—"}
             </dd>
           </div>
         </dl>

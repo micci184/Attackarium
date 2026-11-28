@@ -509,6 +509,7 @@ interface HttpPathInput {
   http_path_redacted: string | null;
 }
 
+/** Top HTTP paths from event rows (mock mode). Withheld paths (NULL) are skipped. */
 export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[] {
   const totals = new Map<string, HttpPathTotal>();
   for (const event of events) {
@@ -526,6 +527,33 @@ export function topHttpPaths(events: HttpPathInput[], limit = 8): HttpPathTotal[
   }
   return Array.from(totals.values())
     .toSorted((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+    .slice(0, limit);
+}
+
+export interface PublicHttpPathPatternRow {
+  pattern_key: string;
+  total_count: number;
+  unique_source_count: number | null;
+}
+
+/**
+ * Top public HTTP paths (#88 L5): built from public_observed_patterns, which
+ * lists only paths sent by at least 3 distinct sources, and ranked by distinct
+ * sources, then events. It does not use a capped event sample, so a source
+ * flooding one path cannot crowd out others or buy a higher rank.
+ * Rows without a source count are dropped rather than ranked by events.
+ */
+export function rankPublicHttpPaths(rows: readonly PublicHttpPathPatternRow[], limit = 8): HttpPathTotal[] {
+  return rows
+    .filter((row) => typeof row.unique_source_count === "number" && Number.isFinite(row.unique_source_count))
+    .map((row) => ({
+      method: "",
+      path: safeDisplayHttpPath(row.pattern_key, ""),
+      count: row.total_count,
+      sources: row.unique_source_count as number,
+    }))
+    .filter((row) => row.path.length > 0)
+    .toSorted((a, b) => b.sources - a.sources || b.count - a.count || a.path.localeCompare(b.path))
     .slice(0, limit);
 }
 

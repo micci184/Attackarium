@@ -32,6 +32,7 @@ import {
   periodLengthMs,
   selectNoteworthyObservations,
   sumTrendBuckets,
+  rankPublicHttpPaths,
   topHttpPaths,
   topPatterns,
   topPatternsFromCounts,
@@ -43,6 +44,7 @@ import {
   AttackCategorySchema,
   type EnrichedEventCveMatch,
   type EventDetailData,
+  type HttpPathTotal,
   type OverviewData,
   type OverviewSensor,
   type PaginatedEventsResult,
@@ -69,12 +71,16 @@ import {
 
 export const HEARTBEAT_STALE_THRESHOLD_MS = 15 * 60 * 1000;
 export function evaluateSensorHealth(
-  sensor: Pick<PublicSensor, "is_active" | "last_heartbeat_at">,
+  sensor: Pick<PublicSensor, "is_active" | "last_heartbeat_at"> & { heartbeat_stale?: boolean | null },
   nowMs: number,
   staleThresholdMs: number = HEARTBEAT_STALE_THRESHOLD_MS,
 ): SensorHealthStatus {
   if (!sensor.is_active) {
     return "inactive";
+  }
+  // Prefer the view's flag: it uses the unrounded heartbeat (#88).
+  if (typeof sensor.heartbeat_stale === "boolean") {
+    return sensor.heartbeat_stale ? "stale" : "healthy";
   }
   if (!sensor.last_heartbeat_at) {
     return "stale";
@@ -620,13 +626,42 @@ export async function getOverviewData(): Promise<OverviewData> {
       z.array(PublicEventCveMatchSchema).parse(cveMatchesRes.data ?? []),
       z.array(PublicVulnerabilitySchema).parse(vulnsRes.data ?? []),
     ),
-    httpPaths24h: topHttpPaths(sampleRows),
+    httpPaths24h: await fetchTopHttpPaths(client, since24h),
     dataUpdatedAt: latestTimestamp([
       ...hourRows.map((row) => row.updated_at),
       ...sampleRows.map((row) => row.received_at),
     ]),
     recentEvents,
   };
+}
+
+/**
+ * Top public HTTP paths seen since `sinceIso` (#88 L5), ranked by distinct
+ * sources. On a read error the list is empty: never fall back to event counts.
+ */
+async function fetchTopHttpPaths(
+  client: NonNullable<ReturnType<typeof getPublicSupabaseClient>>,
+  sinceIso: string,
+): Promise<HttpPathTotal[]> {
+  const { data, error } = await client
+    .from("public_observed_patterns")
+    .select("pattern_key, total_count, unique_source_count")
+    .eq("pattern_type", "http_path")
+    .gte("last_seen_at", sinceIso)
+    .order("unique_source_count", { ascending: false })
+    .order("total_count", { ascending: false })
+    .limit(50);
+  if (error || !Array.isArray(data)) return [];
+  const rows = z
+    .array(
+      z.object({
+        pattern_key: z.string(),
+        total_count: z.coerce.number().int().nonnegative(),
+        unique_source_count: z.coerce.number().int().nonnegative().nullable(),
+      }),
+    )
+    .safeParse(data);
+  return rows.success ? rankPublicHttpPaths(rows.data) : [];
 }
 
 export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsData> {
@@ -901,7 +936,9 @@ export async function getTrendsData(period: TrendPeriod = "7d"): Promise<TrendsD
           )
         : topPatterns(windowEvents),
     patternCveContext: buildPatternCveContext(cveMatches, vulnerabilities),
-    httpPaths: topHttpPaths(windowEvents),
+    httpPaths: client
+      ? await fetchTopHttpPaths(client, new Date(seriesStartMs).toISOString())
+      : topHttpPaths(windowEvents),
   };
 }
 
@@ -961,6 +998,9 @@ export async function getPaginatedEvents(options: {
     .from(cveFilter ? "public_cve_events" : "public_events")
     .select("*", { count: "exact" })
     .order("observed_at", { ascending: false })
+    // Public times are hour-precision (#88), so many rows tie: a unique
+    // secondary key keeps offset pagination stable across pages.
+    .order("id", { ascending: false })
     .range(offset, offset + pageSize - 1);
 
   if (protocolFilter !== "all") {

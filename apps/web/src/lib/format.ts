@@ -188,6 +188,19 @@ function maskPathBase(segment: string): string {
  * Masks query values by default and scrubs embedded credentials/tokens so even
  * historical rows ingested under older rules never expose query values in the UI.
  */
+/** Shown instead of an HTTP path that public views withhold (#88). */
+export const UNCOMMON_PATH_LABEL = "(uncommon path)";
+
+/**
+ * Display path for a public HTTP event. Public views return NULL for paths
+ * seen from fewer than 3 distinct sources (#88), so a missing path on an HTTP
+ * event means "withheld", not "/".
+ */
+export function displayEventHttpPath(path: string | null | undefined): string {
+  if (!path) return UNCOMMON_PATH_LABEL;
+  return safeDisplayHttpPath(path, UNCOMMON_PATH_LABEL);
+}
+
 export function safeDisplayHttpPath(value: string | null | undefined, fallback = "—"): string {
   const cleaned = safeDisplayText(value, "");
   if (!cleaned) return fallback;

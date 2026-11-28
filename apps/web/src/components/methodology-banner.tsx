@@ -51,6 +51,12 @@ export function MethodologyBanner({ sourceMode, sensorCount = 1 }: MethodologyBa
           account owner).
         </p>
         <p className="mt-2 text-slate-500">
+          To keep the sensor from being identified through this site, event
+          times are rounded to the hour and published about an hour after the
+          hour ends, and an HTTP path is shown only after at least 3 distinct
+          sources sent it; rarer paths appear as &ldquo;(uncommon path)&rdquo;.
+        </p>
+        <p className="mt-2 text-slate-500">
           Site analytics: public pages are counted with cookieless, aggregate-only
           Vercel Web Analytics (page path, country, referrer, browser, and device
           type). Query strings are dropped, and sign-in, consent, and operator pages

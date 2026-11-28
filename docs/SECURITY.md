@@ -83,6 +83,32 @@ outbound pivoting, secret theft, and log-poisoning/prompt injection.
     - Combine leak prevention (RLS, `security_barrier` views, redaction, minimal storage) with
       anti-tampering (atomic write paths, HMAC/OAuth verification, append-only audit logs).
 
+## Public surfaces as a sensor-identification oracle (#88)
+
+The sensor IP is not secret (every scanner that reaches it knows it); the asset
+is the **link between an IP and Attackarium**. Anyone could send a unique marker
+to a suspected IP and look for it here. Controls live in the `security_barrier`
+public views (migration `20261128000005`), so the dashboard, Remote MCP, and any
+direct `anon` REST read get the same data:
+
+| Oracle | Control (operator decisions 2026-11-28) |
+| --- | --- |
+| Unique HTTP path, "new pattern" promotion, content injection | A path is public only after **k = 3 distinct sources** sent it (rolling 30 days; eligibility never revoked once crossed). Otherwise the path is NULL ("(uncommon path)"). A pattern's public first-seen is when it crossed k |
+| Precomputable `http-*` fingerprints | Never public; only fixed OpenCanary `oc-<logtype>` fingerprints |
+| Second-precision timing | Public event, detection, and match times are truncated to the UTC hour; `last_event_at` / `last_error_at` are not published; heartbeat floored to 5 minutes; outage intervals widened to 15 minutes (still distinguishes "0 events" from a gap) |
+| Watching the current hour fill up | Events, detections, matches, and hourly buckets are published about one hour after their hour closes; pattern rows (counts, first/last seen) and path source counts are built only from observations that are already publishable |
+| Flooding a marker into top lists | Top paths are ranked by distinct sources, then events |
+| Per-event country / ASN | Not published per event (tracking risk); aggregates only, see #113 |
+
+**Accepted residual risks:** an actor with at least k source IPs (cloud VMs,
+proxies, botnets) can still plant a path slowly; a large distinctive burst can
+show in daily aggregates (volume spike); a rare fixed-vocabulary signal (for
+example a single candidate-CVE rule hit) can still appear within its hour after
+the delay; OpenCanary banner fingerprinting is out of scope. Recovery when a
+link is suspected: rotate the sensor's Elastic IP (`docs/RUNBOOK.md`, operator
+approval). Changing k needs a migration (`rollup_public_pattern_eligibility`
+argument in `run_observation_maintenance`).
+
 ## Operational monitoring
 
 | Signal | Alert condition (proposed) | Response |

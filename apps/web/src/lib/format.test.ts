@@ -8,6 +8,8 @@ import {
   matchStrengthRank,
   normalizeTimestamp,
   parseCveId,
+  UNCOMMON_PATH_LABEL,
+  displayEventHttpPath,
 } from "./format.ts";
 
 describe("timestamp parsing for PostgreSQL shapes", () => {
@@ -68,5 +70,13 @@ describe("match strength and CVE ids (#84)", () => {
     for (const bad of ["CVE-21-1234", "CVE-2021-123", `CVE-2021-${"9".repeat(40)}`, "CVE-2021-1234;drop", null, undefined]) {
       assert.equal(parseCveId(bad), null, String(bad));
     }
+  });
+});
+
+describe("displayEventHttpPath (#88)", () => {
+  it("labels a withheld path as uncommon instead of showing '/'", () => {
+    assert.equal(displayEventHttpPath(null), UNCOMMON_PATH_LABEL);
+    assert.equal(displayEventHttpPath(""), UNCOMMON_PATH_LABEL);
+    assert.equal(displayEventHttpPath("/wp-login.php"), "/wp-login.php");
   });
 });
