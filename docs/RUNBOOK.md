@@ -531,6 +531,8 @@ lasts**; if it clears before then, that alert is not posted at all (the failed
 run itself is the signal). Run logs are public and print counts only.
 Spool usage and OpenCanary restarts are not covered yet (#32 follow-up).
 
+**Known limitation (2026-11-27):** GitHub Actions `schedule` triggers on this repository run hours late (the "hourly" CVE matching ran every 6 to 11 hours; the 15-minute alert schedule had not run 70 minutes after merge). Until the check runs on a reliable scheduler, treat Slack alerts as best-effort and use **Run workflow** for an immediate check.
+
 ### Conditions to check
 
 Check these five operational conditions regularly (no mandatory third-party
@@ -612,7 +614,7 @@ cost near zero and avoid duplicating operational infrastructure before the
 | Operator Admin Console + MFA (`aal2`) | Verified | Live TOTP enrollment on `/admin/mfa`, `aal2` access to `/admin` and `/admin/mcp-usage`, and `401`/`403` denial for unauthenticated/non-allowlisted callers |
 | Sensor OS patch window (ADR-026) | Verified 2026-11-25 | First production window: 59 s, Security Group egress open about 2 minutes, no reboot, `verify_egress.sh` passed afterwards |
 | Automatic OS security updates (ADR-027) | Verified 2026-11-26 | Rolled out per this runbook. A manual `apt-daily-upgrade` start was skipped (already ran within 24 h) and correctly not recorded; a first manual run hit a transient mirror `404` and was correctly not recorded; the retry installed 13 security updates and recorded `2026-11-26T08:42:02Z`, which reached `/admin`. `verify_egress.sh` passed, and the weekly check passed on a manual run. Pending: confirm that killing a patch-window wrapper keeps `run.lock` held by the unit, during the next approved window (PR #99 review) |
-| Live EC2 sensor emergency stop drill | Deferred (requires explicit approval) | Intentionally not executed during active 30-day observation collection (`#32`); run only with explicit operator authorization |
+| Live EC2 sensor emergency stop drill | Verified 2026-11-27 | Operator-approved drill of steps 1, 2, and 5. Removed the six inbound decoy rules (EICE management rule kept) at 05:07:50 UTC and stopped the instance at 05:08:22 (EBS volume and Elastic IP kept). `/sensors` showed "Stale heartbeat" and an ongoing "Sensor offline (gap)" from the last heartbeat (05:07:05), not "0 events". The Slack alert fired on a manual run at 05:30 (23 min without heartbeat). Started at 05:31; all four services came back on boot with the updated venv and `TasksMax`; `verify_egress.sh` passed; the decoy rules were restored with a reviewed Terraform plan (6 to add) at 05:35 and a follow-up plan showed no drift. Slack posted RESOLVED at 05:36, and the coverage gap closed at 05:41:44 (about 35 min). Steps 3 and 4 (secret rotation, evidence review) were not needed for a drill. Found: GitHub Actions schedules run hours late, so scheduled Slack alerts are not timely (see the Slack alerts section) |
 
 ## What this runbook does not add
 
