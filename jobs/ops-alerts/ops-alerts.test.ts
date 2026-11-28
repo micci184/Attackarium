@@ -14,6 +14,7 @@ import {
   planNotifications,
   postSlack,
   runOpsAlerts,
+  runWatchdog,
   type AlertState,
   type SensorHealthRow,
 } from "./core.ts";
@@ -250,5 +251,41 @@ describe("runOpsAlerts", () => {
       saved.map((row) => (row as { alert_key: string }).alert_key),
       ["runner_heartbeat:edge"],
     );
+  });
+});
+
+describe("runWatchdog", () => {
+  it("never evaluates or posts the health alerts", async () => {
+    const requested: string[] = [];
+    const posted: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.startsWith("https://hooks.slack.com/")) {
+        posted.push(String(init?.body));
+        return new Response("ok", { status: 200 });
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && (init?.method ?? "GET") === "GET") {
+        // Edge runner healthy, and a stale heartbeat alert stored by it.
+        return new Response(
+          JSON.stringify([
+            { alert_key: EDGE_RUNNER_HEARTBEAT_KEY, active: false, since: new Date(NOW - 5 * 60_000).toISOString(), last_notified_at: null },
+            { alert_key: "heartbeat_stale", active: true, since: new Date(NOW - 86_400_000).toISOString(), last_notified_at: null },
+          ]),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/rest/v1/ops_alert_state") && init?.method === "POST") return new Response(null, { status: 201 });
+      throw new Error(`unexpected request ${url}`);
+    }) as typeof fetch;
+    const config = { supabaseUrl: "https://x.supabase.co", serviceRoleKey: "k", webhookUrl: "https://hooks.slack.com/services/T/B/X" };
+    const result = await runWatchdog(config, NOW, fetchFn);
+    assert.deepEqual(result, { checks: 1, active: 0, notified: 0, testSent: false });
+    assert.ok(!requested.some((u) => u.includes("/sensors") || u.includes("ops_database_size_bytes")));
+    assert.equal(posted.length, 0, "no reminder for the Edge runner's heartbeat_stale alert");
+    const withTest = await runWatchdog({ ...config, sendTest: true }, NOW, fetchFn);
+    assert.equal(withTest.testSent, true);
+    assert.equal(posted.length, 1);
+    assert.match(posted[0], /Test message/);
   });
 });

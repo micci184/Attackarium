@@ -442,12 +442,15 @@ export function evaluateEdgeRunner(previous: readonly AlertState[], nowMs: numbe
 }
 
 export async function runWatchdog(
-  config: Pick<RunConfig, "supabaseUrl" | "serviceRoleKey" | "webhookUrl">,
+  config: Pick<RunConfig, "supabaseUrl" | "serviceRoleKey" | "webhookUrl" | "sendTest">,
   nowMs: number = Date.now(),
   fetchFn: typeof fetch = fetch,
 ): Promise<RunResult> {
   if (!config.supabaseUrl || !config.serviceRoleKey || !config.webhookUrl) {
     throw new Error("SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or SLACK_WEBHOOK_URL is not configured");
+  }
+  if (config.sendTest) {
+    await postSlack(config.webhookUrl, buildSlackTestMessage(nowMs), fetchFn);
   }
   const previous = await fetchAlertStates(config.supabaseUrl, config.serviceRoleKey, fetchFn);
   const check = evaluateEdgeRunner(previous, nowMs);
@@ -456,5 +459,10 @@ export async function runWatchdog(
     await postSlack(config.webhookUrl, buildSlackMessage(plan.notifications), fetchFn);
   }
   await saveAlertStates(config.supabaseUrl, config.serviceRoleKey, plan.nextStates, fetchFn);
-  return { checks: 1, active: check.active ? 1 : 0, notified: plan.notifications.length, testSent: false };
+  return {
+    checks: 1,
+    active: check.active ? 1 : 0,
+    notified: plan.notifications.length,
+    testSent: config.sendTest === true,
+  };
 }

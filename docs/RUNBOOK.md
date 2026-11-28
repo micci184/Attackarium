@@ -505,13 +505,14 @@ it stays active (state in the operator-only `public.ops_alert_state` table):
 | Sensor OS updates not current | No successful automatic update in the last 3 days (ADR-027) |
 | No active sensors | No sensor is marked active |
 
-The "Operator alerts (Slack)" GitHub workflow runs the same code
-(`supabase/functions/_shared/ops-alerts-core.ts`). **Run workflow** runs the
-full check (with **send_test** to verify Slack delivery). Its hourly schedule
-is a **watchdog only**: it posts "Alert runner not running" when the Edge
+The "Operator alerts (Slack)" GitHub workflow is a **watchdog only** (hourly
+schedule and manual runs): it posts "Alert runner not running" when the Edge
 Function has not completed a run for 60 minutes (each successful run records
-`runner_heartbeat:edge` in `ops_alert_state`), and it never posts the health
-alerts, so the two runners cannot duplicate a transition. GitHub Actions
+`runner_heartbeat:edge` in `ops_alert_state`). It never evaluates or posts the
+health alerts, so the two runners cannot duplicate a transition. A manual
+**Run workflow** with **send_test** also posts a Slack test message (verifies
+the repository secret). For an on-demand health check, run
+`select public.ops_alerts_dispatch();`. GitHub Actions
 schedules run hours late on this repository (the "hourly" CVE matching ran
 every 6 to 11 hours), which is why GitHub is not the primary runner and the
 watchdog is best effort.
@@ -538,9 +539,8 @@ Setup (once, operator approval):
    `select status_code from net._http_response where id = <that id>;` shows
    `200`, and the Slack channel shows the test message. Separately, run the
    GitHub workflow with `send_test` to verify the repository secret.
-5. GitHub: keep the repository secret `SLACK_WEBHOOK_URL` for the workflow.
-   Optional: `OPS_DB_QUOTA_MB` (function secret and repository variable) after
-   a plan change.
+5. GitHub: keep the repository secret `SLACK_WEBHOOK_URL` for the watchdog.
+   Optional: the function secret `OPS_DB_QUOTA_MB` after a plan change.
 
 Failure signals: a failed function run returns 500 and is logged in the Edge
 Function logs (message only); pg_net keeps the status in
